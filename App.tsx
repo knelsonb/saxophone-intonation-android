@@ -1,272 +1,323 @@
 /**
- * Intonation Analyzer — Android, chunk 1 of 5.
+ * Intonation Analyzer — Android, chunk 2 of 5.
  *
- * Professional chromatic-tuner faceplate. The audio pipeline is wired
- * end-to-end (mic permission, recording with metering, animated input
- * strip), but pitch detection lands in chunk 2. Until then the
- * centerpiece readouts (note, cent arc, Hz) show idle placeholders that
- * look like a tuner warming up — not lorem ipsum, not TODO.
+ * Wires useAudioEngine (pitch + metering) into the professional-tuner
+ * faceplate. Portrait and landscape layouts, live note readout (Bb tenor
+ * fingered), cent arc needle, A=440 ±stepper, low/high gain toggle.
  *
- * Visual reference set: Korg TM-60, Peterson StroboPlus HD, Boss TU-3,
- * TonalEnergy. Dark panel, monochrome ink, single accent for the active
- * indicator, restrained typography. The only animated element in this
- * chunk is the input level strip along the bottom edge.
+ * Visual language: Peterson-amber (#d6b86a), near-black faceplate, restrained
+ * typography, generous letter-spacing. No new dependencies.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  DimensionValue,
   Pressable,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
+
+import { useAudioEngine } from './src/useAudioEngine';
+import type { GainMode } from './src/useAudioEngine';
 import {
-  AudioModule,
-  RecordingPresets,
-  useAudioRecorder,
-  useAudioRecorderState,
-} from 'expo-audio';
+  centsDeviation,
+  centsDisplayPrecision,
+  midiToNoteName,
+} from './src/music';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.1.0';
-const STAGE_LABEL = 'pipeline test · 1 of 5';
-const REFERENCE_HZ = 440;
+const APP_VERSION = '0.2.0';
+const STAGE_LABEL = 'pipeline test · 2 of 5';
 
-// Metering returns dBFS in roughly [-160, 0]. Anything below the noise
-// floor we treat as silence; anything above the headroom mark we treat
-// as full deflection. Tuned for vocal/instrument input on a tablet mic.
-const METER_FLOOR_DB = -60;
-const METER_CEIL_DB = -6;
+// Bb tenor sax: sounding pitch is 14 semitones (octave + major 2nd) below
+// fingered notation. YIN detects the sounding pitch from the horn; add 14
+// to get the MIDI number Tom sees on his chart. Source of truth:
+// F:\Code\Toys\saxophone-intonation-table\sax_instruments.py line 34,
+// ('bb_tenor', -14, ...) — desktop convention: negative transp = sounding
+// below fingered, so the display conversion adds the absolute value.
+const TENOR_TRANSPOSE = 14;
 
-// Peak hold decay (units per second). The peak marker snaps up to a new
-// max instantly, then drifts back down at this rate — same behavior as
-// every studio level meter for the last forty years.
-const PEAK_DECAY_PER_SEC = 0.6;
+const REF_HZ_MIN = 430;
+const REF_HZ_MAX = 450;
+const REF_HZ_DEFAULT = 440;
 
-// Idle glow keeps the meter from looking dead at silence. Tiny.
-const IDLE_GLOW = 0.02;
-
-// Cent arc geometry. We span ±50 cents across an arc of N tick marks,
-// with the center mark slightly taller. The arc is drawn as a row of
-// positioned View segments — no SVG dependency.
-const CENT_TICK_COUNT = 21; // -50, -45, ..., 0, ..., +45, +50
+const CENT_TICK_COUNT = 21; // -50, -45, …, 0, …, +45, +50
 const CENT_RANGE = 50;
 
+const PEAK_DECAY_PER_SEC = 0.6;
+const IDLE_GLOW = 0.02;
+
+// dBFS scale endpoints for tick-position math (must match hook's 'low' map).
+const METER_FLOOR_DB = -60;
+const METER_CEIL_DB = 0;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function tickPct(db: number): number {
+  const n = (db - METER_FLOOR_DB) / (METER_CEIL_DB - METER_FLOOR_DB);
+  return Math.max(0, Math.min(100, n * 100));
+}
+
+function formatCents(cents: number, precision: 0.1 | 0.5 | 1.0): string {
+  const sign = cents >= 0 ? '+' : '';
+  if (precision === 0.1) return `${sign}${cents.toFixed(1)}`;
+  if (precision === 0.5) return `${sign}${(Math.round(cents * 2) / 2).toFixed(1)}`;
+  return `${sign}${Math.round(cents).toFixed(0)}`;
+}
+
+function centsToTickIndex(cents: number): number {
+  const c = Math.max(-CENT_RANGE, Math.min(CENT_RANGE, cents));
+  return Math.round(((c + CENT_RANGE) / (CENT_RANGE * 2)) * (CENT_TICK_COUNT - 1));
+}
+
+// ---------------------------------------------------------------------------
+// Note display type
+// ---------------------------------------------------------------------------
+
+interface NoteDisplay {
+  letter: string;
+  accidental: '' | '#' | 'b';
+  octave: number;
+  cents: number;
+  precision: 0.1 | 0.5 | 1.0;
+  tickIndex: number;
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 export default function App() {
-  const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>(
-    'unknown'
-  );
-  const [recording, setRecording] = useState(false);
-  const [levelDb, setLevelDb] = useState<number>(METER_FLOOR_DB);
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width >= height;
 
-  // Smoothed bar fill (0..1). Animated values so the bar moves on the
-  // UI thread without re-rendering React each frame.
-  const fill = useRef(new Animated.Value(IDLE_GLOW)).current;
-  const peak = useRef(new Animated.Value(IDLE_GLOW)).current;
-  const peakValue = useRef(IDLE_GLOW);
-  const peakUpdatedAt = useRef(Date.now());
+  const engine = useAudioEngine();
+  const [refHz, setRefHz] = useState(REF_HZ_DEFAULT);
+  const [refEdit, setRefEdit] = useState(false);
 
-  const recorder = useAudioRecorder({
-    ...RecordingPresets.HIGH_QUALITY,
-    isMeteringEnabled: true,
-  });
+  // Peak hold — updated synchronously during render, no useEffect needed.
+  const fillAnim = useRef(new Animated.Value(IDLE_GLOW)).current;
+  const peakAnim = useRef(new Animated.Value(IDLE_GLOW)).current;
+  const peakVal = useRef(IDLE_GLOW);
+  const peakTs = useRef(Date.now());
 
-  // RecordingStatus (the statusListener event payload) does not carry metering.
-  // Metering lives on RecorderState, surfaced by useAudioRecorderState at the
-  // requested poll interval. 100ms keeps the meter visually smooth without
-  // hammering the bridge.
-  const recorderState = useAudioRecorderState(recorder, 100);
+  const mf = Math.max(IDLE_GLOW, engine.meterFill);
+  const elapsed = (Date.now() - peakTs.current) / 1000;
+  const decayed = Math.max(IDLE_GLOW, peakVal.current - PEAK_DECAY_PER_SEC * elapsed);
+  const newPeak = Math.max(decayed, mf);
+  peakVal.current = newPeak;
+  peakTs.current = Date.now();
 
-  // Request mic permission once on mount.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const res = await AudioModule.requestRecordingPermissionsAsync();
-      if (cancelled) return;
-      setPermission(res.granted ? 'granted' : 'denied');
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  Animated.spring(fillAnim, { toValue: mf, useNativeDriver: false, damping: 18, stiffness: 140, mass: 0.4 }).start();
+  Animated.timing(peakAnim, { toValue: newPeak, duration: 60, useNativeDriver: false }).start();
 
-  // Once permission lands, start (and keep) recording for chunk 1.
-  // We never save the file — we only consume the metering stream. The
-  // recorder must be told to .record() before metering ticks fire;
-  // .prepareToRecordAsync() alone isn't enough.
-  //
-  // dep array: [permission] only. recorder is a stable SharedObject reference
-  // (useAudioRecorder uses useReleasingSharedObject keyed on JSON-stringified
-  // options), so listing it here would only re-fire the effect if the options
-  // object changes, which we never do. eslint-disable-next-line is intentional.
-  useEffect(() => {
-    if (permission !== 'granted') return;
+  // Compute note display from live freqHz.
+  const noteDisplay = useMemo((): NoteDisplay | null => {
+    if (engine.freqHz === null) return null;
+    const { nearestMidi, cents } = centsDeviation(engine.freqHz, refHz);
+    const { letter, accidental, octave } = midiToNoteName(nearestMidi + TENOR_TRANSPOSE);
+    const precision = centsDisplayPrecision(engine.freqHz);
+    return { letter, accidental, octave, cents, precision, tickIndex: centsToTickIndex(cents) };
+  }, [engine.freqHz, refHz]);
 
-    // prepared tracks whether prepareToRecordAsync completed so the cleanup
-    // path can avoid calling stop() on an unprepared recorder, which would
-    // race against the still-running prepare.
-    let prepared = false;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await recorder.prepareToRecordAsync();
-        prepared = true;
-        if (cancelled) {
-          // Cleanup ran while we were preparing — stop now that we're safe.
-          recorder.stop().catch(() => {});
-          return;
-        }
-        recorder.record();
-        setRecording(true);
-      } catch {
-        // Recording failure surfaces as a frozen meter — be honest
-        // rather than silently swallow.
-        if (!cancelled) setPermission('denied');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (prepared) {
-        recorder.stop().catch(() => {});
-      }
-      // If not prepared, the async block will call stop() once prepare
-      // resolves and sees the cancelled flag.
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [permission]);
-
-  // Feed the recorderState metering into levelDb state so the display
-  // and the animated bar both stay current.
-  useEffect(() => {
-    if (typeof recorderState.metering === 'number') {
-      setLevelDb(recorderState.metering);
+  const statusText = ((): string => {
+    switch (engine.status) {
+      case 'waiting-for-mic': return 'WAITING FOR MIC';
+      case 'mic-denied':      return 'NO MIC';
+      case 'warming-up':      return 'WARMING UP';
+      case 'listening':       return 'LISTENING';
     }
-  }, [recorderState.metering]);
+  })();
 
-  // Drive the animated bar + peak hold from the latest dB sample.
-  useEffect(() => {
-    const norm =
-      (levelDb - METER_FLOOR_DB) / (METER_CEIL_DB - METER_FLOOR_DB);
-    const clamped = Math.min(1, Math.max(IDLE_GLOW, norm));
-
-    Animated.spring(fill, {
-      toValue: clamped,
-      useNativeDriver: false,
-      damping: 18,
-      stiffness: 140,
-      mass: 0.4,
-    }).start();
-
-    const now = Date.now();
-    const elapsed = (now - peakUpdatedAt.current) / 1000;
-    const decayed = Math.max(
-      IDLE_GLOW,
-      peakValue.current - PEAK_DECAY_PER_SEC * elapsed
-    );
-    const newPeak = Math.max(decayed, clamped);
-    peakValue.current = newPeak;
-    peakUpdatedAt.current = now;
-    Animated.timing(peak, {
-      toValue: newPeak,
-      duration: 60,
-      useNativeDriver: false,
-    }).start();
-  }, [levelDb, fill, peak]);
-
-  const requestAgain = async () => {
-    const res = await AudioModule.requestRecordingPermissionsAsync();
-    setPermission(res.granted ? 'granted' : 'denied');
-  };
-
-  if (permission === 'denied') {
-    return <PermissionGate onRetry={requestAgain} />;
+  if (engine.status === 'mic-denied') {
+    return <PermissionGate refHz={refHz} />;
   }
 
-  // Status line tracks where we are in the boot sequence. The user sees
-  // this as the small word under the note: NO MIC / WAITING / LISTENING.
-  const status =
-    permission === 'unknown'
-      ? 'WAITING FOR MIC'
-      : !recording
-      ? 'WARMING UP'
-      : 'LISTENING';
+  const arcIndex = noteDisplay?.tickIndex ?? null;
+  const isListening = engine.status === 'listening';
+  const noteFontSize = isLandscape ? 180 : 150;
+  const centerStyle = isLandscape ? styles.center : styles.centerPortrait;
 
   return (
     <View style={styles.root}>
       <View style={styles.faceplate}>
-        <TopBar status={status} />
-        <CenterReadout />
+        <TopBar
+          statusText={statusText}
+          refHz={refHz}
+          refEdit={refEdit}
+          setRefHz={setRefHz}
+          setRefEdit={setRefEdit}
+          compact={!isLandscape}
+        />
+        <View style={centerStyle}>
+          <CentArc activeIndex={arcIndex} arcWidth="100%" />
+          <NoteReadout
+            noteDisplay={noteDisplay}
+            freqHz={engine.freqHz}
+            noteFontSize={noteFontSize}
+          />
+        </View>
         <BottomStrip
-          fill={fill}
-          peak={peak}
-          levelDb={levelDb}
-          recording={recording}
+          fillAnim={fillAnim}
+          peakAnim={peakAnim}
+          rmsDb={engine.rmsDb}
+          isListening={isListening}
+          gainMode={engine.gainMode}
+          setGainMode={engine.setGainMode}
         />
       </View>
     </View>
   );
 }
 
-function TopBar({ status }: { status: string }) {
+// ---------------------------------------------------------------------------
+// TopBar
+// ---------------------------------------------------------------------------
+
+function TopBar({
+  statusText, refHz, refEdit, setRefHz, setRefEdit, compact,
+}: {
+  statusText: string;
+  refHz: number;
+  refEdit: boolean;
+  setRefHz: (v: number) => void;
+  setRefEdit: (v: boolean) => void;
+  compact: boolean;
+}) {
+  const bump = (d: number) =>
+    setRefHz(Math.max(REF_HZ_MIN, Math.min(REF_HZ_MAX, refHz + d)));
+
   return (
-    <View style={styles.topBar}>
+    <View style={[styles.topBar, compact && styles.topBarCompact]}>
       <View style={styles.topLeft}>
-        <Text style={styles.brand}>{APP_NAME}</Text>
+        <Text style={compact ? styles.brandCompact : styles.brand}>{APP_NAME}</Text>
         <Text style={styles.brandVersion}>v{APP_VERSION}</Text>
+        <Text style={styles.instrumentBadge}>Bb TENOR · FINGERED</Text>
       </View>
       <View style={styles.topRight}>
-        <Text style={styles.refLabel}>REF</Text>
-        <Text style={styles.refValue}>A = {REFERENCE_HZ} Hz</Text>
+        <Pressable
+          onPress={() => setRefEdit(!refEdit)}
+          accessibilityRole="button"
+          accessibilityLabel={`Tuning reference A equals ${refHz} Hz, tap to adjust`}
+          style={styles.refContainer}
+        >
+          <Text style={styles.refLabel}>REF</Text>
+          <Text style={styles.refValue}>A = {refHz} Hz</Text>
+        </Pressable>
+        {refEdit && (
+          <View style={styles.refStepper}>
+            <Pressable
+              onPress={() => bump(1)}
+              accessibilityRole="button"
+              accessibilityLabel="Increase reference by 1 Hz"
+              style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+            >
+              <Text style={styles.stepBtnText}>▲</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => bump(-1)}
+              accessibilityRole="button"
+              accessibilityLabel="Decrease reference by 1 Hz"
+              style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+            >
+              <Text style={styles.stepBtnText}>▼</Text>
+            </Pressable>
+          </View>
+        )}
         <View style={styles.statusPill}>
           <View style={styles.statusDot} />
-          <Text style={styles.statusText}>{status}</Text>
+          <Text style={styles.statusText}>{statusText}</Text>
         </View>
       </View>
     </View>
   );
 }
 
-function CenterReadout() {
-  // Idle state for chunk 1: no pitch yet. Note slot shows an em-dash in
-  // the same weight the real note will use, octave is blank, Hz is dim
-  // placeholder. The cent arc sits at center with no active deflection.
+// ---------------------------------------------------------------------------
+// NoteReadout
+// ---------------------------------------------------------------------------
+
+function NoteReadout({
+  noteDisplay, freqHz, noteFontSize,
+}: {
+  noteDisplay: NoteDisplay | null;
+  freqHz: number | null;
+  noteFontSize: number;
+}) {
+  const accSize = Math.round(noteFontSize * 0.44);
+  const octSize = Math.round(noteFontSize * 0.16);
+  const hasNote = noteDisplay !== null;
+
+  const letter = noteDisplay?.letter ?? '—';
+  const accidental = noteDisplay?.accidental ?? '';
+  const octave = noteDisplay?.octave;
+  const hzText = freqHz !== null ? freqHz.toFixed(1) : '— — —';
+  const centsText = noteDisplay
+    ? formatCents(noteDisplay.cents, noteDisplay.precision)
+    : '+00';
+
   return (
-    <View style={styles.center}>
-      <CentArc activeIndex={null} />
+    <View style={styles.noteBlock}>
       <View style={styles.noteRow}>
         <View style={styles.noteSlot}>
-          <Text style={styles.note}>—</Text>
-          <Text style={styles.accidental}> </Text>
+          <Text
+            style={[
+              styles.note,
+              { fontSize: noteFontSize, lineHeight: noteFontSize + 4 },
+              !hasNote && styles.noteDim,
+            ]}
+          >
+            {letter}
+          </Text>
+          {accidental !== '' ? (
+            <Text style={[styles.accidental, { fontSize: accSize, lineHeight: accSize + 10, marginTop: Math.round(noteFontSize * 0.1) }]}>
+              {accidental}
+            </Text>
+          ) : (
+            <Text style={{ fontSize: accSize, opacity: 0 }}>{' '}</Text>
+          )}
         </View>
-        <Text style={styles.octave}> </Text>
+        <Text style={[styles.octave, { fontSize: octSize, marginTop: Math.round(noteFontSize * 0.17), opacity: hasNote ? 1 : 0 }]}>
+          {octave ?? ' '}
+        </Text>
       </View>
       <View style={styles.hzRow}>
-        <Text style={styles.hzValue}>— — —</Text>
+        <Text style={[styles.hzValue, !hasNote && styles.dimText]}>{hzText}</Text>
         <Text style={styles.hzUnit}>Hz</Text>
       </View>
       <View style={styles.centValueRow}>
         <Text style={styles.centValueLabel}>CENTS</Text>
-        <Text style={styles.centValue}>+00</Text>
+        <Text style={[styles.centValue, !hasNote && styles.dimText]}>{centsText}</Text>
       </View>
     </View>
   );
 }
 
-function CentArc({ activeIndex }: { activeIndex: number | null }) {
-  // Render the ±50¢ deflection scale as a row of vertical tick marks.
-  // Center tick (0¢) is taller and brighter. The "needle" is a thin
-  // vertical bar over the active tick — null means no signal, in which
-  // case we still render a dim marker at zero so the layout reads as
-  // calibrated rather than empty.
+// ---------------------------------------------------------------------------
+// CentArc
+// ---------------------------------------------------------------------------
+
+function CentArc({
+  activeIndex, arcWidth,
+}: {
+  activeIndex: number | null;
+  arcWidth: DimensionValue;
+}) {
   const ticks = useMemo(() => {
-    const arr: { cents: number; major: boolean; center: boolean }[] = [];
+    const arr: { major: boolean; center: boolean }[] = [];
     for (let i = 0; i < CENT_TICK_COUNT; i++) {
-      const cents = -CENT_RANGE + (i * (CENT_RANGE * 2)) / (CENT_TICK_COUNT - 1);
-      const isCenter = Math.abs(cents) < 0.001;
-      const major = isCenter || cents === -CENT_RANGE || cents === CENT_RANGE;
-      arr.push({ cents, major, center: isCenter });
+      const cents = -CENT_RANGE + (i * CENT_RANGE * 2) / (CENT_TICK_COUNT - 1);
+      const center = Math.abs(cents) < 0.001;
+      const major = center || cents === -CENT_RANGE || cents === CENT_RANGE;
+      arr.push({ major, center });
     }
     return arr;
   }, []);
@@ -275,7 +326,7 @@ function CentArc({ activeIndex }: { activeIndex: number | null }) {
   const needleActive = activeIndex !== null;
 
   return (
-    <View style={styles.arc}>
+    <View style={[styles.arc, { width: arcWidth }]}>
       <View style={styles.arcScaleRow}>
         <Text style={styles.arcEnd}>-50</Text>
         <Text style={styles.arcEnd}>-25</Text>
@@ -298,10 +349,7 @@ function CentArc({ activeIndex }: { activeIndex: number | null }) {
         <View
           style={[
             styles.arcNeedle,
-            {
-              left: `${(needleIdx / (CENT_TICK_COUNT - 1)) * 100}%`,
-              opacity: needleActive ? 1 : 0.35,
-            },
+            { left: `${(needleIdx / (CENT_TICK_COUNT - 1)) * 100}%` as `${number}%`, opacity: needleActive ? 1 : 0.35 },
           ]}
         />
       </View>
@@ -314,43 +362,59 @@ function CentArc({ activeIndex }: { activeIndex: number | null }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// BottomStrip
+// ---------------------------------------------------------------------------
+
+const GAIN_OPTIONS: { value: GainMode; label: string }[] = [
+  { value: 'low', label: 'LOW' },
+  { value: 'high', label: 'HIGH' },
+];
+
 function BottomStrip({
-  fill,
-  peak,
-  levelDb,
-  recording,
+  fillAnim, peakAnim, rmsDb, isListening, gainMode, setGainMode,
 }: {
-  fill: Animated.Value;
-  peak: Animated.Value;
-  levelDb: number;
-  recording: boolean;
+  fillAnim: Animated.Value;
+  peakAnim: Animated.Value;
+  rmsDb: number;
+  isListening: boolean;
+  gainMode: GainMode;
+  setGainMode: (m: GainMode) => void;
 }) {
   return (
     <View style={styles.bottom}>
       <View style={styles.bottomLeft}>
-        <Text style={styles.bottomLabel}>INPUT</Text>
+        {/* Gain toggle */}
+        <View style={styles.gainRow}>
+          <Text style={styles.bottomLabel}>GAIN</Text>
+          <View style={styles.gainToggle}>
+            {GAIN_OPTIONS.map(({ value, label }) => (
+              <Pressable
+                key={value}
+                onPress={() => setGainMode(value)}
+                accessibilityRole="button"
+                accessibilityLabel={`Set gain to ${label.toLowerCase()}`}
+                style={({ pressed }) => [
+                  styles.gainPill,
+                  gainMode === value && styles.gainPillActive,
+                  pressed && styles.gainPillPressed,
+                ]}
+              >
+                <Text style={[styles.gainPillText, gainMode === value && styles.gainPillTextActive]}>
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+        {/* Meter */}
+        <Text style={[styles.bottomLabel, styles.meterLabel]}>INPUT</Text>
         <View style={styles.meterTrack}>
           <Animated.View
-            style={[
-              styles.meterFill,
-              {
-                width: fill.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: ['0%', '100%'],
-                }),
-              },
-            ]}
+            style={[styles.meterFill, { width: fillAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]}
           />
           <Animated.View
-            style={[
-              styles.peakMark,
-              {
-                left: peak.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: ['0%', '100%'],
-                }),
-              },
-            ]}
+            style={[styles.peakMark, { left: peakAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]}
           />
           <View style={[styles.meterTick, { left: `${tickPct(-40)}%` }]} />
           <View style={[styles.meterTick, { left: `${tickPct(-20)}%` }]} />
@@ -360,14 +424,12 @@ function BottomStrip({
           <Text style={styles.meterScaleTick}>-60</Text>
           <Text style={styles.meterScaleTick}>-40</Text>
           <Text style={styles.meterScaleTick}>-20</Text>
-          <Text style={[styles.meterScaleTick, styles.meterScaleTickHot]}>
-            -6 dB
-          </Text>
+          <Text style={[styles.meterScaleTick, styles.meterScaleTickHot]}>-6 dB</Text>
         </View>
       </View>
       <View style={styles.bottomRight}>
         <Text style={styles.dbValue}>
-          {recording ? `${levelDb.toFixed(0)}` : '--'}
+          {isListening ? `${rmsDb.toFixed(0)}` : '--'}
           <Text style={styles.dbUnit}> dBFS</Text>
         </Text>
         <Text style={styles.stage}>{STAGE_LABEL}</Text>
@@ -376,33 +438,40 @@ function BottomStrip({
   );
 }
 
-function tickPct(db: number): number {
-  const n = (db - METER_FLOOR_DB) / (METER_CEIL_DB - METER_FLOOR_DB);
-  return Math.max(0, Math.min(100, n * 100));
-}
+// ---------------------------------------------------------------------------
+// PermissionGate
+// ---------------------------------------------------------------------------
 
-function PermissionGate({ onRetry }: { onRetry: () => void }) {
+function PermissionGate({ refHz }: { refHz: number }) {
   return (
     <View style={styles.root}>
       <View style={styles.faceplate}>
-        <TopBar status="NO MIC" />
+        <View style={styles.topBar}>
+          <View style={styles.topLeft}>
+            <Text style={styles.brand}>{APP_NAME}</Text>
+            <Text style={styles.brandVersion}>v{APP_VERSION}</Text>
+            <Text style={styles.instrumentBadge}>Bb TENOR · FINGERED</Text>
+          </View>
+          <View style={styles.topRight}>
+            <Text style={styles.refLabel}>REF</Text>
+            <Text style={styles.refValue}>A = {refHz} Hz</Text>
+            <View style={styles.statusPill}>
+              <View style={styles.statusDot} />
+              <Text style={styles.statusText}>NO MIC</Text>
+            </View>
+          </View>
+        </View>
         <View style={styles.gate}>
           <Text style={styles.gateTitle}>MICROPHONE REQUIRED</Text>
           <Text style={styles.gateBody}>
             The tuner reads your horn through the microphone. Audio is
-            processed on-device and never leaves the tablet.
+            processed on-device and never leaves the device.
           </Text>
-          <Pressable
-            onPress={onRetry}
-            accessibilityRole="button"
-            accessibilityLabel="Allow microphone access"
-            style={({ pressed }) => [
-              styles.gateBtn,
-              pressed && styles.gateBtnPressed,
-            ]}
-          >
-            <Text style={styles.gateBtnText}>ALLOW MICROPHONE</Text>
-          </Pressable>
+          {/* The hook manages the permission request lifecycle internally.
+              Users who deny must go to system Settings to re-enable. */}
+          <Text style={styles.gateHint}>
+            Open Settings and allow microphone access, then relaunch the app.
+          </Text>
         </View>
         <View style={styles.gateFooter}>
           <Text style={styles.stage}>{STAGE_LABEL}</Text>
@@ -411,6 +480,10 @@ function PermissionGate({ onRetry }: { onRetry: () => void }) {
     </View>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Colors
+// ---------------------------------------------------------------------------
 
 const C = {
   bg: '#07080b',
@@ -421,19 +494,18 @@ const C = {
   inkMid: '#a6acb6',
   inkDim: '#5a626d',
   inkVeryDim: '#3a4049',
-  accent: '#d6b86a', // Peterson-amber ink
+  accent: '#d6b86a',
   inTune: '#5fb87a',
   flat: '#5b8fb8',
   sharp: '#b8635f',
-  hot: '#d6b86a',
 };
 
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: C.bg,
-    padding: 16,
-  },
+  root: { flex: 1, backgroundColor: C.bg, padding: 16 },
   faceplate: {
     flex: 1,
     backgroundColor: C.face,
@@ -444,7 +516,7 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
   },
 
-  // Top bar -------------------------------------------------------------
+  // Top bar
   topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -453,39 +525,39 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     paddingBottom: 12,
   },
+  topBarCompact: { paddingBottom: 8 },
   topLeft: {
     flexDirection: 'row',
     alignItems: 'baseline',
-    gap: 14,
+    gap: 10,
+    flexShrink: 1,
+    flexWrap: 'wrap',
   },
   topRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 18,
+    gap: 12,
+    flexShrink: 0,
   },
-  brand: {
-    color: C.ink,
-    fontSize: 14,
-    letterSpacing: 6,
-    fontWeight: '600',
+  brand: { color: C.ink, fontSize: 14, letterSpacing: 6, fontWeight: '600' },
+  brandCompact: { color: C.ink, fontSize: 11, letterSpacing: 4, fontWeight: '600' },
+  brandVersion: { color: C.inkDim, fontSize: 10, letterSpacing: 2, fontVariant: ['tabular-nums'] },
+  instrumentBadge: { color: C.accent, fontSize: 9, letterSpacing: 2, opacity: 0.8 },
+  refContainer: { flexDirection: 'row', alignItems: 'baseline', gap: 6, paddingVertical: 4, paddingHorizontal: 6 },
+  refLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3 },
+  refValue: { color: C.inkMid, fontSize: 12, letterSpacing: 2, fontVariant: ['tabular-nums'] },
+  refStepper: { flexDirection: 'column', gap: 2 },
+  stepBtn: {
+    width: 32,
+    height: 22,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  brandVersion: {
-    color: C.inkDim,
-    fontSize: 10,
-    letterSpacing: 2,
-    fontVariant: ['tabular-nums'],
-  },
-  refLabel: {
-    color: C.inkDim,
-    fontSize: 10,
-    letterSpacing: 3,
-  },
-  refValue: {
-    color: C.inkMid,
-    fontSize: 12,
-    letterSpacing: 2,
-    fontVariant: ['tabular-nums'],
-  },
+  stepBtnPressed: { backgroundColor: C.edge },
+  stepBtnText: { color: C.accent, fontSize: 10, lineHeight: 12 },
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -496,47 +568,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 2,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: C.accent,
-  },
-  statusText: {
-    color: C.inkMid,
-    fontSize: 10,
-    letterSpacing: 3,
-  },
+  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent },
+  statusText: { color: C.inkMid, fontSize: 10, letterSpacing: 3 },
 
-  // Center readout ------------------------------------------------------
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  arc: {
-    width: '100%',
-    maxWidth: 720,
-    alignSelf: 'center',
-  },
-  arcScaleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  arcEnd: {
-    color: C.inkDim,
-    fontSize: 11,
-    letterSpacing: 2,
-    fontVariant: ['tabular-nums'],
-  },
-  arcCenterLabel: {
-    color: C.inkMid,
-    fontSize: 11,
-    letterSpacing: 2,
-    fontVariant: ['tabular-nums'],
-  },
+  // Center regions
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
+  centerPortrait: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
+
+  // Cent arc
+  arc: { maxWidth: 720, alignSelf: 'center' },
+  arcScaleRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  arcEnd: { color: C.inkDim, fontSize: 11, letterSpacing: 2, fontVariant: ['tabular-nums'] },
+  arcCenterLabel: { color: C.inkMid, fontSize: 11, letterSpacing: 2, fontVariant: ['tabular-nums'] },
   arcTrack: {
     height: 38,
     flexDirection: 'row',
@@ -544,23 +587,10 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     position: 'relative',
   },
-  arcTick: {
-    width: 1,
-    height: 10,
-    backgroundColor: C.inkVeryDim,
-  },
-  arcTickMajor: {
-    height: 18,
-    backgroundColor: C.inkDim,
-  },
-  arcTickCenter: {
-    width: 2,
-    height: 26,
-    backgroundColor: C.inkMid,
-  },
-  arcTickActive: {
-    backgroundColor: C.accent,
-  },
+  arcTick: { width: 1, height: 10, backgroundColor: C.inkVeryDim },
+  arcTickMajor: { height: 18, backgroundColor: C.inkDim },
+  arcTickCenter: { width: 2, height: 26, backgroundColor: C.inkMid },
+  arcTickActive: { backgroundColor: C.accent },
   arcNeedle: {
     position: 'absolute',
     top: 0,
@@ -569,118 +599,56 @@ const styles = StyleSheet.create({
     marginLeft: -1,
     backgroundColor: C.accent,
   },
-  arcZones: {
-    flexDirection: 'row',
-    marginTop: 4,
-    height: 2,
-  },
-  arcZone: {
-    height: 2,
-  },
-  arcZoneFlat: {
-    flex: 35,
-    backgroundColor: C.flat,
-    opacity: 0.35,
-  },
-  arcZoneInTune: {
-    flex: 30,
-    backgroundColor: C.inTune,
-    opacity: 0.5,
-  },
-  arcZoneSharp: {
-    flex: 35,
-    backgroundColor: C.sharp,
-    opacity: 0.35,
-  },
+  arcZones: { flexDirection: 'row', marginTop: 4, height: 2 },
+  arcZone: { height: 2 },
+  arcZoneFlat: { flex: 35, backgroundColor: C.flat, opacity: 0.35 },
+  arcZoneInTune: { flex: 30, backgroundColor: C.inTune, opacity: 0.5 },
+  arcZoneSharp: { flex: 35, backgroundColor: C.sharp, opacity: 0.35 },
 
-  noteRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-    marginTop: 18,
-  },
-  noteSlot: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  note: {
-    color: C.ink,
-    fontSize: 180,
-    lineHeight: 184,
-    fontWeight: '300',
-    letterSpacing: -2,
-    fontVariant: ['tabular-nums'],
-  },
-  accidental: {
-    color: C.inkMid,
-    fontSize: 80,
-    lineHeight: 100,
-    fontWeight: '300',
-    marginTop: 18,
-  },
-  octave: {
-    color: C.inkDim,
-    fontSize: 28,
-    fontVariant: ['tabular-nums'],
-    marginLeft: 10,
-    marginTop: 30,
-    letterSpacing: 1,
-  },
+  // Note readout
+  noteBlock: { alignItems: 'center', marginTop: 12 },
+  noteRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'center' },
+  noteSlot: { flexDirection: 'row', alignItems: 'flex-start' },
+  note: { color: C.ink, fontWeight: '300', letterSpacing: -2, fontVariant: ['tabular-nums'] },
+  noteDim: { color: C.inkDim },
+  accidental: { color: C.inkMid, fontWeight: '300' },
+  octave: { color: C.inkDim, fontVariant: ['tabular-nums'], marginLeft: 10, letterSpacing: 1 },
+  hzRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: -8 },
+  hzValue: { color: C.inkMid, fontSize: 22, letterSpacing: 4, fontVariant: ['tabular-nums'] },
+  hzUnit: { color: C.inkDim, fontSize: 12, letterSpacing: 3 },
+  centValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 10, marginTop: 10 },
+  centValueLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3 },
+  centValue: { color: C.inkMid, fontSize: 14, letterSpacing: 2, fontVariant: ['tabular-nums'] },
+  dimText: { color: C.inkVeryDim },
 
-  hzRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 8,
-    marginTop: -8,
-  },
-  hzValue: {
-    color: C.inkMid,
-    fontSize: 22,
-    letterSpacing: 4,
-    fontVariant: ['tabular-nums'],
-  },
-  hzUnit: {
-    color: C.inkDim,
-    fontSize: 12,
-    letterSpacing: 3,
-  },
-
-  centValueRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 10,
-    marginTop: 10,
-  },
-  centValueLabel: {
-    color: C.inkDim,
-    fontSize: 10,
-    letterSpacing: 3,
-  },
-  centValue: {
-    color: C.inkMid,
-    fontSize: 14,
-    letterSpacing: 2,
-    fontVariant: ['tabular-nums'],
-  },
-
-  // Bottom strip --------------------------------------------------------
+  // Bottom strip
   bottom: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 24,
     borderTopColor: C.edgeSoft,
     borderTopWidth: 1,
     paddingTop: 12,
   },
-  bottomLeft: {
-    flex: 1,
+  bottomLeft: { flex: 1 },
+  gainRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 },
+  gainToggle: { flexDirection: 'row', gap: 4 },
+  gainPill: {
+    minWidth: 44,
+    height: 28,
+    paddingHorizontal: 10,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  bottomLabel: {
-    color: C.inkDim,
-    fontSize: 10,
-    letterSpacing: 3,
-    marginBottom: 6,
-  },
+  gainPillActive: { backgroundColor: C.accent, borderColor: C.accent },
+  gainPillPressed: { opacity: 0.7 },
+  gainPillText: { color: C.inkDim, fontSize: 10, letterSpacing: 2, fontWeight: '600' },
+  gainPillTextActive: { color: C.bg },
+  bottomLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, marginBottom: 6 },
+  meterLabel: { marginTop: 8 },
   meterTrack: {
     height: 10,
     backgroundColor: C.bg,
@@ -688,114 +656,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 1,
     overflow: 'hidden',
+    position: 'relative',
   },
-  meterFill: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: C.accent,
-    opacity: 0.85,
-  },
-  peakMark: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 2,
-    backgroundColor: C.ink,
-  },
-  meterTick: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: C.edge,
-  },
-  meterTickHot: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: C.hot,
-    opacity: 0.6,
-  },
-  meterScale: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  meterScaleTick: {
-    color: C.inkDim,
-    fontSize: 9,
-    letterSpacing: 1,
-    fontVariant: ['tabular-nums'],
-  },
-  meterScaleTickHot: {
-    color: C.hot,
-  },
-  bottomRight: {
-    alignItems: 'flex-end',
-    minWidth: 140,
-  },
-  dbValue: {
-    color: C.inkMid,
-    fontSize: 18,
-    letterSpacing: 1,
-    fontVariant: ['tabular-nums'],
-  },
-  dbUnit: {
-    color: C.inkDim,
-    fontSize: 11,
-    letterSpacing: 2,
-  },
-  stage: {
-    color: C.inkDim,
-    fontSize: 10,
-    letterSpacing: 2,
-    marginTop: 4,
-  },
+  meterFill: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: C.accent, opacity: 0.85 },
+  peakMark: { position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: C.ink },
+  meterTick: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: C.edge },
+  meterTickHot: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: C.accent, opacity: 0.6 },
+  meterScale: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
+  meterScaleTick: { color: C.inkDim, fontSize: 9, letterSpacing: 1, fontVariant: ['tabular-nums'] },
+  meterScaleTickHot: { color: C.accent },
+  bottomRight: { alignItems: 'flex-end', minWidth: 120 },
+  dbValue: { color: C.inkMid, fontSize: 18, letterSpacing: 1, fontVariant: ['tabular-nums'] },
+  dbUnit: { color: C.inkDim, fontSize: 11, letterSpacing: 2 },
+  stage: { color: C.inkDim, fontSize: 10, letterSpacing: 2, marginTop: 4 },
 
-  // Permission gate -----------------------------------------------------
-  gate: {
-    flex: 1,
-    paddingVertical: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gateTitle: {
-    color: C.ink,
-    fontSize: 16,
-    letterSpacing: 4,
-    marginBottom: 16,
-  },
-  gateBody: {
-    color: C.inkMid,
-    fontSize: 14,
-    lineHeight: 22,
-    textAlign: 'center',
-    maxWidth: 480,
-    marginBottom: 28,
-  },
-  gateBtn: {
-    backgroundColor: 'transparent',
-    borderColor: C.accent,
-    borderWidth: 1,
-    paddingHorizontal: 32,
-    paddingVertical: 14,
-    borderRadius: 2,
-  },
-  gateBtnPressed: {
-    opacity: 0.6,
-  },
-  gateBtnText: {
-    color: C.accent,
-    fontSize: 12,
-    letterSpacing: 4,
-  },
-  gateFooter: {
-    alignItems: 'flex-end',
-    borderTopColor: C.edgeSoft,
-    borderTopWidth: 1,
-    paddingTop: 12,
-  },
+  // Permission gate
+  gate: { flex: 1, paddingVertical: 32, alignItems: 'center', justifyContent: 'center' },
+  gateTitle: { color: C.ink, fontSize: 16, letterSpacing: 4, marginBottom: 16 },
+  gateBody: { color: C.inkMid, fontSize: 14, lineHeight: 22, textAlign: 'center', maxWidth: 480, marginBottom: 16 },
+  gateHint: { color: C.inkDim, fontSize: 12, lineHeight: 18, textAlign: 'center', maxWidth: 480, letterSpacing: 1 },
+  gateFooter: { alignItems: 'flex-end', borderTopColor: C.edgeSoft, borderTopWidth: 1, paddingTop: 12 },
 });
