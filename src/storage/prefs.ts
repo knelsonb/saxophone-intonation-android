@@ -21,6 +21,16 @@ export interface AppPrefs {
   // read either key without migration logic.
   refHz: number;
   allowOutOfRange: boolean;
+  // v0.6.0 audio source prefs.
+  // hiFiMode: true = prefer raw-audio-input module (UNPROCESSED / VOICE_RECOGNITION).
+  // false = use expo-audio (safe fallback for devices where raw capture fails).
+  // Default true — the engine's capability check overrides on first launch if
+  // UNPROCESSED is not supported.
+  hiFiMode: boolean;
+  // audioSampleRate: the sample rate to request from the raw-audio-input module.
+  // Stored so the user's choice survives restarts. The native side may negotiate
+  // down from this value; the actual rate is available from stream.sampleRate.
+  audioSampleRate: number;
 }
 
 export const DEFAULT_PREFS: AppPrefs = {
@@ -34,6 +44,8 @@ export const DEFAULT_PREFS: AppPrefs = {
   gainMode: 'low',
   refHz: 440,
   allowOutOfRange: true,
+  hiFiMode: true,
+  audioSampleRate: 48000,
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +115,8 @@ export async function loadPrefs(): Promise<AppPrefs> {
       gainMode:      asOneOf(d.gainMode,    ['low', 'high'] as const,             DEFAULT_PREFS.gainMode),
       refHz,
       allowOutOfRange: asBool(d.allowOutOfRange, DEFAULT_PREFS.allowOutOfRange),
+      hiFiMode:        asBool(d.hiFiMode, DEFAULT_PREFS.hiFiMode),
+      audioSampleRate: Math.max(8000, Math.min(96000, asInt(d.audioSampleRate, DEFAULT_PREFS.audioSampleRate))),
     };
   } catch {
     return { ...DEFAULT_PREFS };

@@ -19,6 +19,8 @@ import {
   startRun,
   insertMeasurement,
 } from './storage/measurements';
+import { useRawAudioInput } from '../modules/raw-audio-input';
+import type { RawAudioBuffer } from '../modules/raw-audio-input';
 
 // ---------------------------------------------------------------------------
 // save-on-background: refHz lives in App.tsx as useState (Frodo's territory).
@@ -30,11 +32,19 @@ import {
 // App.tsx for the common case while still letting Frodo override if needed.
 // ---------------------------------------------------------------------------
 
+// Hoisted at module level so the hooks inside useAudioEngine do not recreate
+// the underlying stream instances on every render.
 const STREAM_OPTIONS = {
   sampleRate: 44100,
   channels: 1,
   encoding: 'float32' as const,
 } satisfies { sampleRate: number; channels: number; encoding: 'float32' | 'int16' };
+
+const HIFI_OPTIONS = {
+  sampleRate: 48000,
+  bufferDurationMs: 25,
+  preferredSource: 'unprocessed' as const,
+};
 
 const RING_BUFFER_CAPACITY = 4096;
 const BUFFERS_PER_YIN_CALL = 1;
@@ -90,6 +100,13 @@ export interface AudioEngineState {
    * backstop, writing refHz from a4Hz (the two are kept equal by convention).
    */
   savePrefsNow: (extra?: Partial<AppPrefs>) => Promise<void>;
+  // v0.6.0 hi-fi audio source
+  hiFiMode: boolean;
+  setHiFiMode: (v: boolean) => Promise<void>;
+  /** true when raw-audio-input module is currently active (hiFiMode=true AND capable). */
+  hiFiActive: boolean;
+  /** Human-readable audio source label for the diagnostic/settings UI. */
+  audioSourceLabel: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +154,11 @@ export function useAudioEngine(): AudioEngineState {
   const [allowOutOfRange, setAllowOutOfRangeState] = useState<boolean>(true);
   const [prefsLoaded, setPrefsLoaded] = useState<boolean>(false);
   const [nickname, setNicknameState] = useState<string>('');
+  // v0.6.0
+  const [hiFiMode, setHiFiModeState] = useState<boolean>(true);
+  const [hiFiActive, setHiFiActive] = useState<boolean>(false);
+  const [audioSourceLabel, setAudioSourceLabel] = useState<string>('');
+
   // a4Hz is not yet lifted into the engine (Frodo owns refHz in App.tsx).
   // We track it only in a ref so onBuffer can use it for MIDI conversion and
   // savePrefsNow can write a consistent blob. Initialized to 440; prefs
@@ -186,6 +208,9 @@ export function useAudioEngine(): AudioEngineState {
   const nicknameRef = useRef<string>('');
   nicknameRef.current = nickname;
 
+  const hiFiModeRef = useRef<boolean>(true);
+  hiFiModeRef.current = hiFiMode;
+
   // Reentry guard.
   const stopping = useRef(false);
 
@@ -208,6 +233,13 @@ export function useAudioEngine(): AudioEngineState {
   const runIdRef = useRef<string | null>(null);
 
   // -------------------------------------------------------------------------
+  // Both stream hooks are always called (Rules of Hooks). Only one is started
+  // at a time, controlled by the stream-start effect below.
+  // -------------------------------------------------------------------------
+  const { stream: expoStream, isStreaming: expoIsStreaming } = useAudioStream(STREAM_OPTIONS);
+  const rawAudioInput = useRawAudioInput(HIFI_OPTIONS);
+
+  // -------------------------------------------------------------------------
   // savePrefsNow — exposed in AudioEngineState so App.tsx can call it with
   // { refHz: currentRefHz } on background transitions.
   // -------------------------------------------------------------------------
@@ -227,9 +259,23 @@ export function useAudioEngine(): AudioEngineState {
       gainMode:        gainModeStateRef.current,
       refHz:           a4HzRef.current,
       allowOutOfRange: allowOutOfRangeRef.current,
+      hiFiMode:        hiFiModeRef.current,
       ...extra,
     };
     await savePrefs(prefs);
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // setHiFiMode — async because it stops the active stream before switching.
+  // -------------------------------------------------------------------------
+  const setHiFiMode = useCallback(async (v: boolean): Promise<void> => {
+    if (v === hiFiModeRef.current) return;
+    // Switching is handled by the stream-start effect when hiFiMode state
+    // changes. We update state and persist; the effect picks up the change.
+    setHiFiModeState(v);
+    // Persist immediately — don't wait for AppState background.
+    const current = await loadPrefs();
+    await savePrefs({ ...current, hiFiMode: v });
   }, []);
 
   // -------------------------------------------------------------------------
@@ -248,6 +294,7 @@ export function useAudioEngine(): AudioEngineState {
         setGainModeState(prefs.gainMode);
         setAllowOutOfRangeState(prefs.allowOutOfRange);
         setNicknameState(prefs.nickname);
+        setHiFiModeState(prefs.hiFiMode);
         a4HzRef.current = prefs.a4Hz;
         setPrefsLoaded(true);
 
@@ -342,19 +389,120 @@ export function useAudioEngine(): AudioEngineState {
   }, []);
 
   // -------------------------------------------------------------------------
-  // Step 3: open stream once permission is granted
+  // Step 3: open stream once permission is granted.
+  // When hiFiMode is true and the device is capable, start the raw module.
+  // Otherwise fall back to expo-audio.
+  // When hiFiMode flips, the old stream is stopped and the new one starts.
   // -------------------------------------------------------------------------
-  const { stream, isStreaming } = useAudioStream(STREAM_OPTIONS);
-
   useEffect(() => {
     if (status === 'mic-denied' || status === 'waiting-for-mic') return;
-    setStatus(isStreaming ? 'listening' : 'warming-up');
-  }, [isStreaming, status]);
+
+    // Determine which source to use.
+    // hiFiActive is set based on hiFiMode AND capability.
+    const useHiFi = hiFiMode && (rawAudioInput.capability?.supportsUnprocessed ?? false);
+    setHiFiActive(useHiFi);
+
+    stopping.current = false;
+
+    // Reset signal-processing state for the new session.
+    ring.current = new Float32Array(RING_BUFFER_CAPACITY);
+    analysisBlock.current = new Float32Array(RING_BUFFER_CAPACITY);
+    ringFilled.current = 0;
+    bufferCount.current = 0;
+    lastStablePitch.current = null;
+    silentBufferCount.current = 0;
+    filterStateRef.current = newFilterState();
+
+    let sub: { remove(): void } | null = null;
+
+    if (useHiFi) {
+      const rawStream = rawAudioInput.stream;
+      if (!rawStream) return;
+
+      sub = rawStream.addListener('audioStreamBuffer', (buf: RawAudioBuffer) => {
+        onBuffer({ data: buf.data, sampleRate: buf.sampleRate });
+      });
+
+      rawStream.start().catch((err) => {
+        console.warn('useAudioEngine: rawStream.start() failed', err);
+        setStatus('mic-denied');
+      });
+
+      // Update the audio source label once the stream resolves its source.
+      // The label is correct after start() resolves; we refresh it via a
+      // short effect dependency on rawAudioInput.stream?.id.
+    } else {
+      // Expo-audio path.
+      expoStream.start().catch((err) => {
+        console.warn('useAudioEngine: expoStream.start() failed', err);
+        setStatus('mic-denied');
+      });
+
+      sub = expoStream.addListener('audioStreamBuffer', (buf: AudioStreamBuffer) => {
+        onBuffer({ data: buf.data, sampleRate: buf.sampleRate });
+      });
+    }
+
+    return () => {
+      stopping.current = true;
+      if (sub) sub.remove();
+
+      if (useHiFi) {
+        rawAudioInput.stream?.stop().catch(() => {});
+      } else {
+        try {
+          expoStream.stop();
+        } catch {
+          // stop() is synchronous void — errors are non-fatal.
+        }
+      }
+
+      ring.current = null;
+      analysisBlock.current = null;
+      filterStateRef.current = null;
+    };
+  // Re-run when: permission status resolves, hiFiMode toggles,
+  // capability loads (rawAudioInput.capability is initially null),
+  // or either stream instance is replaced.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    status === 'waiting-for-mic' || status === 'mic-denied',
+    hiFiMode,
+    rawAudioInput.capability?.supportsUnprocessed,
+    rawAudioInput.stream?.id,
+    expoStream.id,
+  ]);
 
   // -------------------------------------------------------------------------
-  // onBuffer
+  // Keep isStreaming and audioSourceLabel up to date.
   // -------------------------------------------------------------------------
-  const onBuffer = useCallback((buffer: AudioStreamBuffer) => {
+  useEffect(() => {
+    if (status === 'mic-denied' || status === 'waiting-for-mic') return;
+    const streaming = hiFiActive ? rawAudioInput.isStreaming : expoIsStreaming;
+    setStatus(streaming ? 'listening' : 'warming-up');
+  }, [hiFiActive, rawAudioInput.isStreaming, expoIsStreaming, status]);
+
+  // Compute the audio source label from the active stream.
+  useEffect(() => {
+    if (hiFiActive && rawAudioInput.stream) {
+      const src = rawAudioInput.stream.activeSource;
+      const rate = rawAudioInput.stream.sampleRate;
+      const khz = (rate / 1000).toFixed(1);
+      const label =
+        src === 'unprocessed'       ? `UNPROCESSED · ${khz} kHz` :
+        src === 'voice_recognition' ? `VOICE · ${khz} kHz` :
+                                      `MIC · ${khz} kHz`;
+      setAudioSourceLabel(label);
+    } else {
+      setAudioSourceLabel('expo-audio · 44.1 kHz');
+    }
+  }, [hiFiActive, rawAudioInput.stream, rawAudioInput.isStreaming]);
+
+  // -------------------------------------------------------------------------
+  // onBuffer — unified handler for both sources.
+  // Receives a { data: ArrayBuffer, sampleRate: number } shape from either path.
+  // -------------------------------------------------------------------------
+  const onBuffer = useCallback((buffer: { data: ArrayBuffer; sampleRate: number }) => {
     if (stopping.current) return;
 
     const incoming = new Float32Array(buffer.data);
@@ -505,43 +653,6 @@ export function useAudioEngine(): AudioEngineState {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Wire onBuffer to the stream event emitter.
-  useEffect(() => {
-    if (status === 'waiting-for-mic' || status === 'mic-denied') return;
-
-    stopping.current = false;
-
-    ring.current = new Float32Array(RING_BUFFER_CAPACITY);
-    analysisBlock.current = new Float32Array(RING_BUFFER_CAPACITY);
-    ringFilled.current = 0;
-    bufferCount.current = 0;
-    lastStablePitch.current = null;
-    silentBufferCount.current = 0;
-
-    filterStateRef.current = newFilterState();
-
-    stream.start().catch((err) => {
-      console.warn('useAudioEngine: stream.start() failed', err);
-      setStatus('mic-denied');
-    });
-
-    const sub = stream.addListener('audioStreamBuffer', onBuffer);
-
-    return () => {
-      stopping.current = true;
-      sub.remove();
-      try {
-        stream.stop();
-      } catch {
-        // stop() is synchronous void — errors are non-fatal.
-      }
-      ring.current = null;
-      analysisBlock.current = null;
-      filterStateRef.current = null;
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stream.id, status === 'waiting-for-mic' || status === 'mic-denied']);
-
   return {
     status,
     freqHz,
@@ -564,5 +675,9 @@ export function useAudioEngine(): AudioEngineState {
     nickname,
     setNickname,
     savePrefsNow,
+    hiFiMode,
+    setHiFiMode,
+    hiFiActive,
+    audioSourceLabel,
   };
 }

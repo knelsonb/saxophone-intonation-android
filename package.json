@@ -1,6 +1,6 @@
 {
   "name": "saxophone-intonation-android",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "main": "index.ts",
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

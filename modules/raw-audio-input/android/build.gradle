@@ -1,0 +1,30 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.rawaudioinput'
+version = '0.1.0'
+
+android {
+  namespace 'expo.modules.rawaudioinput'
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+    // AudioRecord.UNPROCESSED requires API 24; PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED
+    // requires API 24 as well. We compile against the same floor as auto-mic-claim.
+    minSdk 26
+  }
+
+  compileOptions {
+    targetCompatibility JavaVersion.VERSION_1_8
+  }
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation 'androidx.core:core-ktx:1.15.0'
+}

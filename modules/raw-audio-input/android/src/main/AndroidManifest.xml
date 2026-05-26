@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    RECORD_AUDIO is already declared in the app-level manifest (app.json android.permissions).
+    This module-level manifest intentionally adds nothing new — the module relies entirely
+    on the permission granted to the host application.
+  -->
+</manifest>

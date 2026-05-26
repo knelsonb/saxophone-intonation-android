@@ -1,0 +1,7 @@
+{
+  "name": "@local/raw-audio-input",
+  "version": "0.1.0",
+  "description": "Local Expo module: low-latency raw audio capture via AudioRecord.UNPROCESSED.",
+  "main": "index",
+  "private": true
+}

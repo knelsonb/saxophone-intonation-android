@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 
 import { useAudioEngine } from './src/useAudioEngine';
-import type { GainMode, DisplayMode } from './src/useAudioEngine';
+import type { GainMode, DisplayMode, AudioEngineState } from './src/useAudioEngine';
 import type { FilterMode } from './src/filterModes';
 import { FAMILIES, transpMap, getInstrument, rangeMap } from './src/instruments';
 import {
@@ -39,13 +39,21 @@ import { PitchPipes } from './src/components/PitchPipes';
 import * as AutoMicClaim from './modules/auto-mic-claim';
 import type { CarConnectionState, CallState } from './modules/auto-mic-claim';
 
+// v0.6.0 — consumed defensively so file compiles before Gandalf's PR merges.
+type HiFiEngine = AudioEngineState & {
+  hiFiMode: boolean;
+  setHiFiMode: (v: boolean) => Promise<void>;
+  hiFiActive: boolean;
+  audioSourceLabel: string;
+};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.5.0';
-const STAGE_LABEL = 'tuner in car · masquerade · 5 of 5';
+const APP_VERSION = '0.6.0';
+const STAGE_LABEL = 'raw audio · unprocessed · 5 of 5';
 
 // TENOR_TRANSPOSE has been removed. Transposition is now read from
 // transpMap[engine.instrumentKey] at display time. Desktop convention:
@@ -329,6 +337,10 @@ export default function App() {
           setGainMode={engine.setGainMode}
           filterMode={engine.filterMode ?? 'normal'}
           setFilterMode={engine.setFilterMode ?? (() => {})}
+          hiFiMode={(engine as HiFiEngine).hiFiMode ?? false}
+          setHiFiMode={(engine as HiFiEngine).setHiFiMode ?? (async () => {})}
+          hiFiActive={(engine as HiFiEngine).hiFiActive ?? false}
+          audioSourceLabel={(engine as HiFiEngine).audioSourceLabel ?? ''}
         />
         <DiagnosticLine
           rmsDb={engine.rmsDb}
@@ -823,6 +835,7 @@ const FILTER_OPTIONS: { value: FilterMode; label: string; hint: string }[] = [
 function BottomStrip({
   fillAnim, peakAnim, rmsDb, isListening, gainMode, setGainMode,
   filterMode, setFilterMode,
+  hiFiMode, setHiFiMode, hiFiActive, audioSourceLabel,
 }: {
   fillAnim: Animated.Value;
   peakAnim: Animated.Value;
@@ -832,11 +845,18 @@ function BottomStrip({
   setGainMode: (m: GainMode) => void;
   filterMode: FilterMode;
   setFilterMode: (m: FilterMode) => void;
+  hiFiMode: boolean;
+  setHiFiMode: (v: boolean) => Promise<void>;
+  hiFiActive: boolean;
+  audioSourceLabel: string;
 }) {
+  // hiFiMode ON but device can't deliver it.
+  const hiFiFallback = hiFiMode && !hiFiActive;
+
   return (
     <View style={styles.bottom}>
       <View style={styles.bottomLeft}>
-        {/* Controls row: gain toggle + filter mode pills on the same line. */}
+        {/* Controls row: gain + response + hi-fi. flexWrap drops HI-FI to a new row in portrait. */}
         <View style={styles.controlsRow}>
           <View style={styles.gainBlock}>
             <Text style={styles.bottomLabel}>GAIN</Text>
@@ -882,7 +902,47 @@ function BottomStrip({
               ))}
             </View>
           </View>
+          {/* HI-FI toggle */}
+          <View style={styles.hiFiBlock}>
+            <Text style={styles.bottomLabel}>HI-FI</Text>
+            <View style={styles.gainToggle}>
+              <Pressable
+                onPress={() => { setHiFiMode(true).catch(() => {}); }}
+                accessibilityRole="button"
+                accessibilityLabel="Enable hi-fi audio capture"
+                style={({ pressed }) => [
+                  styles.gainPill,
+                  hiFiMode && styles.gainPillActive,
+                  pressed && styles.gainPillPressed,
+                ]}
+              >
+                <Text style={[styles.gainPillText, hiFiMode && styles.gainPillTextActive]}>
+                  ON
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => { setHiFiMode(false).catch(() => {}); }}
+                accessibilityRole="button"
+                accessibilityLabel="Disable hi-fi audio capture"
+                style={({ pressed }) => [
+                  styles.gainPill,
+                  !hiFiMode && styles.gainPillActive,
+                  pressed && styles.gainPillPressed,
+                ]}
+              >
+                <Text style={[styles.gainPillText, !hiFiMode && styles.gainPillTextActive]}>
+                  OFF
+                </Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
+        {audioSourceLabel.length > 0 && (
+          <Text style={styles.audioSourceLabel}>{audioSourceLabel}</Text>
+        )}
+        {hiFiFallback && (
+          <Text style={styles.hiFiFallbackText}>Device does not support UNPROCESSED capture — using fallback</Text>
+        )}
         {/* Meter */}
         <Text style={[styles.bottomLabel, styles.meterLabel]}>INPUT</Text>
         <View style={styles.meterTrack}>
@@ -1281,10 +1341,11 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   bottomLeft: { flex: 1 },
-  // Controls row holds gain + filter mode side by side.
-  controlsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 20, marginBottom: 4 },
+  // Controls row holds gain + filter mode + hi-fi side by side; wraps in portrait.
+  controlsRow: { flexDirection: 'row', alignItems: 'flex-start', flexWrap: 'wrap', gap: 20, marginBottom: 4 },
   gainBlock: { flexDirection: 'column', gap: 4 },
   filterBlock: { flexDirection: 'column', gap: 4 },
+  hiFiBlock: { flexDirection: 'column', gap: 4 },
   gainToggle: { flexDirection: 'row', gap: 4 },
   filterToggle: { flexDirection: 'row', gap: 4 },
   gainPill: {
@@ -1431,4 +1492,9 @@ const styles = StyleSheet.create({
   },
   iconBtnPressed: { backgroundColor: C.edge },
   iconBtnText: { color: C.inkDim, fontSize: 10, letterSpacing: 2 },
+
+  // HI-FI source label — sits below controls row, above the diagnostic line.
+  audioSourceLabel: { color: C.inkVeryDim, fontSize: 9, letterSpacing: 2, marginTop: 2, marginBottom: 2, fontVariant: ['tabular-nums'] },
+  // HI-FI fallback notice — amber tone, matches silence-banner palette.
+  hiFiFallbackText: { color: C.accent, fontSize: 9, letterSpacing: 1, opacity: 0.75, marginTop: 1, marginBottom: 2 },
 });
