@@ -13,7 +13,8 @@
         {
           "microphonePermission": "The app reads your horn through the microphone for pitch detection. Audio is processed on-device and never leaves the tablet."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "ios": {
       "supportsTablet": true,
@@ -24,7 +25,9 @@
     },
     "android": {
       "package": "com.knelsonb.intonationanalyzer",
-      "permissions": ["RECORD_AUDIO"],
+      "permissions": [
+        "RECORD_AUDIO"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#0b0c10",
         "foregroundImage": "./assets/android-icon-foreground.png",
