@@ -25,14 +25,31 @@ const STREAM_OPTIONS = {
   encoding: 'float32' as const,
 } satisfies { sampleRate: number; channels: number; encoding: 'float32' | 'int16' };
 
-// The number of incoming ~4100-sample buffers to accumulate before running YIN.
-// Four buffers × 4410 samples/buffer = 16384-sample analysis window.
-const RING_BUFFER_CAPACITY = 16384;
-// v0.2.1: dropped from 4 to 2.  The 16k-sample analysis window still gives YIN
-// a full ~370 ms of audio (we don't drop ring capacity), but YIN now runs every
-// other buffer arrival (~200 ms cadence) instead of every fourth (~400 ms).
-// Halves perceived latency without changing the per-call cost.
-const BUFFERS_PER_YIN_CALL = 2;
+// v0.2.2 — full-tilt responsiveness pass.
+//
+// Previous values (16 384 samples × 2-buffer cadence × 3-frame median) put
+// total user-perceived latency around 500-700 ms.  Tom called this out as
+// "waaaaaaaay" too slow.  Real professional tuners (Boss TU-3, Korg TM-60,
+// TonalEnergy) run at 50-150 ms.  We can't beat expo-audio's ~100 ms buffer
+// cadence on Android — `AudioStreamOptions` does not expose a buffer-duration
+// knob — so the floor is one buffer's wait.  But every other knob we control,
+// we now turn to "snappy":
+//
+//   * Window: 4096 samples (~93 ms of audio).  Still gives YIN 9+ periods of
+//     a 100 Hz signal — sax range bottoms out around 92 Hz (Bb tenor low Bb
+//     sounding pitch) so this is plenty.  YIN's tau search scales as O(N²),
+//     so going from 16384 to 4096 also cuts per-call CPU by ~16×.
+//   * YIN runs on every incoming buffer arrival (~100 ms cadence).
+//   * Median filter removed entirely — emit raw YIN candidates directly.
+//     The octave-jump guard stays because it's an integrity check, not a
+//     smoothing filter.
+//   * RMS floor stays at -55 dBFS.
+//
+// Total perceived latency now ~100-130 ms.  Jitter is visible — that's the
+// point.  Tom wants to see what his horn is doing in real time, not after
+// a polite committee deliberation.
+const RING_BUFFER_CAPACITY = 4096;
+const BUFFERS_PER_YIN_CALL = 1;
 
 // RMS floor below which pitch detection is skipped (dBFS).
 // v0.2.1: loosened from -50 to -55 — Tom's first feedback was that the meter
@@ -300,28 +317,11 @@ export function useAudioEngine(): AudioEngineState {
           }
 
           if (candidate > 0) {
-            // Push into 3-frame history.
-            pitchHistory.current[0] = pitchHistory.current[1];
-            pitchHistory.current[1] = pitchHistory.current[2];
-            pitchHistory.current[2] = candidate;
-            if (pitchHistoryLen.current < 3) pitchHistoryLen.current += 1;
-
-            if (pitchHistoryLen.current === 3) {
-              // Full history — emit the median for stable readout.
-              const [a, b, c] = pitchHistory.current;
-              const med = medianOf3(a, b, c);
-              lastStablePitch.current = med;
-              nextFreq = med;
-            } else {
-              // v0.2.1: emit the raw candidate immediately rather than waiting
-              // for 3 frames of history.  The old behavior left the display
-              // stuck at `—` for the first 600 ms after pitch detection began
-              // (and reset to `—` whenever history was cleared by a frame
-              // below the noise floor), which made the app look broken.
-              // Median smoothing still kicks in once 3 frames accumulate.
-              lastStablePitch.current = candidate;
-              nextFreq = candidate;
-            }
+            // v0.2.2 — no median smoothing.  Emit the raw candidate every
+            // YIN call.  The octave guard above is the only filter; whatever
+            // jitter remains is real, and Tom needs to see it.
+            lastStablePitch.current = candidate;
+            nextFreq = candidate;
           }
           // else: discarded by octave guard — carry previous output.
         }

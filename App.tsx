@@ -32,7 +32,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.2.1';
+const APP_VERSION = '0.2.2';
 const STAGE_LABEL = 'pipeline test · 2 of 5';
 
 // Bb tenor sax: sounding pitch is 14 semitones (octave + major 2nd) below
@@ -116,7 +116,10 @@ export default function App() {
   peakVal.current = newPeak;
   peakTs.current = Date.now();
 
-  Animated.spring(fillAnim, { toValue: mf, useNativeDriver: false, damping: 18, stiffness: 140, mass: 0.4 }).start();
+  // v0.2.2 — snappy meter response.  Was damping 18 / stiffness 140 / mass 0.4
+  // (~150 ms settle).  Tightened to damping 10 / stiffness 260 / mass 0.2 so
+  // the bar tracks the dB envelope without obvious lag (~50 ms settle).
+  Animated.spring(fillAnim, { toValue: mf, useNativeDriver: false, damping: 10, stiffness: 260, mass: 0.2 }).start();
   Animated.timing(peakAnim, { toValue: newPeak, duration: 60, useNativeDriver: false }).start();
 
   // Compute note display from live freqHz.

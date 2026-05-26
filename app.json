@@ -2,7 +2,7 @@
   "expo": {
     "name": "Intonation Analyzer",
     "slug": "saxophone-intonation-android",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
