@@ -3,67 +3,42 @@ import { AudioModule, useAudioStream } from 'expo-audio';
 import type { AudioStreamBuffer } from 'expo-audio';
 
 import { yinPitch } from './yin';
+import {
+  FILTER_PRESETS,
+  newFilterState,
+  processFrame,
+  resetFilterState,
+} from './filterModes';
+import type { FilterMode, FilterState } from './filterModes';
+
+// Note: the engine stores instrumentKey + displayMode as state but does not
+// perform the transposition itself. App.tsx looks up transpMap from
+// ./instruments at display time and applies the conversion.
 
 // ---------------------------------------------------------------------------
-// Window size decision — Option A: 16384 samples (4 × ~4100-sample buffers).
-//
-// Saxophone lowest practical pitch is ~103 Hz (Ab2, tenor sax). Three periods
-// at 103 Hz require ~1283 samples at 44100 Hz; five periods need ~2140. YIN
-// needs at least half the window to be lag-search space, so a 4096-sample
-// window is marginal. 16384 samples gives ~375 ms of audio and roughly
-// 38 periods of 103 Hz — well above the minimum — while still running
-// comfortably inside the Pixel 9 Pro JS budget (<20 ms measured for YIN at
-// this window size). The 400 ms hop latency is acceptable for a tuner whose
-// primary use is sustained notes.
+// Window size decision — Option A: 4096 samples (see v0.2.2 comment block).
 // ---------------------------------------------------------------------------
 
-// Module-level constant so useReleasingSharedObject inside useAudioStream
-// sees the same object identity every render and does not recreate the stream.
 const STREAM_OPTIONS = {
   sampleRate: 44100,
   channels: 1,
   encoding: 'float32' as const,
 } satisfies { sampleRate: number; channels: number; encoding: 'float32' | 'int16' };
 
-// v0.2.2 — full-tilt responsiveness pass.
-//
-// Previous values (16 384 samples × 2-buffer cadence × 3-frame median) put
-// total user-perceived latency around 500-700 ms.  Tom called this out as
-// "waaaaaaaay" too slow.  Real professional tuners (Boss TU-3, Korg TM-60,
-// TonalEnergy) run at 50-150 ms.  We can't beat expo-audio's ~100 ms buffer
-// cadence on Android — `AudioStreamOptions` does not expose a buffer-duration
-// knob — so the floor is one buffer's wait.  But every other knob we control,
-// we now turn to "snappy":
-//
-//   * Window: 4096 samples (~93 ms of audio).  Still gives YIN 9+ periods of
-//     a 100 Hz signal — sax range bottoms out around 92 Hz (Bb tenor low Bb
-//     sounding pitch) so this is plenty.  YIN's tau search scales as O(N²),
-//     so going from 16384 to 4096 also cuts per-call CPU by ~16×.
-//   * YIN runs on every incoming buffer arrival (~100 ms cadence).
-//   * Median filter removed entirely — emit raw YIN candidates directly.
-//     The octave-jump guard stays because it's an integrity check, not a
-//     smoothing filter.
-//   * RMS floor stays at -55 dBFS.
-//
-// Total perceived latency now ~100-130 ms.  Jitter is visible — that's the
-// point.  Tom wants to see what his horn is doing in real time, not after
-// a polite committee deliberation.
+// v0.2.2 — see full rationale in the original comment block; preserved here
+// for history. Window = 4096 samples, YIN runs every incoming buffer.
 const RING_BUFFER_CAPACITY = 4096;
 const BUFFERS_PER_YIN_CALL = 1;
 
-// RMS floor below which pitch detection is skipped (dBFS).
-// v0.2.1: loosened from -50 to -55 — Tom's first feedback was that the meter
-// moves but the note stays stuck.  A -50 floor was too aggressive given that
-// the meter spans -60..0 dBFS in Low gain mode.
-const RMS_FLOOR_DB = -55;
-
 // Gain-mode display mapping:  rmsDb → meterFill [0, 1]
-// low:  -60 dBFS maps to 0, 0 dBFS maps to 1
-// high: -60 dBFS maps to 0, -20 dBFS maps to 1
 const GAIN_DISPLAY_MAP = {
   low: { floor: -60, ceil: 0 },
   high: { floor: -60, ceil: -20 },
 } as const;
+
+// PCM-zero AA detection: consecutive all-silent-buffer threshold.
+// At the ~100 ms cadence of expo-audio this is ≈ 800 ms of pure-zero PCM.
+const SILENT_BUFFER_THRESHOLD = 8;
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -71,19 +46,31 @@ const GAIN_DISPLAY_MAP = {
 
 export type GainMode = 'low' | 'high';
 export type EngineStatus = 'waiting-for-mic' | 'mic-denied' | 'warming-up' | 'listening';
+export type { FilterMode };
+export type DisplayMode = 'griff' | 'klingend';
 
 export interface AudioEngineState {
   status: EngineStatus;
+  /** Sounding frequency in Hz, post-processed through the active filter mode. */
   freqHz: number | null;
   rmsDb: number;
   meterFill: number;
   gainMode: GainMode;
   setGainMode: (m: GainMode) => void;
-  // v0.2.1 diagnostics — surfaced so the UI can show that the engine is
-  // actually running even when nothing is happening in the centerpiece
-  // readout.  Cheap to compute and read; remove if perf ever needs it.
+  // v0.2.1 diagnostics
   yinCallCount: number;
   rawFreqHz: number | null;
+  // v0.3.0 filter mode
+  filterMode: FilterMode;
+  setFilterMode: (m: FilterMode) => void;
+  // v0.3.0 instrument selection — engine stores key + displayMode;
+  // App.tsx applies transposition lookup via instruments.ts.
+  instrumentKey: string;
+  setInstrumentKey: (k: string) => void;
+  displayMode: DisplayMode;
+  setDisplayMode: (m: DisplayMode) => void;
+  // v0.3.0 PCM-zero AA detection
+  micSilenced: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +83,6 @@ function computeRmsDb(samples: Float32Array): number {
     sum += samples[i] * samples[i];
   }
   const meanSquare = sum / samples.length;
-  // Guard against log(0): clamp to an effective -160 dB floor.
   const db = meanSquare > 0 ? 10 * Math.log10(meanSquare) : -160;
   return Math.max(-160, Math.min(0, db));
 }
@@ -105,16 +91,6 @@ function dbToMeterFill(db: number, mode: GainMode): number {
   const { floor, ceil } = GAIN_DISPLAY_MAP[mode];
   const norm = (db - floor) / (ceil - floor);
   return Math.max(0, Math.min(1, norm));
-}
-
-// 3-frame median filter over pitch values.  Returns the median of the
-// three most-recent non-null results (or null if fewer than 3 exist).
-// chunk-2 minimum — chunk 3 will replace this with configurable filter modes.
-function medianOf3(a: number, b: number, c: number): number {
-  // Sort-free median: compare pairs.
-  if ((a <= b && b <= c) || (c <= b && b <= a)) return b;
-  if ((b <= a && a <= c) || (c <= a && a <= b)) return a;
-  return c;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,45 +103,59 @@ export function useAudioEngine(): AudioEngineState {
   const [rmsDb, setRmsDb] = useState<number>(-160);
   const [meterFill, setMeterFill] = useState<number>(0);
   const [gainMode, setGainModeState] = useState<GainMode>('low');
-  // Diagnostic state (v0.2.1).
+  // v0.2.1 diagnostics
   const [yinCallCount, setYinCallCount] = useState<number>(0);
   const [rawFreqHz, setRawFreqHz] = useState<number | null>(null);
+  // v0.3.0 filter mode
+  const [filterMode, setFilterModeState] = useState<FilterMode>('normal');
+  // v0.3.0 instrument selection
+  const [instrumentKey, setInstrumentKeyState] = useState<string>('bb_tenor');
+  const [displayMode, setDisplayModeState] = useState<DisplayMode>('griff');
+  // v0.3.0 PCM-zero AA detection
+  const [micSilenced, setMicSilenced] = useState<boolean>(false);
 
-  // Stable setter exposed to callers.
+  // Stable setters.
   const setGainMode = useCallback((m: GainMode) => setGainModeState(m), []);
+  const setFilterMode = useCallback((m: FilterMode) => {
+    setFilterModeState(m);
+    // Reset filter state immediately so the new preset takes effect cleanly.
+    if (filterStateRef.current) {
+      resetFilterState(filterStateRef.current);
+    }
+  // filterStateRef is a stable ref — safe to include as non-reactive dep.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const setInstrumentKey = useCallback((k: string) => setInstrumentKeyState(k), []);
+  const setDisplayMode = useCallback((m: DisplayMode) => setDisplayModeState(m), []);
 
-  // Refs that onBuffer reads without needing the callback to be re-created.
-  // gainMode and freqHz are both kept here so the callback closure is stable
-  // across render cycles (re-creating it would tear down and re-add the
-  // stream listener every render, causing missed buffers and GC pressure).
+  // Refs that onBuffer reads without recreating the callback.
   const gainModeRef = useRef<GainMode>('low');
   gainModeRef.current = gainMode;
 
-  // freqHz ref: updated atomically with state so onBuffer can read
-  // the latest committed pitch value without stale-closure issues.
   const freqHzRef = useRef<number | null>(null);
-  // Keep ref in sync every render.
   freqHzRef.current = freqHz;
 
-  // Reentry guard: prevents double-stop / start-during-stop races.
+  // Active filter mode ref — onBuffer reads this without a stale closure.
+  const filterModeRef = useRef<FilterMode>('normal');
+  filterModeRef.current = filterMode;
+
+  // Reentry guard.
   const stopping = useRef(false);
 
-  // Ring buffer — allocated once per stream start, released on cleanup.
-  // Holds the last RING_BUFFER_CAPACITY samples in arrival order (no circular
-  // wraparound needed: we shift-and-append each incoming buffer slice).
+  // Ring buffer — allocated once per stream start.
   const ring = useRef<Float32Array | null>(null);
-  // How many samples have been written since the ring was last reset.
   const ringFilled = useRef(0);
-  // Counts how many onBuffer calls have been accumulated toward the next YIN run.
   const bufferCount = useRef(0);
-  // Pre-allocated analysis block: reused every YIN call to avoid per-call GC.
   const analysisBlock = useRef<Float32Array | null>(null);
 
-  // 3-frame pitch history for median filter.
-  const pitchHistory = useRef<[number, number, number]>([0, 0, 0]);
-  const pitchHistoryLen = useRef(0);
-  // Last accepted stable pitch (for octave-jump detection).
+  // Filter state — allocated on stream start, reset on mode change.
+  const filterStateRef = useRef<FilterState | null>(null);
+
+  // Last accepted stable pitch for octave-jump guard.
   const lastStablePitch = useRef<number | null>(null);
+
+  // PCM-zero AA detection counter.
+  const silentBufferCount = useRef(0);
 
   // -------------------------------------------------------------------------
   // Step 1: request mic permission on mount
@@ -193,17 +183,8 @@ export function useAudioEngine(): AudioEngineState {
   // -------------------------------------------------------------------------
   // Step 2: open stream once permission is granted
   // -------------------------------------------------------------------------
-
-  // onBuffer is passed to useAudioStream via STREAM_OPTIONS — but the hook
-  // accepts onBuffer as part of the options object, and the options object is
-  // module-level (no onBuffer field there).  We subscribe to buffer events
-  // through the stream listener approach inside the useEffect below.
-  // Because STREAM_OPTIONS has no onBuffer, the stream opens without a static
-  // callback and we wire up dynamically so the handler can read the latest
-  // ref values without recreating the stream.
   const { stream, isStreaming } = useAudioStream(STREAM_OPTIONS);
 
-  // Reflect isStreaming in status (only once we have permission).
   useEffect(() => {
     if (status === 'mic-denied' || status === 'waiting-for-mic') return;
     setStatus(isStreaming ? 'listening' : 'warming-up');
@@ -214,17 +195,30 @@ export function useAudioEngine(): AudioEngineState {
   // current refs without needing to recreate the stream.
   // -------------------------------------------------------------------------
   const onBuffer = useCallback((buffer: AudioStreamBuffer) => {
-    // Guard: ignore stale callbacks that arrive after unmount.
     if (stopping.current) return;
 
-    // Decode the ArrayBuffer into float32 samples.
     const incoming = new Float32Array(buffer.data);
     const n = incoming.length;
     if (n === 0) return;
 
+    // --- PCM-zero AA detection (v0.3.0) ---
+    // O(N) scan over the incoming buffer. N ≈ 4410 at 100 ms cadence — cheap.
+    let maxAbs = 0;
+    for (let i = 0; i < n; i++) {
+      const a = Math.abs(incoming[i]);
+      if (a > maxAbs) maxAbs = a;
+    }
+    if (maxAbs < 1e-9) {
+      silentBufferCount.current += 1;
+      if (silentBufferCount.current >= SILENT_BUFFER_THRESHOLD) {
+        setMicSilenced(true);
+      }
+    } else {
+      silentBufferCount.current = 0;
+      setMicSilenced(false);
+    }
+
     // --- Ring buffer management ---
-    // Ensure ring and block are allocated (lazy on first buffer; should
-    // already be allocated from the start-stream effect but guard here).
     if (!ring.current) {
       ring.current = new Float32Array(RING_BUFFER_CAPACITY);
       analysisBlock.current = new Float32Array(RING_BUFFER_CAPACITY);
@@ -234,23 +228,14 @@ export function useAudioEngine(): AudioEngineState {
     const r = ring.current;
 
     if (n >= RING_BUFFER_CAPACITY) {
-      // Incoming buffer larger than ring (shouldn't happen at 44100 Hz / ~100ms
-      // but defend against it): keep the last RING_BUFFER_CAPACITY samples.
       r.set(incoming.subarray(n - RING_BUFFER_CAPACITY));
       ringFilled.current = RING_BUFFER_CAPACITY;
     } else if (ringFilled.current + n <= RING_BUFFER_CAPACITY) {
-      // Ring has room: append directly.
       r.set(incoming, ringFilled.current);
       ringFilled.current += n;
     } else {
-      // Shift oldest samples left to make room, then append.
-      // This branch is reached only when ringFilled + n > RING_BUFFER_CAPACITY,
-      // so ringFilled > keep = RING_BUFFER_CAPACITY - n (srcStart is always > 0).
-      // We retain the last `keep` samples of the valid region:
-      //   r[srcStart..ringFilled] → r[0..keep]
-      // then place the new `n` samples at r[keep..RING_BUFFER_CAPACITY].
       const keep = RING_BUFFER_CAPACITY - n;
-      const srcStart = ringFilled.current - keep; // > 0 by the branch invariant
+      const srcStart = ringFilled.current - keep;
       r.copyWithin(0, srcStart, ringFilled.current);
       r.set(incoming, keep);
       ringFilled.current = RING_BUFFER_CAPACITY;
@@ -263,10 +248,7 @@ export function useAudioEngine(): AudioEngineState {
     const fill = dbToMeterFill(db, gainModeRef.current);
 
     // --- Pitch detection (every BUFFERS_PER_YIN_CALL buffers) ---
-    // Read from ref to avoid stale closure — freqHzRef.current is kept in
-    // sync with state on every render.
-    let nextFreq: number | null = freqHzRef.current; // default: carry previous value
-
+    let nextFreq: number | null = freqHzRef.current;
     let nextRaw: number | null = null;
     let yinFired = false;
 
@@ -274,34 +256,40 @@ export function useAudioEngine(): AudioEngineState {
       bufferCount.current = 0;
       yinFired = true;
 
-      if (db < RMS_FLOOR_DB) {
-        // Below noise floor — suppress pitch output.
-        nextFreq = null;
-        pitchHistoryLen.current = 0;
-        lastStablePitch.current = null;
-      } else {
-        // Copy ring to analysis block (oldest-sample-first, ring is already
-        // in arrival order because we shift-and-append).
+      const mode = filterModeRef.current;
+      const preset = FILTER_PRESETS[mode];
+
+      // Linear RMS gate — using the same mean-square computed for dB display
+      // but compared directly against preset.rmsFloorLinear (linear, not dBFS).
+      // Computing sqrt(meanSquare) inline is cheaper than converting RMS_FLOOR_DB
+      // back to linear for the comparison.
+      let sumSq = 0;
+      for (let i = 0; i < n; i++) {
+        sumSq += incoming[i] * incoming[i];
+      }
+      const rmsLinear = Math.sqrt(sumSq / n);
+
+      let rawHz: number | null = null;
+
+      if (rmsLinear >= preset.rmsFloorLinear) {
         analysisBlock.current!.set(r);
 
         const result = (() => {
           try {
-            return yinPitch(analysisBlock.current!, buffer.sampleRate);
+            // Pass the mode-tuned YIN threshold from the active preset.
+            return yinPitch(analysisBlock.current!, buffer.sampleRate, preset.yinThreshold);
           } catch {
             return null;
           }
         })();
 
-        if (result === null || result.freqHz <= 0) {
-          nextFreq = null;
-          pitchHistoryLen.current = 0;
-          lastStablePitch.current = null;
-        } else {
+        if (result !== null && result.freqHz > 0) {
           nextRaw = result.freqHz;
           let candidate = result.freqHz;
 
-          // Octave-jump guard: if candidate is closer to ½× or 2× the last
-          // stable pitch than to itself, discard this frame.
+          // Octave-jump guard: integrity check, not smoothing.
+          // Discard frames where the candidate is closer to ½× or 2× the
+          // last stable pitch than to the pitch itself.
           if (lastStablePitch.current !== null) {
             const prev = lastStablePitch.current;
             const distSelf = Math.abs(candidate - prev);
@@ -311,66 +299,62 @@ export function useAudioEngine(): AudioEngineState {
               (distHalf < distSelf || distDouble < distSelf) &&
               Math.min(distHalf, distDouble) < distSelf * 0.5
             ) {
-              // Likely octave ghost — skip this frame.
               candidate = -1;
             }
           }
 
           if (candidate > 0) {
-            // v0.2.2 — no median smoothing.  Emit the raw candidate every
-            // YIN call.  The octave guard above is the only filter; whatever
-            // jitter remains is real, and Tom needs to see it.
             lastStablePitch.current = candidate;
-            nextFreq = candidate;
+            rawHz = candidate;
           }
-          // else: discarded by octave guard — carry previous output.
+          // Octave ghost — pass null to filter so it can update state.
         }
       }
+
+      // Route through filter state machine (confirm, edge-hops, median).
+      if (!filterStateRef.current) {
+        filterStateRef.current = newFilterState();
+      }
+      const processed = processFrame(
+        filterStateRef.current,
+        rawHz,
+        preset,
+        buffer.sampleRate,
+      );
+      nextFreq = processed;
     }
 
-    // Batch all state updates in a single call per onBuffer tick.
-    // React 18 batches setState calls in event handlers and async callbacks;
-    // in React Native / React 17 we rely on the fact that these three calls
-    // happen synchronously in one JS task, so only one re-render is scheduled.
     setRmsDb(db);
     setMeterFill(fill);
     setFreqHz(nextFreq);
     if (yinFired) {
-      setYinCallCount((n) => (n + 1) % 1000);
+      setYinCallCount((c) => (c + 1) % 1000);
       setRawFreqHz(nextRaw);
     }
-  // Empty deps: all mutable values are read through refs (gainModeRef,
-  // freqHzRef, ring, analysisBlock, etc.) so the callback is stable for
-  // the lifetime of the component.  Re-creating it would tear down and
-  // re-add the stream listener every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Wire onBuffer to the stream event emitter.  Re-wires whenever stream.id
-  // changes (which only happens if STREAM_OPTIONS primitives change — they
-  // don't, because STREAM_OPTIONS is module-level).
+  // Wire onBuffer to the stream event emitter.
   useEffect(() => {
     if (status === 'waiting-for-mic' || status === 'mic-denied') return;
 
     stopping.current = false;
 
-    // Allocate ring buffer and analysis block on stream open.
     ring.current = new Float32Array(RING_BUFFER_CAPACITY);
     analysisBlock.current = new Float32Array(RING_BUFFER_CAPACITY);
     ringFilled.current = 0;
     bufferCount.current = 0;
-    pitchHistoryLen.current = 0;
     lastStablePitch.current = null;
+    silentBufferCount.current = 0;
 
-    // Start the stream.
+    // Allocate a fresh filter state for this stream session.
+    filterStateRef.current = newFilterState();
+
     stream.start().catch((err) => {
       console.warn('useAudioEngine: stream.start() failed', err);
       setStatus('mic-denied');
     });
 
-    // Subscribe to buffer events using the stream's event emitter.
-    // AudioStream extends SharedObject<AudioStreamEvents>; expo-modules-core
-    // SharedObject exposes addListener.
     const sub = stream.addListener('audioStreamBuffer', onBuffer);
 
     return () => {
@@ -381,15 +365,10 @@ export function useAudioEngine(): AudioEngineState {
       } catch {
         // stop() is synchronous void — errors are non-fatal.
       }
-      // Release ring buffer memory.
       ring.current = null;
       analysisBlock.current = null;
+      filterStateRef.current = null;
     };
-  // onBuffer is stable (empty useCallback dep array — reads all mutable
-  // values through refs).  stream.id changes only when STREAM_OPTIONS
-  // primitives change (they don't — module-level constant).  The boolean
-  // expression fires the effect exactly once: when status first leaves the
-  // pre-permission states.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.id, status === 'waiting-for-mic' || status === 'mic-denied']);
 
@@ -402,5 +381,12 @@ export function useAudioEngine(): AudioEngineState {
     setGainMode,
     yinCallCount,
     rawFreqHz,
+    filterMode,
+    setFilterMode,
+    instrumentKey,
+    setInstrumentKey,
+    displayMode,
+    setDisplayMode,
+    micSilenced,
   };
 }

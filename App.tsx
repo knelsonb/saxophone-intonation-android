@@ -1,9 +1,9 @@
 /**
- * Intonation Analyzer — Android, chunk 2 of 5.
+ * Intonation Analyzer — Android, chunk 3 of 5.
  *
- * Wires useAudioEngine (pitch + metering) into the professional-tuner
- * faceplate. Portrait and landscape layouts, live note readout (Bb tenor
- * fingered), cent arc needle, A=440 ±stepper, low/high gain toggle.
+ * Adds filter mode (Fast / Normal / Slow) segmented control, instrument
+ * picker modal, sounding/fingered display toggle, and Android Auto silence
+ * detection banner. Transposition is now dynamic via transpMap.
  *
  * Visual language: Peterson-amber (#d6b86a), near-black faceplate, restrained
  * typography, generous letter-spacing. No new dependencies.
@@ -12,7 +12,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   DimensionValue,
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -20,7 +22,9 @@ import {
 } from 'react-native';
 
 import { useAudioEngine } from './src/useAudioEngine';
-import type { GainMode } from './src/useAudioEngine';
+import type { GainMode, DisplayMode } from './src/useAudioEngine';
+import type { FilterMode } from './src/filterModes';
+import { FAMILIES, transpMap, getInstrument } from './src/instruments';
 import {
   centsDeviation,
   centsDisplayPrecision,
@@ -32,16 +36,14 @@ import {
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.2.3';
-const STAGE_LABEL = 'pipeline test · 2 of 5';
+const APP_VERSION = '0.3.0';
+const STAGE_LABEL = 'pipeline test · 3 of 5';
 
-// Bb tenor sax: sounding pitch is 14 semitones (octave + major 2nd) below
-// fingered notation. YIN detects the sounding pitch from the horn; add 14
-// to get the MIDI number Tom sees on his chart. Source of truth:
-// F:\Code\Toys\saxophone-intonation-table\sax_instruments.py line 34,
-// ('bb_tenor', -14, ...) — desktop convention: negative transp = sounding
-// below fingered, so the display conversion adds the absolute value.
-const TENOR_TRANSPOSE = 14;
+// TENOR_TRANSPOSE has been removed. Transposition is now read from
+// transpMap[engine.instrumentKey] at display time. Desktop convention:
+// transp is NEGATIVE for instruments that sound below fingered pitch.
+// To convert sounding MIDI to fingered: fingeredMidi = soundingMidi - transp
+// e.g. Bb tenor transp = -14 → fingeredMidi = soundingMidi - (-14) = soundingMidi + 14.
 
 const REF_HZ_MIN = 430;
 const REF_HZ_MAX = 450;
@@ -103,6 +105,22 @@ export default function App() {
   const [refHz, setRefHz] = useState(REF_HZ_DEFAULT);
   const [refEdit, setRefEdit] = useState(false);
 
+  // Instrument picker modal visibility.
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Android Auto silence banner dismiss state. Clears automatically when
+  // micSilenced transitions from false → true (new silence event).
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const prevSilenced = useRef(false);
+  useEffect(() => {
+    const silenced = engine.micSilenced ?? false;
+    if (silenced && !prevSilenced.current) {
+      // New silence event — reset dismiss so the banner re-appears.
+      setBannerDismissed(false);
+    }
+    prevSilenced.current = silenced;
+  }, [engine.micSilenced]);
+
   // Peak hold — updated synchronously during render, no useEffect needed.
   const fillAnim = useRef(new Animated.Value(IDLE_GLOW)).current;
   const peakAnim = useRef(new Animated.Value(IDLE_GLOW)).current;
@@ -116,20 +134,36 @@ export default function App() {
   peakVal.current = newPeak;
   peakTs.current = Date.now();
 
-  // v0.2.2 — snappy meter response.  Was damping 18 / stiffness 140 / mass 0.4
-  // (~150 ms settle).  Tightened to damping 10 / stiffness 260 / mass 0.2 so
-  // the bar tracks the dB envelope without obvious lag (~50 ms settle).
   Animated.spring(fillAnim, { toValue: mf, useNativeDriver: false, damping: 10, stiffness: 260, mass: 0.2 }).start();
   Animated.timing(peakAnim, { toValue: newPeak, duration: 60, useNativeDriver: false }).start();
 
+  // Resolve current instrument transposition. transpMap values use the desktop
+  // convention: negative = sounds below fingered. If the key isn't in the map
+  // yet (Sauron hasn't wired it), fall back to 0 (sounding = fingered).
+  const instrumentKey: string = engine.instrumentKey ?? 'bb_tenor';
+  const transp: number = transpMap[instrumentKey] ?? 0;
+  const displayMode: DisplayMode = engine.displayMode ?? 'griff';
+
   // Compute note display from live freqHz.
+  // soundingMidi is what YIN detected; if displayMode is 'griff' we apply
+  // the transposition: fingeredMidi = soundingMidi - transp
+  // (transp negative for Bb instruments → subtracting a negative adds).
   const noteDisplay = useMemo((): NoteDisplay | null => {
     if (engine.freqHz === null) return null;
     const { nearestMidi, cents } = centsDeviation(engine.freqHz, refHz);
-    const { letter, accidental, octave } = midiToNoteName(nearestMidi + TENOR_TRANSPOSE);
+    const displayedMidi = displayMode === 'klingend' ? nearestMidi : nearestMidi - transp;
+    const { letter, accidental, octave } = midiToNoteName(displayedMidi);
     const precision = centsDisplayPrecision(engine.freqHz);
     return { letter, accidental, octave, cents, precision, tickIndex: centsToTickIndex(cents) };
-  }, [engine.freqHz, refHz]);
+  }, [engine.freqHz, refHz, displayMode, transp]);
+
+  // Instrument English name for badge display.
+  const instrumentDisplayName: string = (() => {
+    const def = getInstrument(instrumentKey);
+    if (def) return def.nameEn.toUpperCase();
+    return instrumentKey.replace(/_/g, ' ').toUpperCase();
+  })();
+  const badgeText = `${instrumentDisplayName} · ${displayMode === 'griff' ? 'FINGERED' : 'SOUNDING'}`;
 
   const statusText = ((): string => {
     switch (engine.status) {
@@ -148,6 +182,7 @@ export default function App() {
   const isListening = engine.status === 'listening';
   const noteFontSize = isLandscape ? 180 : 150;
   const centerStyle = isLandscape ? styles.center : styles.centerPortrait;
+  const showSilenceBanner = (engine.micSilenced ?? false) && !bannerDismissed;
 
   return (
     <View style={styles.root}>
@@ -159,7 +194,14 @@ export default function App() {
           setRefHz={setRefHz}
           setRefEdit={setRefEdit}
           compact={!isLandscape}
+          badgeText={badgeText}
+          displayMode={displayMode}
+          setDisplayMode={engine.setDisplayMode ?? (() => {})}
+          onBadgePress={() => setPickerOpen(true)}
         />
+        {showSilenceBanner && (
+          <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
+        )}
         <View style={centerStyle}>
           <CentArc activeIndex={arcIndex} cents={noteDisplay?.cents ?? null} arcWidth="100%" />
           <NoteReadout
@@ -175,6 +217,8 @@ export default function App() {
           isListening={isListening}
           gainMode={engine.gainMode}
           setGainMode={engine.setGainMode}
+          filterMode={engine.filterMode ?? 'normal'}
+          setFilterMode={engine.setFilterMode ?? (() => {})}
         />
         <DiagnosticLine
           rmsDb={engine.rmsDb}
@@ -182,9 +226,45 @@ export default function App() {
           rawFreqHz={engine.rawFreqHz}
         />
       </View>
+
+      {/* Instrument picker modal — rendered outside faceplate so it overlays
+          the full screen. Uses React Native's built-in Modal; no deps added. */}
+      <InstrumentPicker
+        visible={pickerOpen}
+        currentKey={instrumentKey}
+        onSelect={(key) => {
+          (engine.setInstrumentKey ?? (() => {}))(key);
+          setPickerOpen(false);
+        }}
+        onClose={() => setPickerOpen(false)}
+      />
     </View>
   );
 }
+
+// ---------------------------------------------------------------------------
+// SilenceBanner
+// ---------------------------------------------------------------------------
+
+function SilenceBanner({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <Pressable
+      onPress={onDismiss}
+      accessibilityRole="alert"
+      accessibilityLabel="Microphone signal is silent. Tap to dismiss."
+      style={styles.silenceBanner}
+    >
+      <Text style={styles.silenceBannerText}>
+        <Text style={styles.silenceBannerBold}>Microphone signal is silent.</Text>
+        {'  '}If Android Auto is connected, disconnect to free the mic for the tuner.
+      </Text>
+    </Pressable>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DiagnosticLine
+// ---------------------------------------------------------------------------
 
 // v0.2.1 — a quiet single-line readout that proves the engine is alive even
 // when the centerpiece note slot is showing `—`.  Shows live RMS in dBFS, a
@@ -217,6 +297,7 @@ function DiagnosticLine({
 
 function TopBar({
   statusText, refHz, refEdit, setRefHz, setRefEdit, compact,
+  badgeText, displayMode, setDisplayMode, onBadgePress,
 }: {
   statusText: string;
   refHz: number;
@@ -224,6 +305,10 @@ function TopBar({
   setRefHz: (v: number) => void;
   setRefEdit: (v: boolean) => void;
   compact: boolean;
+  badgeText: string;
+  displayMode: DisplayMode;
+  setDisplayMode: (m: DisplayMode) => void;
+  onBadgePress: () => void;
 }) {
   const bump = (d: number) =>
     setRefHz(Math.max(REF_HZ_MIN, Math.min(REF_HZ_MAX, refHz + d)));
@@ -233,7 +318,46 @@ function TopBar({
       <View style={styles.topLeft}>
         <Text style={compact ? styles.brandCompact : styles.brand}>{APP_NAME}</Text>
         <Text style={styles.brandVersion}>v{APP_VERSION}</Text>
-        <Text style={styles.instrumentBadge}>Bb TENOR · FINGERED</Text>
+        {/* Tappable instrument badge opens the instrument picker. */}
+        <Pressable
+          onPress={onBadgePress}
+          accessibilityRole="button"
+          accessibilityLabel={`Current instrument: ${badgeText}. Tap to change.`}
+          style={({ pressed }) => [styles.badgePressable, pressed && styles.badgePressablePressed]}
+        >
+          <Text style={styles.instrumentBadge}>{badgeText}</Text>
+        </Pressable>
+        {/* Sounding / Fingered display toggle — two-position pill pair. */}
+        <View style={styles.displayToggle}>
+          <Pressable
+            onPress={() => setDisplayMode('griff')}
+            accessibilityRole="button"
+            accessibilityLabel="Show fingered pitch"
+            style={({ pressed }) => [
+              styles.displayPill,
+              displayMode === 'griff' && styles.displayPillActive,
+              pressed && styles.gainPillPressed,
+            ]}
+          >
+            <Text style={[styles.displayPillText, displayMode === 'griff' && styles.displayPillTextActive]}>
+              FINGERED
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setDisplayMode('klingend')}
+            accessibilityRole="button"
+            accessibilityLabel="Show sounding pitch"
+            style={({ pressed }) => [
+              styles.displayPill,
+              displayMode === 'klingend' && styles.displayPillActive,
+              pressed && styles.gainPillPressed,
+            ]}
+          >
+            <Text style={[styles.displayPillText, displayMode === 'klingend' && styles.displayPillTextActive]}>
+              SOUNDING
+            </Text>
+          </Pressable>
+        </View>
       </View>
       <View style={styles.topRight}>
         <Pressable
@@ -365,9 +489,7 @@ function CentArc({
   // v0.2.3 — animated needle position.  The raw cents value (∈ [-50, +50])
   // is mapped to a percentage and driven into an Animated.Value with a tight
   // spring.  When no pitch is detected we glide back to center rather than
-  // snapping.  Settle time ~50 ms (damping 12 / stiffness 280 / mass 0.2)
-  // matches the meter spring — fast enough to feel direct, slow enough to
-  // smooth the discrete YIN updates into continuous motion.
+  // snapping.
   const targetPct = useMemo(() => {
     const clamped = Math.max(-CENT_RANGE, Math.min(CENT_RANGE, cents ?? 0));
     return ((clamped + CENT_RANGE) / (CENT_RANGE * 2)) * 100;
@@ -435,8 +557,16 @@ const GAIN_OPTIONS: { value: GainMode; label: string }[] = [
   { value: 'high', label: 'HIGH' },
 ];
 
+// Filter mode options with short tooltip copy sourced from docs/response-modes.md.
+const FILTER_OPTIONS: { value: FilterMode; label: string; hint: string }[] = [
+  { value: 'fast',   label: 'FAST',   hint: 'Live play, scale drills (~140 ms)' },
+  { value: 'normal', label: 'NORMAL', hint: 'Practice, tuning long tones (~230 ms)' },
+  { value: 'slow',   label: 'SLOW',   hint: 'Setup, instrument repair (~460 ms)' },
+];
+
 function BottomStrip({
   fillAnim, peakAnim, rmsDb, isListening, gainMode, setGainMode,
+  filterMode, setFilterMode,
 }: {
   fillAnim: Animated.Value;
   peakAnim: Animated.Value;
@@ -444,31 +574,57 @@ function BottomStrip({
   isListening: boolean;
   gainMode: GainMode;
   setGainMode: (m: GainMode) => void;
+  filterMode: FilterMode;
+  setFilterMode: (m: FilterMode) => void;
 }) {
   return (
     <View style={styles.bottom}>
       <View style={styles.bottomLeft}>
-        {/* Gain toggle */}
-        <View style={styles.gainRow}>
-          <Text style={styles.bottomLabel}>GAIN</Text>
-          <View style={styles.gainToggle}>
-            {GAIN_OPTIONS.map(({ value, label }) => (
-              <Pressable
-                key={value}
-                onPress={() => setGainMode(value)}
-                accessibilityRole="button"
-                accessibilityLabel={`Set gain to ${label.toLowerCase()}`}
-                style={({ pressed }) => [
-                  styles.gainPill,
-                  gainMode === value && styles.gainPillActive,
-                  pressed && styles.gainPillPressed,
-                ]}
-              >
-                <Text style={[styles.gainPillText, gainMode === value && styles.gainPillTextActive]}>
-                  {label}
-                </Text>
-              </Pressable>
-            ))}
+        {/* Controls row: gain toggle + filter mode pills on the same line. */}
+        <View style={styles.controlsRow}>
+          <View style={styles.gainBlock}>
+            <Text style={styles.bottomLabel}>GAIN</Text>
+            <View style={styles.gainToggle}>
+              {GAIN_OPTIONS.map(({ value, label }) => (
+                <Pressable
+                  key={value}
+                  onPress={() => setGainMode(value)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Set gain to ${label.toLowerCase()}`}
+                  style={({ pressed }) => [
+                    styles.gainPill,
+                    gainMode === value && styles.gainPillActive,
+                    pressed && styles.gainPillPressed,
+                  ]}
+                >
+                  <Text style={[styles.gainPillText, gainMode === value && styles.gainPillTextActive]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          <View style={styles.filterBlock}>
+            <Text style={styles.bottomLabel}>RESPONSE</Text>
+            <View style={styles.filterToggle}>
+              {FILTER_OPTIONS.map(({ value, label, hint }) => (
+                <Pressable
+                  key={value}
+                  onPress={() => setFilterMode(value)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Set response to ${label.toLowerCase()}: ${hint}`}
+                  style={({ pressed }) => [
+                    styles.filterPill,
+                    filterMode === value && styles.filterPillActive,
+                    pressed && styles.gainPillPressed,
+                  ]}
+                >
+                  <Text style={[styles.filterPillText, filterMode === value && styles.filterPillTextActive]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
           </View>
         </View>
         {/* Meter */}
@@ -499,6 +655,80 @@ function BottomStrip({
         <Text style={styles.stage}>{STAGE_LABEL}</Text>
       </View>
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// InstrumentPicker
+// ---------------------------------------------------------------------------
+
+function InstrumentPicker({
+  visible, currentKey, onSelect, onClose,
+}: {
+  visible: boolean;
+  currentKey: string;
+  onSelect: (key: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      {/* Semi-transparent backdrop — tap outside sheet to dismiss. */}
+      <Pressable style={styles.pickerBackdrop} onPress={onClose} accessibilityLabel="Close instrument picker">
+        {/* The inner sheet stops propagation so tapping inside doesn't close. */}
+        <Pressable style={styles.pickerSheet} onPress={() => {}}>
+          <View style={styles.pickerHeader}>
+            <Text style={styles.pickerTitle}>SELECT INSTRUMENT</Text>
+            <Pressable
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              style={({ pressed }) => [styles.pickerClose, pressed && styles.stepBtnPressed]}
+            >
+              <Text style={styles.pickerCloseText}>✕</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={styles.pickerScroll} showsVerticalScrollIndicator={false}>
+            {FAMILIES.map((family) => (
+              <View key={family.key} style={styles.pickerFamily}>
+                <Text style={styles.pickerFamilyLabel}>{family.nameEn.toUpperCase()}</Text>
+                {family.instruments.map((instKey) => {
+                  const inst = getInstrument(instKey);
+                  if (!inst) return null;
+                  const isSelected = instKey === currentKey;
+                  return (
+                    <Pressable
+                      key={instKey}
+                      onPress={() => onSelect(instKey)}
+                      accessibilityRole="menuitem"
+                      accessibilityLabel={inst.nameEn}
+                      accessibilityState={{ selected: isSelected }}
+                      style={({ pressed }) => [
+                        styles.pickerRow,
+                        isSelected && styles.pickerRowSelected,
+                        pressed && styles.pickerRowPressed,
+                      ]}
+                    >
+                      <Text style={[styles.pickerRowText, isSelected && styles.pickerRowTextSelected]}>
+                        {inst.nameEn}
+                      </Text>
+                      {isSelected && <Text style={styles.pickerRowCheck}>●</Text>}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ))}
+            {/* Bottom padding so the last row isn't flush against the sheet edge. */}
+            <View style={{ height: 24 }} />
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -562,6 +792,10 @@ const C = {
   inTune: '#5fb87a',
   flat: '#5b8fb8',
   sharp: '#b8635f',
+  // Amber warning tint for the silence banner — derived from accent, darkened
+  // to avoid visual parity with active state.
+  warnBg: '#2a1f08',
+  warnBorder: '#6b5020',
 };
 
 // ---------------------------------------------------------------------------
@@ -592,7 +826,7 @@ const styles = StyleSheet.create({
   topBarCompact: { paddingBottom: 8 },
   topLeft: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
     gap: 10,
     flexShrink: 1,
     flexWrap: 'wrap',
@@ -606,7 +840,35 @@ const styles = StyleSheet.create({
   brand: { color: C.ink, fontSize: 14, letterSpacing: 6, fontWeight: '600' },
   brandCompact: { color: C.ink, fontSize: 11, letterSpacing: 4, fontWeight: '600' },
   brandVersion: { color: C.inkDim, fontSize: 10, letterSpacing: 2, fontVariant: ['tabular-nums'] },
+  // Instrument badge — tappable, so wrapped in its own pressable.
   instrumentBadge: { color: C.accent, fontSize: 9, letterSpacing: 2, opacity: 0.8 },
+  badgePressable: {
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 2,
+    minHeight: 28,
+    justifyContent: 'center',
+  },
+  badgePressablePressed: { backgroundColor: C.edge },
+
+  // Sounding / Fingered display toggle (two pills, lives in topLeft).
+  displayToggle: { flexDirection: 'row', gap: 2 },
+  displayPill: {
+    minWidth: 44,
+    height: 26,
+    paddingHorizontal: 8,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  displayPillActive: { backgroundColor: C.accent, borderColor: C.accent },
+  displayPillText: { color: C.inkDim, fontSize: 8, letterSpacing: 2, fontWeight: '600' },
+  displayPillTextActive: { color: C.bg },
+
   refContainer: { flexDirection: 'row', alignItems: 'baseline', gap: 6, paddingVertical: 4, paddingHorizontal: 6 },
   refLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3 },
   refValue: { color: C.inkMid, fontSize: 12, letterSpacing: 2, fontVariant: ['tabular-nums'] },
@@ -634,6 +896,19 @@ const styles = StyleSheet.create({
   },
   statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent },
   statusText: { color: C.inkMid, fontSize: 10, letterSpacing: 3 },
+
+  // Silence banner — below TopBar, above center region.
+  silenceBanner: {
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: C.warnBg,
+    borderColor: C.warnBorder,
+    borderWidth: 1,
+    borderRadius: 2,
+  },
+  silenceBannerText: { color: C.accent, fontSize: 11, lineHeight: 16, letterSpacing: 0.5 },
+  silenceBannerBold: { fontWeight: '700' },
 
   // Center regions
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
@@ -695,8 +970,12 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   bottomLeft: { flex: 1 },
-  gainRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 },
+  // Controls row holds gain + filter mode side by side.
+  controlsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 20, marginBottom: 4 },
+  gainBlock: { flexDirection: 'column', gap: 4 },
+  filterBlock: { flexDirection: 'column', gap: 4 },
   gainToggle: { flexDirection: 'row', gap: 4 },
+  filterToggle: { flexDirection: 'row', gap: 4 },
   gainPill: {
     minWidth: 44,
     height: 28,
@@ -711,7 +990,20 @@ const styles = StyleSheet.create({
   gainPillPressed: { opacity: 0.7 },
   gainPillText: { color: C.inkDim, fontSize: 10, letterSpacing: 2, fontWeight: '600' },
   gainPillTextActive: { color: C.bg },
-  bottomLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, marginBottom: 6 },
+  filterPill: {
+    minWidth: 54,
+    height: 28,
+    paddingHorizontal: 10,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterPillActive: { backgroundColor: C.accent, borderColor: C.accent },
+  filterPillText: { color: C.inkDim, fontSize: 10, letterSpacing: 2, fontWeight: '600' },
+  filterPillTextActive: { color: C.bg },
+  bottomLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, marginBottom: 2 },
   meterLabel: { marginTop: 8 },
   meterTrack: {
     height: 10,
@@ -735,6 +1027,67 @@ const styles = StyleSheet.create({
   stage: { color: C.inkDim, fontSize: 10, letterSpacing: 2, marginTop: 4 },
   diag: { alignItems: 'center', marginTop: 6, paddingTop: 6, borderTopColor: C.edge, borderTopWidth: 1 },
   diagText: { color: C.inkDim, fontSize: 9, letterSpacing: 2, fontVariant: ['tabular-nums'] },
+
+  // Instrument picker modal
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    backgroundColor: C.face,
+    borderTopColor: C.edge,
+    borderTopWidth: 1,
+    borderTopLeftRadius: 6,
+    borderTopRightRadius: 6,
+    maxHeight: '75%',
+    paddingBottom: 0,
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomColor: C.edgeSoft,
+    borderBottomWidth: 1,
+  },
+  pickerTitle: { color: C.ink, fontSize: 12, letterSpacing: 4, fontWeight: '600' },
+  pickerClose: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 2,
+  },
+  pickerCloseText: { color: C.inkMid, fontSize: 13 },
+  pickerScroll: { paddingHorizontal: 20 },
+  pickerFamily: { marginTop: 16 },
+  pickerFamilyLabel: {
+    color: C.inkDim,
+    fontSize: 9,
+    letterSpacing: 3,
+    marginBottom: 4,
+    paddingBottom: 4,
+    borderBottomColor: C.edgeSoft,
+    borderBottomWidth: 1,
+  },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 2,
+    minHeight: 44,
+  },
+  pickerRowSelected: { backgroundColor: C.edgeSoft },
+  pickerRowPressed: { backgroundColor: C.edge },
+  pickerRowText: { color: C.inkMid, fontSize: 13, letterSpacing: 1 },
+  pickerRowTextSelected: { color: C.accent, fontWeight: '600' },
+  pickerRowCheck: { color: C.accent, fontSize: 10 },
 
   // Permission gate
   gate: { flex: 1, paddingVertical: 32, alignItems: 'center', justifyContent: 'center' },
