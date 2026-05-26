@@ -1,9 +1,10 @@
 {
   "name": "saxophone-intonation-android",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "main": "index.ts",
   "dependencies": {
     "expo": "~56.0.4",
+    "expo-audio": "^56.0.10",
     "expo-status-bar": "~56.0.4",
     "react": "19.2.3",
     "react-native": "0.85.3"
@@ -16,7 +17,9 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "prebuild": "expo prebuild --platform android --non-interactive",
+    "build:android": "cd android && ./gradlew assembleRelease"
   },
   "private": true
 }

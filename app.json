@@ -1,17 +1,32 @@
 {
   "expo": {
-    "name": "saxophone-intonation-android",
+    "name": "Intonation Analyzer",
     "slug": "saxophone-intonation-android",
-    "version": "1.0.0",
-    "orientation": "portrait",
+    "version": "0.1.0",
+    "orientation": "landscape",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "The app reads your horn through the microphone for pitch detection. Audio is processed on-device and never leaves the tablet."
+        }
+      ]
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.knelsonb.intonationanalyzer",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "The app reads your horn through the microphone for pitch detection. Audio is processed on-device and never leaves the tablet."
+      }
     },
     "android": {
+      "package": "com.knelsonb.intonationanalyzer",
+      "permissions": ["RECORD_AUDIO"],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0b0c10",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
