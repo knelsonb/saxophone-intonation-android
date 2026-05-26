@@ -1,16 +1,16 @@
 /**
- * Intonation Analyzer — Android, chunk 3 of 5.
+ * Intonation Analyzer — Android, chunk 4 of 5.
  *
- * Adds filter mode (Fast / Normal / Slow) segmented control, instrument
- * picker modal, sounding/fingered display toggle, and Android Auto silence
- * detection banner. Transposition is now dynamic via transpMap.
+ * Adds intonation table view, per-instrument range editor, refHz lifted to
+ * prefs, allow-out-of-range display-layer filter, and min-N stepper.
  *
  * Visual language: Peterson-amber (#d6b86a), near-black faceplate, restrained
  * typography, generous letter-spacing. No new dependencies.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  AppState,
   DimensionValue,
   Modal,
   Pressable,
@@ -24,20 +24,25 @@ import {
 import { useAudioEngine } from './src/useAudioEngine';
 import type { GainMode, DisplayMode } from './src/useAudioEngine';
 import type { FilterMode } from './src/filterModes';
-import { FAMILIES, transpMap, getInstrument } from './src/instruments';
+import { FAMILIES, transpMap, getInstrument, rangeMap } from './src/instruments';
 import {
   centsDeviation,
   centsDisplayPrecision,
   midiToNoteName,
 } from './src/music';
+import { loadPrefs } from './src/storage/prefs';
+import { loadRangeOverrides } from './src/storage/rangeOverrides';
+import type { RangeOverride } from './src/storage/rangeOverrides';
+import { IntonationTable } from './src/components/IntonationTable';
+import { RangeEditor } from './src/components/RangeEditor';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.3.0';
-const STAGE_LABEL = 'pipeline test · 3 of 5';
+const APP_VERSION = '0.4.0';
+const STAGE_LABEL = 'pipeline test · 4 of 5';
 
 // TENOR_TRANSPOSE has been removed. Transposition is now read from
 // transpMap[engine.instrumentKey] at display time. Desktop convention:
@@ -108,6 +113,18 @@ export default function App() {
   // Instrument picker modal visibility.
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Intonation table modal visibility.
+  const [tableOpen, setTableOpen] = useState(false);
+
+  // Range editor modal visibility.
+  const [rangeEditorOpen, setRangeEditorOpen] = useState(false);
+
+  // Per-instrument range overrides (fingered MIDI).
+  const [rangeOverrides, setRangeOverrides] = useState<Record<string, RangeOverride>>({});
+
+  // Min-N threshold (persisted via savePrefsNow).
+  const [minN, setMinN] = useState(5);
+
   // Android Auto silence banner dismiss state. Clears automatically when
   // micSilenced transitions from false → true (new silence event).
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -120,6 +137,40 @@ export default function App() {
     }
     prevSilenced.current = silenced;
   }, [engine.micSilenced]);
+
+  // Hydrate refHz from prefs on mount (once engine prefs are loaded).
+  useEffect(() => {
+    if (!engine.prefsLoaded) return;
+    loadPrefs().then((p) => {
+      setRefHz(p.refHz);
+      setMinN(p.minNVisible);
+    }).catch(() => {});
+  // Run once after prefsLoaded flips — engine.prefsLoaded only goes false→true once.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine.prefsLoaded]);
+
+  // Load range overrides on mount.
+  useEffect(() => {
+    loadRangeOverrides().then((overrides) => setRangeOverrides(overrides)).catch(() => {});
+  }, []);
+
+  // Persist refHz when app goes to background (backstop — engine also saves a4Hz).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'background') {
+        engine.savePrefsNow({ refHz, minNVisible: minN }).catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  // engine.savePrefsNow is stable; refHz and minN are primitive.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refHz, minN]);
+
+  // Persist minN change immediately so next aggregateNotes call picks it up.
+  const handleMinNChange = useCallback((n: number) => {
+    setMinN(n);
+    engine.savePrefsNow({ minNVisible: n }).catch(() => {});
+  }, [engine]);
 
   // Peak hold — updated synchronously during render, no useEffect needed.
   const fillAnim = useRef(new Animated.Value(IDLE_GLOW)).current;
@@ -144,6 +195,15 @@ export default function App() {
   const transp: number = transpMap[instrumentKey] ?? 0;
   const displayMode: DisplayMode = engine.displayMode ?? 'griff';
 
+  // Effective range for this instrument: override > baked default > null.
+  const activeRange: [number, number] | null = useMemo(() => {
+    const override = rangeOverrides[instrumentKey];
+    if (override) return [override.lo, override.hi];
+    const baked = rangeMap[instrumentKey];
+    if (baked) return baked;
+    return null;
+  }, [rangeOverrides, instrumentKey]);
+
   // Compute note display from live freqHz.
   // soundingMidi is what YIN detected; if displayMode is 'griff' we apply
   // the transposition: fingeredMidi = soundingMidi - transp
@@ -156,6 +216,17 @@ export default function App() {
     const precision = centsDisplayPrecision(engine.freqHz);
     return { letter, accidental, octave, cents, precision, tickIndex: centsToTickIndex(cents) };
   }, [engine.freqHz, refHz, displayMode, transp]);
+
+  // Out-of-range detection: compare fingered MIDI against activeRange.
+  const isOutOfRange: boolean = useMemo(() => {
+    if (engine.allowOutOfRange) return false;
+    if (engine.freqHz === null) return false;
+    if (activeRange === null) return false;
+    const { nearestMidi } = centsDeviation(engine.freqHz, refHz);
+    // Convert sounding MIDI to fingered MIDI for range comparison.
+    const midiFing = nearestMidi - transp;
+    return midiFing < activeRange[0] || midiFing > activeRange[1];
+  }, [engine.allowOutOfRange, engine.freqHz, refHz, transp, activeRange]);
 
   // Instrument English name for badge display.
   const instrumentDisplayName: string = (() => {
@@ -191,13 +262,18 @@ export default function App() {
           statusText={statusText}
           refHz={refHz}
           refEdit={refEdit}
-          setRefHz={setRefHz}
+          setRefHz={(v) => {
+            setRefHz(v);
+            engine.savePrefsNow({ refHz: v }).catch(() => {});
+          }}
           setRefEdit={setRefEdit}
           compact={!isLandscape}
           badgeText={badgeText}
           displayMode={displayMode}
           setDisplayMode={engine.setDisplayMode ?? (() => {})}
           onBadgePress={() => setPickerOpen(true)}
+          onGearPress={() => setRangeEditorOpen(true)}
+          onTablePress={() => setTableOpen(true)}
         />
         {showSilenceBanner && (
           <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
@@ -208,6 +284,7 @@ export default function App() {
             noteDisplay={noteDisplay}
             freqHz={engine.freqHz}
             noteFontSize={noteFontSize}
+            isOutOfRange={isOutOfRange}
           />
         </View>
         <BottomStrip
@@ -227,8 +304,7 @@ export default function App() {
         />
       </View>
 
-      {/* Instrument picker modal — rendered outside faceplate so it overlays
-          the full screen. Uses React Native's built-in Modal; no deps added. */}
+      {/* Instrument picker modal */}
       <InstrumentPicker
         visible={pickerOpen}
         currentKey={instrumentKey}
@@ -237,6 +313,39 @@ export default function App() {
           setPickerOpen(false);
         }}
         onClose={() => setPickerOpen(false)}
+      />
+
+      {/* Intonation table modal */}
+      <IntonationTable
+        visible={tableOpen}
+        onClose={() => setTableOpen(false)}
+        instrumentKey={instrumentKey}
+        displayMode={displayMode}
+        a4Hz={refHz}
+        minN={minN}
+        onMinNChange={handleMinNChange}
+        allowOutOfRange={engine.allowOutOfRange}
+        onAllowOutOfRangeChange={engine.setAllowOutOfRange}
+        activeRange={activeRange}
+      />
+
+      {/* Range editor modal */}
+      <RangeEditor
+        visible={rangeEditorOpen}
+        onClose={() => setRangeEditorOpen(false)}
+        instrumentKey={instrumentKey}
+        displayMode={displayMode}
+        currentRange={activeRange ?? (rangeMap[instrumentKey] ?? [0, 127])}
+        onSaved={(lo, hi) => {
+          setRangeOverrides((prev) => ({ ...prev, [instrumentKey]: { lo, hi } }));
+        }}
+        onReset={() => {
+          setRangeOverrides((prev) => {
+            const next = { ...prev };
+            delete next[instrumentKey];
+            return next;
+          });
+        }}
       />
     </View>
   );
@@ -297,7 +406,7 @@ function DiagnosticLine({
 
 function TopBar({
   statusText, refHz, refEdit, setRefHz, setRefEdit, compact,
-  badgeText, displayMode, setDisplayMode, onBadgePress,
+  badgeText, displayMode, setDisplayMode, onBadgePress, onGearPress, onTablePress,
 }: {
   statusText: string;
   refHz: number;
@@ -309,6 +418,8 @@ function TopBar({
   displayMode: DisplayMode;
   setDisplayMode: (m: DisplayMode) => void;
   onBadgePress: () => void;
+  onGearPress: () => void;
+  onTablePress: () => void;
 }) {
   const bump = (d: number) =>
     setRefHz(Math.max(REF_HZ_MIN, Math.min(REF_HZ_MAX, refHz + d)));
@@ -326,6 +437,24 @@ function TopBar({
           style={({ pressed }) => [styles.badgePressable, pressed && styles.badgePressablePressed]}
         >
           <Text style={styles.instrumentBadge}>{badgeText}</Text>
+        </Pressable>
+        {/* Gear button opens the range editor for the current instrument. */}
+        <Pressable
+          onPress={onGearPress}
+          accessibilityRole="button"
+          accessibilityLabel="Edit instrument range"
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+        >
+          <Text style={styles.iconBtnText}>{'⚙'}</Text>
+        </Pressable>
+        {/* TABLE button opens the intonation table. */}
+        <Pressable
+          onPress={onTablePress}
+          accessibilityRole="button"
+          accessibilityLabel="Open intonation table"
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+        >
+          <Text style={styles.iconBtnText}>TABLE</Text>
         </Pressable>
         {/* Sounding / Fingered display toggle — two-position pill pair. */}
         <View style={styles.displayToggle}>
@@ -403,15 +532,18 @@ function TopBar({
 // ---------------------------------------------------------------------------
 
 function NoteReadout({
-  noteDisplay, freqHz, noteFontSize,
+  noteDisplay, freqHz, noteFontSize, isOutOfRange,
 }: {
   noteDisplay: NoteDisplay | null;
   freqHz: number | null;
   noteFontSize: number;
+  isOutOfRange: boolean;
 }) {
   const accSize = Math.round(noteFontSize * 0.44);
   const octSize = Math.round(noteFontSize * 0.16);
   const hasNote = noteDisplay !== null;
+  // Dim the readout when out-of-range filtering is active and note is OOR.
+  const oor = isOutOfRange && hasNote;
 
   const letter = noteDisplay?.letter ?? '—';
   const accidental = noteDisplay?.accidental ?? '';
@@ -429,31 +561,40 @@ function NoteReadout({
             style={[
               styles.note,
               { fontSize: noteFontSize, lineHeight: noteFontSize + 4 },
-              !hasNote && styles.noteDim,
+              (!hasNote || oor) && styles.noteDim,
             ]}
           >
             {letter}
           </Text>
           {accidental !== '' ? (
-            <Text style={[styles.accidental, { fontSize: accSize, lineHeight: accSize + 10, marginTop: Math.round(noteFontSize * 0.1) }]}>
+            <Text style={[styles.accidental, { fontSize: accSize, lineHeight: accSize + 10, marginTop: Math.round(noteFontSize * 0.1) }, oor && styles.dimText]}>
               {accidental}
             </Text>
           ) : (
             <Text style={{ fontSize: accSize, opacity: 0 }}>{' '}</Text>
           )}
         </View>
-        <Text style={[styles.octave, { fontSize: octSize, marginTop: Math.round(noteFontSize * 0.17), opacity: hasNote ? 1 : 0 }]}>
+        <Text style={[styles.octave, { fontSize: octSize, marginTop: Math.round(noteFontSize * 0.17), opacity: (hasNote && !oor) ? 1 : 0 }]}>
           {octave ?? ' '}
         </Text>
       </View>
-      <View style={styles.hzRow}>
-        <Text style={[styles.hzValue, !hasNote && styles.dimText]}>{hzText}</Text>
-        <Text style={styles.hzUnit}>Hz</Text>
-      </View>
-      <View style={styles.centValueRow}>
-        <Text style={styles.centValueLabel}>CENTS</Text>
-        <Text style={[styles.centValue, !hasNote && styles.dimText]}>{centsText}</Text>
-      </View>
+      {/* Out-of-range pill replaces cent value row when OOR is active. */}
+      {oor ? (
+        <View style={styles.oorPill}>
+          <Text style={styles.oorPillText}>OUT OF RANGE</Text>
+        </View>
+      ) : (
+        <>
+          <View style={styles.hzRow}>
+            <Text style={[styles.hzValue, !hasNote && styles.dimText]}>{hzText}</Text>
+            <Text style={styles.hzUnit}>Hz</Text>
+          </View>
+          <View style={styles.centValueRow}>
+            <Text style={styles.centValueLabel}>CENTS</Text>
+            <Text style={[styles.centValue, !hasNote && styles.dimText]}>{centsText}</Text>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -1095,4 +1236,29 @@ const styles = StyleSheet.create({
   gateBody: { color: C.inkMid, fontSize: 14, lineHeight: 22, textAlign: 'center', maxWidth: 480, marginBottom: 16 },
   gateHint: { color: C.inkDim, fontSize: 12, lineHeight: 18, textAlign: 'center', maxWidth: 480, letterSpacing: 1 },
   gateFooter: { alignItems: 'flex-end', borderTopColor: C.edgeSoft, borderTopWidth: 1, paddingTop: 12 },
+
+  // Out-of-range pill (replaces cent value row in NoteReadout).
+  oorPill: {
+    marginTop: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderColor: C.warnBorder,
+    borderWidth: 1,
+    borderRadius: 2,
+    backgroundColor: C.warnBg,
+  },
+  oorPillText: { color: C.accent, fontSize: 9, letterSpacing: 3, fontWeight: '600' },
+
+  // Gear / TABLE icon buttons in TopBar (same slot as badge area).
+  iconBtn: {
+    height: 28,
+    paddingHorizontal: 8,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBtnPressed: { backgroundColor: C.edge },
+  iconBtnText: { color: C.inkDim, fontSize: 10, letterSpacing: 2 },
 });
