@@ -1,11 +1,12 @@
 {
   "name": "saxophone-intonation-android",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "main": "index.ts",
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~56.0.4",
     "expo-audio": "^56.0.10",
+    "expo-build-properties": "~56.0.15",
     "expo-file-system": "~56.0.7",
     "expo-sqlite": "~56.0.4",
     "expo-status-bar": "~56.0.4",

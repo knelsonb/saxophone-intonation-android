@@ -2,7 +2,7 @@
   "expo": {
     "name": "Intonation Analyzer",
     "slug": "saxophone-intonation-android",
-    "version": "0.6.0",
+    "version": "0.6.1",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -14,7 +14,15 @@
           "microphonePermission": "The app reads your horn through the microphone for pitch detection. Audio is processed on-device and never leaves the tablet."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,
