@@ -154,8 +154,8 @@ export function useAudioEngine(): AudioEngineState {
   const [allowOutOfRange, setAllowOutOfRangeState] = useState<boolean>(true);
   const [prefsLoaded, setPrefsLoaded] = useState<boolean>(false);
   const [nickname, setNicknameState] = useState<string>('');
-  // v0.6.0
-  const [hiFiMode, setHiFiModeState] = useState<boolean>(true);
+  // v0.6.0 (v0.6.2: default false — see prefs.ts comment)
+  const [hiFiMode, setHiFiModeState] = useState<boolean>(false);
   const [hiFiActive, setHiFiActive] = useState<boolean>(false);
   const [audioSourceLabel, setAudioSourceLabel] = useState<string>('');
 
@@ -294,7 +294,14 @@ export function useAudioEngine(): AudioEngineState {
         setGainModeState(prefs.gainMode);
         setAllowOutOfRangeState(prefs.allowOutOfRange);
         setNicknameState(prefs.nickname);
-        setHiFiModeState(prefs.hiFiMode);
+        // v0.6.2: ignore persisted hiFiMode until the raw-audio-input module
+        // is confirmed working on real hardware. Existing installs that
+        // launched v0.6.1 may have hiFiMode=true persisted from before the
+        // default was flipped; force it false so they recover. Tom can opt
+        // in via the BottomStrip toggle for testing.
+        setHiFiModeState(false);
+        // Original line (re-enable when module is verified):
+        // setHiFiModeState(prefs.hiFiMode);
         a4HzRef.current = prefs.a4Hz;
         setPrefsLoaded(true);
 

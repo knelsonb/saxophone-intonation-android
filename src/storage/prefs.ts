@@ -44,7 +44,11 @@ export const DEFAULT_PREFS: AppPrefs = {
   gainMode: 'low',
   refHz: 440,
   allowOutOfRange: true,
-  hiFiMode: true,
+  // v0.6.2: default false. First-launch users get the proven expo-audio path.
+  // Hi-fi is opt-in via the BottomStrip toggle until the raw-audio-input
+  // module is confirmed working on Tom's hardware — v0.6.1 froze on first
+  // launch when hiFiMode defaulted true (engine stuck in 'warming-up').
+  hiFiMode: false,
   audioSampleRate: 48000,
 };
 
