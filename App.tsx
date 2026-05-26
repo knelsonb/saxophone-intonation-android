@@ -52,7 +52,7 @@ type HiFiEngine = AudioEngineState & {
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.6.2';
+const APP_VERSION = '0.6.3';
 const STAGE_LABEL = 'raw audio · unprocessed · 5 of 5';
 
 // TENOR_TRANSPOSE has been removed. Transposition is now read from

@@ -39,3 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local Expo module build artifacts (Windows MAX_PATH chokes on these)
+modules/*/android/build/
+modules/*/android/.gradle/
