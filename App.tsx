@@ -8,7 +8,7 @@
  * Visual language: Peterson-amber (#d6b86a), near-black faceplate, restrained
  * typography, generous letter-spacing. No new dependencies.
  */
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   DimensionValue,
@@ -32,7 +32,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.2.2';
+const APP_VERSION = '0.2.3';
 const STAGE_LABEL = 'pipeline test · 2 of 5';
 
 // Bb tenor sax: sounding pitch is 14 semitones (octave + major 2nd) below
@@ -161,7 +161,7 @@ export default function App() {
           compact={!isLandscape}
         />
         <View style={centerStyle}>
-          <CentArc activeIndex={arcIndex} arcWidth="100%" />
+          <CentArc activeIndex={arcIndex} cents={noteDisplay?.cents ?? null} arcWidth="100%" />
           <NoteReadout
             noteDisplay={noteDisplay}
             freqHz={engine.freqHz}
@@ -339,17 +339,21 @@ function NoteReadout({
 // ---------------------------------------------------------------------------
 
 function CentArc({
-  activeIndex, arcWidth,
+  activeIndex, cents, arcWidth,
 }: {
   activeIndex: number | null;
+  // v0.2.3 — continuous cents value drives the needle position so it doesn't
+  // snap to 5¢ tick boundaries.  activeIndex still drives the discrete tick
+  // highlight (which has to land on an integer index).
+  cents: number | null;
   arcWidth: DimensionValue;
 }) {
   const ticks = useMemo(() => {
     const arr: { major: boolean; center: boolean }[] = [];
     for (let i = 0; i < CENT_TICK_COUNT; i++) {
-      const cents = -CENT_RANGE + (i * CENT_RANGE * 2) / (CENT_TICK_COUNT - 1);
-      const center = Math.abs(cents) < 0.001;
-      const major = center || cents === -CENT_RANGE || cents === CENT_RANGE;
+      const c = -CENT_RANGE + (i * CENT_RANGE * 2) / (CENT_TICK_COUNT - 1);
+      const center = Math.abs(c) < 0.001;
+      const major = center || c === -CENT_RANGE || c === CENT_RANGE;
       arr.push({ major, center });
     }
     return arr;
@@ -357,6 +361,27 @@ function CentArc({
 
   const needleIdx = activeIndex ?? Math.floor(CENT_TICK_COUNT / 2);
   const needleActive = activeIndex !== null;
+
+  // v0.2.3 — animated needle position.  The raw cents value (∈ [-50, +50])
+  // is mapped to a percentage and driven into an Animated.Value with a tight
+  // spring.  When no pitch is detected we glide back to center rather than
+  // snapping.  Settle time ~50 ms (damping 12 / stiffness 280 / mass 0.2)
+  // matches the meter spring — fast enough to feel direct, slow enough to
+  // smooth the discrete YIN updates into continuous motion.
+  const targetPct = useMemo(() => {
+    const clamped = Math.max(-CENT_RANGE, Math.min(CENT_RANGE, cents ?? 0));
+    return ((clamped + CENT_RANGE) / (CENT_RANGE * 2)) * 100;
+  }, [cents]);
+  const needleAnim = useRef(new Animated.Value(50)).current;
+  useEffect(() => {
+    Animated.spring(needleAnim, {
+      toValue: targetPct,
+      useNativeDriver: false,
+      damping: 12,
+      stiffness: 280,
+      mass: 0.2,
+    }).start();
+  }, [targetPct, needleAnim]);
 
   return (
     <View style={[styles.arc, { width: arcWidth }]}>
@@ -379,10 +404,16 @@ function CentArc({
             ]}
           />
         ))}
-        <View
+        <Animated.View
           style={[
             styles.arcNeedle,
-            { left: `${(needleIdx / (CENT_TICK_COUNT - 1)) * 100}%` as `${number}%`, opacity: needleActive ? 1 : 0.35 },
+            {
+              left: needleAnim.interpolate({
+                inputRange: [0, 100],
+                outputRange: ['0%', '100%'],
+              }),
+              opacity: needleActive ? 1 : 0.35,
+            },
           ]}
         />
       </View>
