@@ -28,10 +28,17 @@ const STREAM_OPTIONS = {
 // The number of incoming ~4100-sample buffers to accumulate before running YIN.
 // Four buffers × 4410 samples/buffer = 16384-sample analysis window.
 const RING_BUFFER_CAPACITY = 16384;
-const BUFFERS_PER_YIN_CALL = 4;
+// v0.2.1: dropped from 4 to 2.  The 16k-sample analysis window still gives YIN
+// a full ~370 ms of audio (we don't drop ring capacity), but YIN now runs every
+// other buffer arrival (~200 ms cadence) instead of every fourth (~400 ms).
+// Halves perceived latency without changing the per-call cost.
+const BUFFERS_PER_YIN_CALL = 2;
 
 // RMS floor below which pitch detection is skipped (dBFS).
-const RMS_FLOOR_DB = -50;
+// v0.2.1: loosened from -50 to -55 — Tom's first feedback was that the meter
+// moves but the note stays stuck.  A -50 floor was too aggressive given that
+// the meter spans -60..0 dBFS in Low gain mode.
+const RMS_FLOOR_DB = -55;
 
 // Gain-mode display mapping:  rmsDb → meterFill [0, 1]
 // low:  -60 dBFS maps to 0, 0 dBFS maps to 1
@@ -55,6 +62,11 @@ export interface AudioEngineState {
   meterFill: number;
   gainMode: GainMode;
   setGainMode: (m: GainMode) => void;
+  // v0.2.1 diagnostics — surfaced so the UI can show that the engine is
+  // actually running even when nothing is happening in the centerpiece
+  // readout.  Cheap to compute and read; remove if perf ever needs it.
+  yinCallCount: number;
+  rawFreqHz: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +110,9 @@ export function useAudioEngine(): AudioEngineState {
   const [rmsDb, setRmsDb] = useState<number>(-160);
   const [meterFill, setMeterFill] = useState<number>(0);
   const [gainMode, setGainModeState] = useState<GainMode>('low');
+  // Diagnostic state (v0.2.1).
+  const [yinCallCount, setYinCallCount] = useState<number>(0);
+  const [rawFreqHz, setRawFreqHz] = useState<number | null>(null);
 
   // Stable setter exposed to callers.
   const setGainMode = useCallback((m: GainMode) => setGainModeState(m), []);
@@ -235,8 +250,12 @@ export function useAudioEngine(): AudioEngineState {
     // sync with state on every render.
     let nextFreq: number | null = freqHzRef.current; // default: carry previous value
 
+    let nextRaw: number | null = null;
+    let yinFired = false;
+
     if (bufferCount.current >= BUFFERS_PER_YIN_CALL && ringFilled.current >= RING_BUFFER_CAPACITY) {
       bufferCount.current = 0;
+      yinFired = true;
 
       if (db < RMS_FLOOR_DB) {
         // Below noise floor — suppress pitch output.
@@ -261,6 +280,7 @@ export function useAudioEngine(): AudioEngineState {
           pitchHistoryLen.current = 0;
           lastStablePitch.current = null;
         } else {
+          nextRaw = result.freqHz;
           let candidate = result.freqHz;
 
           // Octave-jump guard: if candidate is closer to ½× or 2× the last
@@ -287,13 +307,20 @@ export function useAudioEngine(): AudioEngineState {
             if (pitchHistoryLen.current < 3) pitchHistoryLen.current += 1;
 
             if (pitchHistoryLen.current === 3) {
+              // Full history — emit the median for stable readout.
               const [a, b, c] = pitchHistory.current;
               const med = medianOf3(a, b, c);
               lastStablePitch.current = med;
               nextFreq = med;
             } else {
-              // Not enough history yet — carry previous output.
-              nextFreq = freqHzRef.current;
+              // v0.2.1: emit the raw candidate immediately rather than waiting
+              // for 3 frames of history.  The old behavior left the display
+              // stuck at `—` for the first 600 ms after pitch detection began
+              // (and reset to `—` whenever history was cleared by a frame
+              // below the noise floor), which made the app look broken.
+              // Median smoothing still kicks in once 3 frames accumulate.
+              lastStablePitch.current = candidate;
+              nextFreq = candidate;
             }
           }
           // else: discarded by octave guard — carry previous output.
@@ -308,6 +335,10 @@ export function useAudioEngine(): AudioEngineState {
     setRmsDb(db);
     setMeterFill(fill);
     setFreqHz(nextFreq);
+    if (yinFired) {
+      setYinCallCount((n) => (n + 1) % 1000);
+      setRawFreqHz(nextRaw);
+    }
   // Empty deps: all mutable values are read through refs (gainModeRef,
   // freqHzRef, ring, analysisBlock, etc.) so the callback is stable for
   // the lifetime of the component.  Re-creating it would tear down and
@@ -369,5 +400,7 @@ export function useAudioEngine(): AudioEngineState {
     meterFill,
     gainMode,
     setGainMode,
+    yinCallCount,
+    rawFreqHz,
   };
 }

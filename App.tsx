@@ -32,7 +32,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.2.1';
 const STAGE_LABEL = 'pipeline test · 2 of 5';
 
 // Bb tenor sax: sounding pitch is 14 semitones (octave + major 2nd) below
@@ -173,7 +173,37 @@ export default function App() {
           gainMode={engine.gainMode}
           setGainMode={engine.setGainMode}
         />
+        <DiagnosticLine
+          rmsDb={engine.rmsDb}
+          yinCallCount={engine.yinCallCount}
+          rawFreqHz={engine.rawFreqHz}
+        />
       </View>
+    </View>
+  );
+}
+
+// v0.2.1 — a quiet single-line readout that proves the engine is alive even
+// when the centerpiece note slot is showing `—`.  Shows live RMS in dBFS, a
+// monotonic counter of YIN calls (rolls every 1000), and the latest raw YIN
+// frequency before smoothing.  If the counter is ticking, YIN is firing; if
+// raw is non-null but the big note is `—`, the median filter or octave guard
+// is consuming the result.
+function DiagnosticLine({
+  rmsDb,
+  yinCallCount,
+  rawFreqHz,
+}: {
+  rmsDb: number;
+  yinCallCount: number;
+  rawFreqHz: number | null;
+}) {
+  const rms = `${rmsDb.toFixed(0)} dB`;
+  const yin = `YIN ${String(yinCallCount).padStart(3, '0')}`;
+  const raw = rawFreqHz !== null ? `${rawFreqHz.toFixed(1)} Hz` : '— — —';
+  return (
+    <View style={styles.diag}>
+      <Text style={styles.diagText}>{`${rms}  ·  ${yin}  ·  RAW ${raw}`}</Text>
     </View>
   );
 }
@@ -669,6 +699,8 @@ const styles = StyleSheet.create({
   dbValue: { color: C.inkMid, fontSize: 18, letterSpacing: 1, fontVariant: ['tabular-nums'] },
   dbUnit: { color: C.inkDim, fontSize: 11, letterSpacing: 2 },
   stage: { color: C.inkDim, fontSize: 10, letterSpacing: 2, marginTop: 4 },
+  diag: { alignItems: 'center', marginTop: 6, paddingTop: 6, borderTopColor: C.edge, borderTopWidth: 1 },
+  diagText: { color: C.inkDim, fontSize: 9, letterSpacing: 2, fontVariant: ['tabular-nums'] },
 
   // Permission gate
   gate: { flex: 1, paddingVertical: 32, alignItems: 'center', justifyContent: 'center' },
