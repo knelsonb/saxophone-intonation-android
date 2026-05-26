@@ -1,0 +1,28 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.automicclaim'
+version = '0.1.0'
+
+android {
+  namespace 'expo.modules.automicclaim'
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+    minSdk 26
+  }
+
+  compileOptions {
+    targetCompatibility JavaVersion.VERSION_1_8
+  }
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation 'androidx.core:core-ktx:1.15.0'
+}

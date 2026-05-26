@@ -1,0 +1,7 @@
+{
+  "name": "@local/auto-mic-claim",
+  "version": "0.1.0",
+  "description": "Local Expo module: claims mic from Android Auto via self-managed Telecom fake call.",
+  "main": "index",
+  "private": true
+}

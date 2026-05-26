@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <!--
+    MANAGE_OWN_CALLS: required to register a self-managed PhoneAccount and call
+    TelecomManager.addNewIncomingCall. This is a normal (non-dangerous) permission
+    on AOSP, but some OEM builds treat it as runtime-requestable — the module
+    handles both cases in hasManageOwnCallsPermissionAsync / requestManageOwnCallsPermissionAsync.
+  -->
+  <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+
+  <application>
+
+    <!--
+      TunerConnectionService: the system binds to this via BIND_TELECOM_CONNECTION_SERVICE
+      whenever a call is placed or incoming via our PhoneAccountHandle.
+      android:exported="true" is mandatory — Telecom binds from outside our process.
+    -->
+    <service
+      android:name="expo.modules.automicclaim.TunerConnectionService"
+      android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.telecom.ConnectionService" />
+      </intent-filter>
+    </service>
+
+    <!--
+      CarModeReceiver: listens for UI_MODE_TYPE_CAR enter/exit broadcasts so the
+      module can emit carConnection events to JS without polling.
+    -->
+    <receiver
+      android:name="expo.modules.automicclaim.CarModeReceiver"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="android.app.action.ENTER_CAR_MODE" />
+        <action android:name="android.app.action.EXIT_CAR_MODE" />
+      </intent-filter>
+    </receiver>
+
+  </application>
+
+</manifest>

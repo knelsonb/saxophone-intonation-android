@@ -35,14 +35,17 @@ import { loadRangeOverrides } from './src/storage/rangeOverrides';
 import type { RangeOverride } from './src/storage/rangeOverrides';
 import { IntonationTable } from './src/components/IntonationTable';
 import { RangeEditor } from './src/components/RangeEditor';
+import { PitchPipes } from './src/components/PitchPipes';
+import * as AutoMicClaim from './modules/auto-mic-claim';
+import type { CarConnectionState, CallState } from './modules/auto-mic-claim';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const APP_NAME = 'INTONATION ANALYZER';
-const APP_VERSION = '0.4.0';
-const STAGE_LABEL = 'pipeline test · 4 of 5';
+const APP_VERSION = '0.5.0';
+const STAGE_LABEL = 'tuner in car · masquerade · 5 of 5';
 
 // TENOR_TRANSPOSE has been removed. Transposition is now read from
 // transpMap[engine.instrumentKey] at display time. Desktop convention:
@@ -119,11 +122,33 @@ export default function App() {
   // Range editor modal visibility.
   const [rangeEditorOpen, setRangeEditorOpen] = useState(false);
 
+  // Pitch pipes modal visibility.
+  const [pipesOpen, setPipesOpen] = useState(false);
+
   // Per-instrument range overrides (fingered MIDI).
   const [rangeOverrides, setRangeOverrides] = useState<Record<string, RangeOverride>>({});
 
   // Min-N threshold (persisted via savePrefsNow).
   const [minN, setMinN] = useState(5);
+
+  // Android Auto mic-claim masquerade state.
+  const [carState, setCarState] = useState<CarConnectionState>('disconnected');
+  const [callState, setCallState] = useState<CallState>('inactive');
+  useEffect(() => {
+    AutoMicClaim.getCarConnectionStateAsync().then(setCarState).catch(() => {});
+    AutoMicClaim.getCallStateAsync().then(setCallState).catch(() => {});
+    const subs = [
+      AutoMicClaim.addCarConnectionListener(setCarState),
+      AutoMicClaim.addCallStateListener(setCallState),
+      AutoMicClaim.addEndCallButtonListener(() => setCallState('ended')),
+    ];
+    return () => subs.forEach((s) => s.remove());
+  }, []);
+  const handleClaimMic = useCallback(async () => {
+    const granted = await AutoMicClaim.requestManageOwnCallsPermissionAsync();
+    if (!granted) return;
+    await AutoMicClaim.startTunerCallAsync();
+  }, []);
 
   // Android Auto silence banner dismiss state. Clears automatically when
   // micSilenced transitions from false → true (new silence event).
@@ -274,9 +299,17 @@ export default function App() {
           onBadgePress={() => setPickerOpen(true)}
           onGearPress={() => setRangeEditorOpen(true)}
           onTablePress={() => setTableOpen(true)}
+          onPipesPress={() => setPipesOpen(true)}
         />
         {showSilenceBanner && (
           <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
+        )}
+        {carState === 'connected' && (
+          <TunerInCarSwitch
+            callState={callState}
+            onClaim={handleClaimMic}
+            onRelease={() => AutoMicClaim.endTunerCallAsync().catch(() => {})}
+          />
         )}
         <View style={centerStyle}>
           <CentArc activeIndex={arcIndex} cents={noteDisplay?.cents ?? null} arcWidth="100%" />
@@ -347,6 +380,14 @@ export default function App() {
           });
         }}
       />
+
+      {/* Pitch pipes modal */}
+      <PitchPipes
+        visible={pipesOpen}
+        onClose={() => setPipesOpen(false)}
+        refHz={refHz}
+        instrumentKey={instrumentKey}
+      />
     </View>
   );
 }
@@ -367,6 +408,70 @@ function SilenceBanner({ onDismiss }: { onDismiss: () => void }) {
         <Text style={styles.silenceBannerBold}>Microphone signal is silent.</Text>
         {'  '}If Android Auto is connected, disconnect to free the mic for the tuner.
       </Text>
+    </Pressable>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TunerInCarSwitch
+// ---------------------------------------------------------------------------
+
+// Visible only when carState === 'connected'. Replaces the two old buttons
+// (CLAIM MIC and TUNER-IN-CAR ACTIVE) with a single always-present full-width
+// ON/OFF pill. 48 pt touch target so it's usable while driving.
+function TunerInCarSwitch({
+  callState,
+  onClaim,
+  onRelease,
+}: {
+  callState: CallState;
+  onClaim: () => void;
+  onRelease: () => void;
+}) {
+  const isPending = callState === 'pending';
+  const isActive  = callState === 'active';
+
+  const handlePress = () => {
+    if (isPending) return;
+    if (isActive) {
+      onRelease();
+    } else {
+      onClaim();
+    }
+  };
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: isActive, disabled: isPending }}
+      accessibilityLabel={
+        isActive
+          ? 'Tuner in car is ON and mic is claimed. Tap to release.'
+          : isPending
+          ? 'Tuner in car is starting.'
+          : 'Tuner in car is OFF. Tap to claim mic.'
+      }
+      style={({ pressed }) => [
+        styles.carSwitch,
+        isActive && styles.carSwitchActive,
+        isPending && styles.carSwitchPending,
+        pressed && !isPending && styles.carSwitchPressed,
+      ]}
+    >
+      <View style={styles.carSwitchInner}>
+        <View style={[styles.carSwitchIndicator, isActive && styles.carSwitchIndicatorOn]} />
+        <Text style={[styles.carSwitchLabel, isActive && styles.carSwitchLabelOn, isPending && styles.carSwitchLabelPending]}>
+          {isActive
+            ? 'TUNER IN CAR  ·  ON  ·  MIC CLAIMED  ·  TAP TO RELEASE'
+            : isPending
+            ? 'TUNER IN CAR  ·  STARTING…'
+            : 'TUNER IN CAR  ·  OFF  ·  TAP TO CLAIM MIC'}
+        </Text>
+        <Text style={[styles.carSwitchState, isActive && styles.carSwitchStateOn]}>
+          {isActive ? 'ON' : isPending ? '…' : 'OFF'}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -406,7 +511,7 @@ function DiagnosticLine({
 
 function TopBar({
   statusText, refHz, refEdit, setRefHz, setRefEdit, compact,
-  badgeText, displayMode, setDisplayMode, onBadgePress, onGearPress, onTablePress,
+  badgeText, displayMode, setDisplayMode, onBadgePress, onGearPress, onTablePress, onPipesPress,
 }: {
   statusText: string;
   refHz: number;
@@ -420,6 +525,7 @@ function TopBar({
   onBadgePress: () => void;
   onGearPress: () => void;
   onTablePress: () => void;
+  onPipesPress: () => void;
 }) {
   const bump = (d: number) =>
     setRefHz(Math.max(REF_HZ_MIN, Math.min(REF_HZ_MAX, refHz + d)));
@@ -455,6 +561,15 @@ function TopBar({
           style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
         >
           <Text style={styles.iconBtnText}>TABLE</Text>
+        </Pressable>
+        {/* PIPES button opens the pitch pipes. */}
+        <Pressable
+          onPress={onPipesPress}
+          accessibilityRole="button"
+          accessibilityLabel="Open pitch pipes"
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+        >
+          <Text style={styles.iconBtnText}>PIPES</Text>
         </Pressable>
         {/* Sounding / Fingered display toggle — two-position pill pair. */}
         <View style={styles.displayToggle}>
@@ -1037,6 +1152,61 @@ const styles = StyleSheet.create({
   },
   statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent },
   statusText: { color: C.inkMid, fontSize: 10, letterSpacing: 3 },
+
+  // TunerInCarSwitch — full-width pill, 48 pt+ touch target.
+  carSwitch: {
+    marginTop: 8,
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: C.warnBg,
+    borderColor: C.accent,
+    borderWidth: 1,
+    borderRadius: 3,
+  },
+  carSwitchActive: {
+    backgroundColor: '#0a1f0a',
+    borderColor: C.inTune,
+  },
+  carSwitchPending: {
+    borderColor: C.inkDim,
+    backgroundColor: C.bg,
+  },
+  carSwitchPressed: { opacity: 0.75 },
+  carSwitchInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  carSwitchIndicator: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: C.accent,
+    opacity: 0.6,
+  },
+  carSwitchIndicatorOn: {
+    backgroundColor: C.inTune,
+    opacity: 1,
+  },
+  carSwitchLabel: {
+    flex: 1,
+    color: C.accent,
+    fontSize: 11,
+    letterSpacing: 2.5,
+    fontWeight: '700',
+  },
+  carSwitchLabelOn: { color: C.inTune },
+  carSwitchLabelPending: { color: C.inkDim },
+  carSwitchState: {
+    color: C.accent,
+    fontSize: 13,
+    letterSpacing: 2,
+    fontWeight: '700',
+    minWidth: 28,
+    textAlign: 'right',
+  },
+  carSwitchStateOn: { color: C.inTune },
 
   // Silence banner — below TopBar, above center region.
   silenceBanner: {
