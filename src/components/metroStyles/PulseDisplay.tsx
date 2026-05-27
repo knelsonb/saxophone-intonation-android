@@ -98,8 +98,12 @@ function makeStyles(C: ThemePalette) {
     dotDownbeat: { width: 26, height: 26, borderRadius: 13, borderColor: C.inkDim },
     dotActive: { backgroundColor: C.accent, borderColor: C.accent },
     dotActiveDownbeat: { backgroundColor: C.inTune, borderColor: C.inTune },
-    throbWrap: { width: 110, height: 110, alignItems: 'center', justifyContent: 'center' },
-    throbDisc: { width: 96, height: 96, borderRadius: 48 },
+    // Shrunk in v0.9.6 from 110×110/96×96 → 80×80/72×72 to give MetroScreen
+    // back ~30dp of vertical budget. The throb disc is still the most
+    // prominent visual cue on the page; no need for it to be a half-screen
+    // dot.
+    throbWrap: { width: 80, height: 80, alignItems: 'center', justifyContent: 'center' },
+    throbDisc: { width: 72, height: 72, borderRadius: 36 },
     label: { color: C.inkDim, fontSize: 11, letterSpacing: 3, marginTop: 6, fontWeight: '700' },
   });
 }

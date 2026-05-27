@@ -105,37 +105,38 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
           <Text style={styles.metroStepBtnText}>+5</Text>
         </Pressable>
       </View>
-      {/* (Range caption removed in v0.9.5 — was static reference info that
-          stopped being useful after the user's first session.) */}
+      {/* Visualisation wrapped in flex:1 so any future content variance is
+          absorbed by whitespace rather than clipping the START button below.
+          PULSE = dots+throb, FLASH = full-area colour flash,
+          PENDULUM = vintage mechanical swing. */}
+      <View style={{ flex: 1, justifyContent: 'center' }}>
+        {metroStyle === 'flash' ? (
+          <FlashDisplay
+            running={metro.running}
+            beat={metro.beat}
+            pulse={metro.pulse}
+            bpm={metro.bpm}
+            timeSig={metro.timeSig}
+          />
+        ) : metroStyle === 'pendulum' ? (
+          <PendulumDisplay
+            running={metro.running}
+            beat={metro.beat}
+            pulse={metro.pulse}
+            bpm={metro.bpm}
+          />
+        ) : (
+          <PulseDisplay
+            running={metro.running}
+            beat={metro.beat}
+            pulse={metro.pulse}
+            timeSig={metro.timeSig}
+          />
+        )}
+      </View>
 
-      {/* The chosen visualisation. PULSE = dots+throb, FLASH = full-area
-          colour flash, PENDULUM = vintage mechanical swing. */}
-      {metroStyle === 'flash' ? (
-        <FlashDisplay
-          running={metro.running}
-          beat={metro.beat}
-          pulse={metro.pulse}
-          bpm={metro.bpm}
-          timeSig={metro.timeSig}
-        />
-      ) : metroStyle === 'pendulum' ? (
-        <PendulumDisplay
-          running={metro.running}
-          beat={metro.beat}
-          pulse={metro.pulse}
-          bpm={metro.bpm}
-        />
-      ) : (
-        <PulseDisplay
-          running={metro.running}
-          beat={metro.beat}
-          pulse={metro.pulse}
-          timeSig={metro.timeSig}
-        />
-      )}
-
-      {/* Time signature pills */}
-      <Text style={styles.metroLabel}>TIME SIGNATURE</Text>
+      {/* Time signature pills. The "TIME SIGNATURE" label above the row was
+          removed in v0.9.6 — "2/4 3/4 4/4 6/8" speaks for itself. */}
       <View style={styles.metroTimeSigRow}>
         {TIME_SIGS.map((s) => {
           const sel = metro.timeSig === s;
@@ -154,7 +155,9 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
         })}
       </View>
 
-      {/* Tap tempo */}
+      {/* Tap tempo. The hint line ("Tap with the beat — average of last 4
+          taps") was killed in v0.9.6 — accessibilityLabel still carries the
+          info, but the visible hint stole ~14dp from a tight budget. */}
       <Pressable
         onPress={() => metro.registerTap()}
         accessibilityRole="button"
@@ -162,7 +165,6 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
         style={({ pressed }) => [styles.metroTap, pressed && styles.metroTapPressed]}
       >
         <Text style={styles.metroTapText}>TAP</Text>
-        <Text style={styles.metroTapHint}>Tap with the beat — average of last 4 taps</Text>
       </Pressable>
 
       {/* Primary START / STOP */}

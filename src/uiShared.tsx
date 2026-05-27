@@ -610,14 +610,17 @@ export function makeStyles(C: ThemePalette) {
   metroTapText: { color: C.accent, fontSize: 14, letterSpacing: 4, fontWeight: '700' },
   metroTapHint: { color: C.inkDim, fontSize: 10, letterSpacing: 1, marginTop: 4 },
 
+  // Tightened in v0.9.6 from paddingV 18 / minHeight 64 → 12 / 52. The
+  // START/STOP button is still the largest hit target on the screen but no
+  // longer dominates the layout when MetroScreen is under budget pressure.
   metroPrimary: {
-    marginTop: 16,
-    paddingVertical: 18,
+    marginTop: 12,
+    paddingVertical: 12,
     borderRadius: 4,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 64,
+    minHeight: 52,
   },
   metroPrimaryIdle: { borderColor: C.accent, backgroundColor: C.face },
   metroPrimaryActive: { borderColor: C.sharp, backgroundColor: C.dangerTint },

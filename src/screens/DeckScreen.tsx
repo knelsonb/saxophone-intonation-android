@@ -12,7 +12,7 @@
  * State + behavior live in `useDeck` so the screen body is mostly layout.
  */
 import React, { useMemo } from 'react';
-import { GestureResponderEvent, Pressable, Text, View } from 'react-native';
+import { GestureResponderEvent, Modal, Pressable, Text, View } from 'react-native';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
 import type { DeckState } from '../useDeck';
@@ -184,10 +184,23 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
         </View>
       )}
 
-      {/* Discard-and-record confirmation */}
-      {deck.pendingConfirm === 'discard-and-record' && (
-        <View style={styles.deckConfirmRoot}>
-          <View style={styles.deckConfirmCard}>
+      {/* Discard-and-record confirmation. Wrapped in <Modal> so the backdrop
+          actually covers the screen and the underlying RECORD button can't be
+          re-tapped while the prompt is up. Was an in-flow sibling before,
+          which let touches leak through and pushed the layout. */}
+      <Modal
+        visible={deck.pendingConfirm === 'discard-and-record'}
+        transparent
+        animationType="fade"
+        onRequestClose={deck.cancelDiscardAndRecord}
+        statusBarTranslucent
+      >
+        <Pressable
+          style={styles.deckConfirmRoot}
+          onPress={deck.cancelDiscardAndRecord}
+          accessibilityLabel="Dismiss confirmation"
+        >
+          <Pressable style={styles.deckConfirmCard} onPress={() => {}}>
             <Text style={styles.deckConfirmTitle}>DISCARD CURRENT TAKE?</Text>
             <Text style={styles.deckConfirmBody}>
               You have an unsaved recording. Recording a new take will throw it out. Save it first if you want to keep it.
@@ -210,9 +223,9 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
                 <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextDanger]}>DISCARD + RECORD</Text>
               </Pressable>
             </View>
-          </View>
-        </View>
-      )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
