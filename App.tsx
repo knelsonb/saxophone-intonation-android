@@ -30,6 +30,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 
 import { useAudioEngine } from './src/useAudioEngine';
 import type { DisplayMode } from './src/useAudioEngine';
@@ -124,8 +125,10 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <ThemeProvider value={palette}>
-          <StatusBar style={statusBarStyle} />
-          <AppInner engine={engine} />
+          <BottomSheetModalProvider>
+            <StatusBar style={statusBarStyle} />
+            <AppInner engine={engine} />
+          </BottomSheetModalProvider>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

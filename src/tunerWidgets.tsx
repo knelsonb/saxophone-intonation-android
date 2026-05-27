@@ -22,22 +22,26 @@
  * All components consume the live theme via `useTheme()` and the StyleSheet
  * built by `makeStyles` in `uiShared.tsx`.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   DimensionValue,
-  Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  BottomSheetScrollView,
+  BottomSheetView,
+} from '@gorhom/bottom-sheet';
+import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
 import { useTheme } from './theme';
 import {
   makeStyles,
-  DRAG_FRIENDLY_PRESS_DELAY_MS,
   PEAK_PAD,
   PEAK_TRAVEL,
   REF_HZ_MIN,
@@ -576,72 +580,75 @@ export function InstrumentPicker({
 }) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
+  // v0.9.4: gorhom bottom-sheet replaces hand-rolled Modal + Pressable
+  // backdrop. The lib's drag-to-dismiss + backdrop press-to-close handles
+  // the touch responder fights this picker used to have.
+  const sheetRef = useRef<BottomSheetModal>(null);
+  const snapPoints = useMemo(() => ['75%'], []);
+  useEffect(() => {
+    if (visible) sheetRef.current?.present();
+    else sheetRef.current?.dismiss();
+  }, [visible]);
+  const renderBackdrop = useCallback((props: BottomSheetBackdropProps) => (
+    <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.72} pressBehavior="close" />
+  ), []);
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-      statusBarTranslucent
+    <BottomSheetModal
+      ref={sheetRef}
+      snapPoints={snapPoints}
+      onDismiss={onClose}
+      backdropComponent={renderBackdrop}
+      handleIndicatorStyle={{ backgroundColor: C.inkDim }}
+      backgroundStyle={{ backgroundColor: C.face, borderTopLeftRadius: 6, borderTopRightRadius: 6 }}
     >
-      <View style={styles.modalRoot}>
+      <View style={styles.pickerHeader}>
+        <Text style={styles.pickerTitle}>SELECT INSTRUMENT</Text>
         <Pressable
-          style={StyleSheet.absoluteFill}
           onPress={onClose}
-          accessibilityLabel="Close instrument picker"
-        />
-        <View style={styles.pickerSheet}>
-          <View style={styles.pickerHeader}>
-            <Text style={styles.pickerTitle}>SELECT INSTRUMENT</Text>
-            <Pressable
-              onPress={onClose}
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              style={({ pressed }) => [styles.pickerClose, pressed && styles.stepBtnPressed]}
-            >
-              <Text style={styles.pickerCloseText}>✕</Text>
-            </Pressable>
-          </View>
-          <ScrollView
-            style={styles.pickerScroll}
-            showsVerticalScrollIndicator
-            persistentScrollbar
-          >
-            {FAMILIES.map((family) => (
-              <View key={family.key} style={styles.pickerFamily}>
-                <Text style={styles.pickerFamilyLabel}>{family.nameEn.toUpperCase()}</Text>
-                {family.instruments.map((instKey) => {
-                  const inst = getInstrument(instKey);
-                  if (!inst) return null;
-                  const isSelected = instKey === currentKey;
-                  return (
-                    <Pressable
-                      key={instKey}
-                      onPress={() => onSelect(instKey)}
-                      unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
-                      accessibilityRole="menuitem"
-                      accessibilityLabel={inst.nameEn}
-                      accessibilityState={{ selected: isSelected }}
-                      style={({ pressed }) => [
-                        styles.pickerRow,
-                        isSelected && styles.pickerRowSelected,
-                        pressed && styles.pickerRowPressed,
-                      ]}
-                    >
-                      <Text style={[styles.pickerRowText, isSelected && styles.pickerRowTextSelected]}>
-                        {inst.nameEn}
-                      </Text>
-                      {isSelected && <Text style={styles.pickerRowCheck}>●</Text>}
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ))}
-            <View style={{ height: 24 }} />
-          </ScrollView>
-        </View>
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          style={({ pressed }) => [styles.pickerClose, pressed && styles.stepBtnPressed]}
+        >
+          <Text style={styles.pickerCloseText}>✕</Text>
+        </Pressable>
       </View>
-    </Modal>
+      <BottomSheetScrollView
+        contentContainerStyle={styles.pickerScroll}
+        showsVerticalScrollIndicator
+        persistentScrollbar
+      >
+        {FAMILIES.map((family) => (
+          <View key={family.key} style={styles.pickerFamily}>
+            <Text style={styles.pickerFamilyLabel}>{family.nameEn.toUpperCase()}</Text>
+            {family.instruments.map((instKey) => {
+              const inst = getInstrument(instKey);
+              if (!inst) return null;
+              const isSelected = instKey === currentKey;
+              return (
+                <Pressable
+                  key={instKey}
+                  onPress={() => onSelect(instKey)}
+                  accessibilityRole="menuitem"
+                  accessibilityLabel={inst.nameEn}
+                  accessibilityState={{ selected: isSelected }}
+                  style={({ pressed }) => [
+                    styles.pickerRow,
+                    isSelected && styles.pickerRowSelected,
+                    pressed && styles.pickerRowPressed,
+                  ]}
+                >
+                  <Text style={[styles.pickerRowText, isSelected && styles.pickerRowTextSelected]}>
+                    {inst.nameEn}
+                  </Text>
+                  {isSelected && <Text style={styles.pickerRowCheck}>●</Text>}
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
+        <View style={{ height: 24 }} />
+      </BottomSheetScrollView>
+    </BottomSheetModal>
   );
 }
 
@@ -977,72 +984,85 @@ export function HornNameEditor({
 }) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
+  // v0.9.4: gorhom bottom-sheet. Dynamic sizing — the small editor hugs its
+  // own content height. Keyboard appearance pushes the sheet up via gorhom's
+  // built-in handling (`keyboardBehavior="interactive"`).
+  const sheetRef = useRef<BottomSheetModal>(null);
   useEffect(() => {
-    if (visible) setDraft(initialValue);
+    if (visible) {
+      setDraft(initialValue);
+      sheetRef.current?.present();
+    } else {
+      sheetRef.current?.dismiss();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
+  const renderBackdrop = useCallback((props: BottomSheetBackdropProps) => (
+    <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.72} pressBehavior="close" />
+  ), []);
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-      statusBarTranslucent
+    <BottomSheetModal
+      ref={sheetRef}
+      enableDynamicSizing
+      onDismiss={onClose}
+      backdropComponent={renderBackdrop}
+      keyboardBehavior="interactive"
+      android_keyboardInputMode="adjustResize"
+      handleIndicatorStyle={{ backgroundColor: C.inkDim }}
+      backgroundStyle={{ backgroundColor: C.face, borderTopLeftRadius: 6, borderTopRightRadius: 6 }}
     >
-      <Pressable style={styles.pickerBackdrop} onPress={onClose} accessibilityLabel="Close horn name editor">
-        <Pressable style={styles.pickerSheet} onPress={() => {}}>
-          <View style={styles.pickerHeader}>
-            <Text style={styles.pickerTitle}>HORN NAME</Text>
+      <BottomSheetView>
+        <View style={styles.pickerHeader}>
+          <Text style={styles.pickerTitle}>HORN NAME</Text>
+          <Pressable
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+            style={({ pressed }) => [styles.pickerClose, pressed && styles.stepBtnPressed]}
+          >
+            <Text style={styles.pickerCloseText}>✕</Text>
+          </Pressable>
+        </View>
+        <View style={{ paddingHorizontal: 20, paddingVertical: 20, paddingBottom: 32 }}>
+          <Text style={styles.settingsRowHint}>
+            A label for this horn — e.g. "My Conn 10M", "Mark VI", "Yamaha YTS-62".
+            Used in the table view to compare runs across different instruments.
+          </Text>
+          <View style={{ marginTop: 16, flexDirection: 'row', gap: 8 }}>
+            <TextInput
+              style={styles.studentInput}
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="Horn nickname"
+              placeholderTextColor={C.inkDim}
+              returnKeyType="done"
+              onSubmitEditing={() => onSave(draft.trim())}
+              accessibilityLabel="Horn nickname"
+              autoFocus
+            />
             <Pressable
-              onPress={onClose}
+              onPress={() => onSave(draft.trim())}
               accessibilityRole="button"
-              accessibilityLabel="Close"
-              style={({ pressed }) => [styles.pickerClose, pressed && styles.stepBtnPressed]}
+              accessibilityLabel="Save horn name"
+              style={({ pressed }) => [styles.studentAddBtn, pressed && styles.studentAddBtnPressed]}
             >
-              <Text style={styles.pickerCloseText}>✕</Text>
+              <Text style={styles.studentAddBtnText}>SAVE</Text>
             </Pressable>
           </View>
-          <View style={{ paddingHorizontal: 20, paddingVertical: 20 }}>
-            <Text style={styles.settingsRowHint}>
-              A label for this horn — e.g. "My Conn 10M", "Mark VI", "Yamaha YTS-62".
-              Used in the table view to compare runs across different instruments.
-            </Text>
-            <View style={{ marginTop: 16, flexDirection: 'row', gap: 8 }}>
-              <TextInput
-                style={styles.studentInput}
-                value={draft}
-                onChangeText={setDraft}
-                placeholder="Horn nickname"
-                placeholderTextColor={C.inkDim}
-                returnKeyType="done"
-                onSubmitEditing={() => onSave(draft.trim())}
-                accessibilityLabel="Horn nickname"
-                autoFocus
-              />
-              <Pressable
-                onPress={() => onSave(draft.trim())}
-                accessibilityRole="button"
-                accessibilityLabel="Save horn name"
-                style={({ pressed }) => [styles.studentAddBtn, pressed && styles.studentAddBtnPressed]}
-              >
-                <Text style={styles.studentAddBtnText}>SAVE</Text>
-              </Pressable>
-            </View>
-            {draft.trim().length > 0 && (
-              <Pressable
-                onPress={() => onSave('')}
-                accessibilityRole="button"
-                accessibilityLabel="Clear horn nickname"
-                style={({ pressed }) => [styles.settingsLinkBtn, pressed && styles.settingsLinkBtnPressed, { marginTop: 16 }]}
-              >
-                <Text style={styles.settingsLinkBtnText}>CLEAR NAME</Text>
-              </Pressable>
-            )}
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+          {draft.trim().length > 0 && (
+            <Pressable
+              onPress={() => onSave('')}
+              accessibilityRole="button"
+              accessibilityLabel="Clear horn nickname"
+              style={({ pressed }) => [styles.settingsLinkBtn, pressed && styles.settingsLinkBtnPressed, { marginTop: 16 }]}
+            >
+              <Text style={styles.settingsLinkBtnText}>CLEAR NAME</Text>
+            </Pressable>
+          )}
+        </View>
+      </BottomSheetView>
+    </BottomSheetModal>
   );
 }
 

@@ -1,14 +1,26 @@
 /**
- * PitchPipes — full-screen modal, 12 chromatic note pads, concert pitch.
+ * PitchPipes — bottom-sheet, 12 chromatic note pads at concert pitch.
  *
- * Audio path: pitchTones.buildWavBase64() emits a properly-looped sine wave
- * as base64-encoded 16-bit PCM WAV. Android's ExoPlayer rejects data: URIs,
- * so we write the bytes to the cache directory and hand the resulting
- * file:// path to expo-audio's createAudioPlayer. Each note re-uses (or
- * regenerates if refHz changed) its own cache file, keyed by midi + refHz.
+ * v0.9.4: migrated from a full-screen react-native <Modal> to a
+ * `@gorhom/bottom-sheet` BottomSheetModal at the 92 % snap point. The pads
+ * area uses BottomSheetScrollView so the inner scroll and the sheet's
+ * drag-to-dismiss gesture coexist correctly — no responder fights.
+ *
+ * Audio path unchanged: pitchTones.buildWavBase64() emits a properly-looped
+ * sine wave as base64-encoded 16-bit PCM WAV. Android's ExoPlayer rejects
+ * data: URIs, so we write the bytes to the cache directory and hand the
+ * resulting file:// path to expo-audio's createAudioPlayer. Each note
+ * re-uses (or regenerates if refHz changed) its own cache file, keyed by
+ * midi + refHz.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  BottomSheetScrollView,
+} from '@gorhom/bottom-sheet';
+import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
 import { File, Paths } from 'expo-file-system';
 import { createAudioPlayer } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
@@ -29,6 +41,17 @@ export function PitchPipes({ visible, onClose, refHz, instrumentKey }: PitchPipe
   const [playingMidi, setPlayingMidi] = useState<number | null>(null);
   const playerRef = useRef<AudioPlayer | null>(null);
   const tuningMidi = tuningNoteForInstrument(instrumentKey)?.sounding_midi ?? null;
+
+  const sheetRef = useRef<BottomSheetModal>(null);
+  const snapPoints = useMemo(() => ['92%'], []);
+  useEffect(() => {
+    if (visible) sheetRef.current?.present();
+    else sheetRef.current?.dismiss();
+  }, [visible]);
+
+  const renderBackdrop = useCallback((props: BottomSheetBackdropProps) => (
+    <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.72} pressBehavior="close" />
+  ), []);
 
   const stopTone = useCallback(() => {
     const p = playerRef.current;
@@ -72,50 +95,54 @@ export function PitchPipes({ visible, onClose, refHz, instrumentKey }: PitchPipe
   }, [refHz, stopTone]);
 
   return (
-    <Modal visible={visible} transparent={false} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <View style={s.root}>
-        <View style={s.header}>
-          <View style={s.headerLeft}>
-            <Text style={s.title}>PITCH PIPES</Text>
-            <Text style={s.subtitle}>A = {refHz} Hz  ·  concert pitch</Text>
-          </View>
-          <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close pitch pipes"
-            style={({ pressed }) => [s.closeBtn, pressed && s.closeBtnPressed]}>
-            <Text style={s.closeBtnText}>✕</Text>
-          </Pressable>
+    <BottomSheetModal
+      ref={sheetRef}
+      snapPoints={snapPoints}
+      onDismiss={() => { stopTone(); onClose(); }}
+      backdropComponent={renderBackdrop}
+      handleIndicatorStyle={{ backgroundColor: C.inkDim }}
+      backgroundStyle={{ backgroundColor: C.face, borderTopLeftRadius: 6, borderTopRightRadius: 6 }}
+    >
+      <View style={s.header}>
+        <View style={s.headerLeft}>
+          <Text style={s.title}>PITCH PIPES</Text>
+          <Text style={s.subtitle}>A = {refHz} Hz  ·  concert pitch</Text>
         </View>
-
-        <ScrollView contentContainerStyle={s.pads} showsVerticalScrollIndicator={false}>
-          {CHROMATIC_OCTAVE.map((note) => {
-            const isPlaying = playingMidi === note.midi;
-            const isTuning = tuningMidi === note.midi;
-            const freqHz = midiToFrequency(note.midi, refHz);
-            return (
-              <Pressable key={note.midi} onPress={() => handlePadPress(note.midi)}
-                accessibilityRole="button"
-                accessibilityLabel={`${note.name}4, ${freqHz.toFixed(1)} Hz${isTuning ? ', tuning note' : ''}${isPlaying ? ', playing' : ''}`}
-                accessibilityState={{ selected: isPlaying }}
-                style={({ pressed }) => [s.pad, isTuning && s.padTuning, isPlaying && s.padPlaying, pressed && s.padPressed]}>
-                <Text style={[s.padNote, isPlaying && s.active]}>{note.name}</Text>
-                <Text style={[s.padOctave, isPlaying && s.active]}>4</Text>
-                <Text style={[s.padHz, isPlaying && s.active]}>{freqHz.toFixed(1)} Hz</Text>
-                {isPlaying && <View style={s.dot} />}
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-
-        <View style={s.footer}>
-          <Text style={s.footerText}>Tap a note to play. Tap again to stop. Notes are at concert pitch.</Text>
-        </View>
+        <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close pitch pipes"
+          style={({ pressed }) => [s.closeBtn, pressed && s.closeBtnPressed]}>
+          <Text style={s.closeBtnText}>✕</Text>
+        </Pressable>
       </View>
-    </Modal>
+
+      <BottomSheetScrollView contentContainerStyle={s.pads}>
+        {CHROMATIC_OCTAVE.map((note) => {
+          const isPlaying = playingMidi === note.midi;
+          const isTuning = tuningMidi === note.midi;
+          const freqHz = midiToFrequency(note.midi, refHz);
+          return (
+            <Pressable key={note.midi} onPress={() => handlePadPress(note.midi)}
+              accessibilityRole="button"
+              accessibilityLabel={`${note.name}4, ${freqHz.toFixed(1)} Hz${isTuning ? ', tuning note' : ''}${isPlaying ? ', playing' : ''}`}
+              accessibilityState={{ selected: isPlaying }}
+              style={({ pressed }) => [s.pad, isTuning && s.padTuning, isPlaying && s.padPlaying, pressed && s.padPressed]}>
+              <Text style={[s.padNote, isPlaying && s.active]}>{note.name}</Text>
+              <Text style={[s.padOctave, isPlaying && s.active]}>4</Text>
+              <Text style={[s.padHz, isPlaying && s.active]}>{freqHz.toFixed(1)} Hz</Text>
+              {isPlaying && <View style={s.dot} />}
+            </Pressable>
+          );
+        })}
+      </BottomSheetScrollView>
+
+      <View style={s.footer}>
+        <Text style={s.footerText}>Tap a note to play. Tap again to stop. Notes are at concert pitch.</Text>
+      </View>
+    </BottomSheetModal>
   );
 }
 
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
-    root:           { flex: 1, backgroundColor: C.face, paddingTop: 48 },
     header:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomColor: C.edge, borderBottomWidth: 1 },
     headerLeft:     { flex: 1 },
     title:          { color: C.ink, fontSize: 16, letterSpacing: 6, fontWeight: '700' },
@@ -135,6 +162,5 @@ function makeStyles(C: ThemePalette) {
     dot:            { width: 8, height: 8, borderRadius: 4, backgroundColor: C.inTune, marginTop: 6 },
     footer:         { paddingHorizontal: 24, paddingVertical: 16, borderTopColor: C.edge, borderTopWidth: 1, gap: 6 },
     footerText:     { color: C.inkMid, fontSize: 12, letterSpacing: 1, textAlign: 'center' },
-    footerWarn:     { color: C.inkDim, fontSize: 10, letterSpacing: 1, textAlign: 'center' },
   });
 }

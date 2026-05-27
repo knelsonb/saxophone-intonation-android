@@ -1,12 +1,27 @@
 /**
- * RangeEditor — modal for editing per-instrument fingered MIDI range.
+ * RangeEditor — bottom-sheet for editing per-instrument fingered MIDI range.
+ *
+ * v0.9.4: migrated from react-native's <Modal> + hand-rolled Pressable
+ * backdrop to @gorhom/bottom-sheet. The drag-handle, backdrop and dismiss
+ * gestures now come from the lib — no more touch-responder fights.
+ *
+ * Public interface is unchanged (visible / onClose / instrumentKey / etc.).
+ * Internally we keep a ref to the sheet and use a `visible` → present/dismiss
+ * effect so callers don't have to switch to imperative refs.
  *
  * Shows baked default from rangeMap. Saves override via saveRangeOverride.
  * Resets via clearRangeOverride. Validates lo < hi, both in [0,127].
- * Display uses displayMode for note labels but stores fingered MIDI internally.
+ * Display uses displayMode for note labels but stores fingered MIDI
+ * internally.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  BottomSheetView,
+} from '@gorhom/bottom-sheet';
+import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
 import { rangeMap, transpMap } from '../instruments';
 import { saveRangeOverride, clearRangeOverride } from '../storage/rangeOverrides';
 import { midiToNoteName } from '../music';
@@ -85,9 +100,22 @@ export function RangeEditor({
   const [lo, setLo] = useState<number>(currentRange[0]);
   const [hi, setHi] = useState<number>(currentRange[1]);
 
+  // Sheet wiring — preserves the public `visible` prop while the sheet uses
+  // imperative present/dismiss.
+  const sheetRef = useRef<BottomSheetModal>(null);
   useEffect(() => {
-    if (visible) { setLo(currentRange[0]); setHi(currentRange[1]); }
+    if (visible) {
+      setLo(currentRange[0]);
+      setHi(currentRange[1]);
+      sheetRef.current?.present();
+    } else {
+      sheetRef.current?.dismiss();
+    }
   }, [visible, currentRange]);
+
+  const renderBackdrop = useCallback((props: BottomSheetBackdropProps) => (
+    <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.72} pressBehavior="close" />
+  ), []);
 
   const isValid = lo < hi;
   const isDefault = lo === baked[0] && hi === baked[1];
@@ -106,55 +134,59 @@ export function RangeEditor({
   }, [instrumentKey, onReset, onClose]);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable style={s.backdrop} onPress={onClose} accessibilityLabel="Close range editor">
-        <Pressable style={s.sheet} onPress={() => {}}>
-          <View style={s.header}>
-            <Text style={s.headerTitle}>EDIT RANGE</Text>
-            <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close"
-              style={({ pressed }) => [s.closeBtn, pressed && s.closeBtnPressed]}>
-              <Text style={s.closeBtnText}>✕</Text>
-            </Pressable>
-          </View>
+    <BottomSheetModal
+      ref={sheetRef}
+      enableDynamicSizing
+      onDismiss={onClose}
+      backdropComponent={renderBackdrop}
+      handleIndicatorStyle={{ backgroundColor: C.inkDim }}
+      backgroundStyle={{ backgroundColor: C.face, borderTopLeftRadius: 6, borderTopRightRadius: 6 }}
+    >
+      <BottomSheetView style={s.sheet}>
+        <View style={s.header}>
+          <Text style={s.headerTitle}>EDIT RANGE</Text>
+          <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close"
+            style={({ pressed }) => [s.closeBtn, pressed && s.closeBtnPressed]}>
+            <Text style={s.closeBtnText}>✕</Text>
+          </Pressable>
+        </View>
 
-          <View style={s.defaultRow}>
-            <Text style={s.defaultLabel}>DEFAULT</Text>
-            <Text style={s.defaultValue}>
-              {midiLabel(baked[0], displayMode, instrumentKey)}
-              {'  —  '}
-              {midiLabel(baked[1], displayMode, instrumentKey)}
-              {'  '}
-              <Text style={s.defaultMidi}>({baked[0]}–{baked[1]})</Text>
-            </Text>
-          </View>
+        <View style={s.defaultRow}>
+          <Text style={s.defaultLabel}>DEFAULT</Text>
+          <Text style={s.defaultValue}>
+            {midiLabel(baked[0], displayMode, instrumentKey)}
+            {'  —  '}
+            {midiLabel(baked[1], displayMode, instrumentKey)}
+            {'  '}
+            <Text style={s.defaultMidi}>({baked[0]}–{baked[1]})</Text>
+          </Text>
+        </View>
 
-          <View style={s.steppers}>
-            <MidiStepper label="LOW" midiFing={lo} onChange={setLo} displayMode={displayMode} instrumentKey={instrumentKey} />
-            <MidiStepper label="HIGH" midiFing={hi} onChange={setHi} displayMode={displayMode} instrumentKey={instrumentKey} />
-          </View>
+        <View style={s.steppers}>
+          <MidiStepper label="LOW" midiFing={lo} onChange={setLo} displayMode={displayMode} instrumentKey={instrumentKey} />
+          <MidiStepper label="HIGH" midiFing={hi} onChange={setHi} displayMode={displayMode} instrumentKey={instrumentKey} />
+        </View>
 
-          {!isValid && <Text style={s.validationError}>Low must be below high.</Text>}
+        {!isValid && <Text style={s.validationError}>Low must be below high.</Text>}
 
-          <View style={s.actions}>
-            <Pressable onPress={handleReset} accessibilityRole="button" accessibilityLabel="Reset to default"
-              disabled={isDefault} style={({ pressed }) => [s.resetBtn, pressed && s.resetBtnPressed, isDefault && s.btnDisabled]}>
-              <Text style={s.resetBtnText}>RESET TO DEFAULT</Text>
-            </Pressable>
-            <Pressable onPress={handleSave} accessibilityRole="button" accessibilityLabel="Save range"
-              disabled={!isValid} style={({ pressed }) => [s.saveBtn, pressed && s.saveBtnPressed, !isValid && s.btnDisabled]}>
-              <Text style={s.saveBtnText}>SAVE</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        <View style={s.actions}>
+          <Pressable onPress={handleReset} accessibilityRole="button" accessibilityLabel="Reset to default"
+            disabled={isDefault} style={({ pressed }) => [s.resetBtn, pressed && s.resetBtnPressed, isDefault && s.btnDisabled]}>
+            <Text style={s.resetBtnText}>RESET TO DEFAULT</Text>
+          </Pressable>
+          <Pressable onPress={handleSave} accessibilityRole="button" accessibilityLabel="Save range"
+            disabled={!isValid} style={({ pressed }) => [s.saveBtn, pressed && s.saveBtnPressed, !isValid && s.btnDisabled]}>
+            <Text style={s.saveBtnText}>SAVE</Text>
+          </Pressable>
+        </View>
+      </BottomSheetView>
+    </BottomSheetModal>
   );
 }
 
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
-    backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
-    sheet: { backgroundColor: C.face, borderTopColor: C.edge, borderTopWidth: 1, borderTopLeftRadius: 6, borderTopRightRadius: 6, paddingBottom: 32 },
+    sheet: { paddingBottom: 32 },
     header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomColor: C.edgeSoft, borderBottomWidth: 1 },
     headerTitle: { color: C.ink, fontSize: 13, letterSpacing: 4, fontWeight: '700' },
     closeBtn: { width: H.touchTarget, height: H.touchTarget, alignItems: 'center', justifyContent: 'center', borderColor: C.edge, borderWidth: 1, borderRadius: 4 },

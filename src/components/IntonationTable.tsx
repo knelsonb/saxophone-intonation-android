@@ -1,12 +1,24 @@
 /**
- * IntonationTable — full-screen modal showing aggregated intonation data.
+ * IntonationTable — bottom-sheet showing aggregated intonation data.
  *
- * Refreshes every 2s while open. Columns: note name, mean cents (color-coded),
- * std dev, count. Footer: allow-out-of-range toggle + min-N stepper.
- * Overflow menu: "Clear data for this instrument" (tap-twice-to-confirm).
+ * v0.9.4: migrated from full-screen react-native <Modal> to
+ * `@gorhom/bottom-sheet` BottomSheetModal at the 95 % snap point. Inner
+ * scroll uses BottomSheetScrollView so the sheet's drag-to-dismiss gesture
+ * doesn't fight with row scrolling.
+ *
+ * Refreshes every 2s while open. Columns: note name, mean cents
+ * (color-coded), std dev, count. Footer: allow-out-of-range toggle + min-N
+ * stepper. Overflow menu: "Clear data for this instrument"
+ * (tap-twice-to-confirm).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  BottomSheetScrollView,
+} from '@gorhom/bottom-sheet';
+import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
 import { aggregateNotes, clearMeasurements } from '../storage/measurements';
 import type { AggregatedNote } from '../storage/measurements';
 import { midiToNoteName } from '../music';
@@ -67,6 +79,20 @@ export function IntonationTable({
   const [viewMode, setViewMode] = useState<ViewMode>('session');
   const clearArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Sheet wiring — translates the `visible` prop to imperative present /
+  // dismiss on the gorhom modal ref. A 95 % snap leaves a thin glimpse of
+  // the tab below so the user knows where they are; drag-down dismisses.
+  const sheetRef = useRef<BottomSheetModal>(null);
+  const snapPoints = useMemo(() => ['95%'], []);
+  useEffect(() => {
+    if (visible) sheetRef.current?.present();
+    else sheetRef.current?.dismiss();
+  }, [visible]);
+
+  const renderBackdrop = useCallback((props: BottomSheetBackdropProps) => (
+    <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.72} pressBehavior="close" />
+  ), []);
+
   const fetchRows = useCallback(async (mode: ViewMode) => {
     // In Last-2s mode lower minN to 1 — the window is small enough that
     // requiring "≥ minN" would routinely return zero rows for a tech who
@@ -119,7 +145,14 @@ export function IntonationTable({
     : rows.filter((r) => activeRange === null || (r.midiFing >= activeRange[0] && r.midiFing <= activeRange[1]));
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose} statusBarTranslucent>
+    <BottomSheetModal
+      ref={sheetRef}
+      snapPoints={snapPoints}
+      onDismiss={onClose}
+      backdropComponent={renderBackdrop}
+      handleIndicatorStyle={{ backgroundColor: C.inkDim }}
+      backgroundStyle={{ backgroundColor: C.bg, borderTopLeftRadius: 6, borderTopRightRadius: 6 }}
+    >
       <View style={s.root}>
         <View style={s.header}>
           <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close intonation table"
@@ -186,7 +219,7 @@ export function IntonationTable({
           <Text style={[s.colText, s.colN]}>N</Text>
         </View>
 
-        <ScrollView style={s.scroll} showsVerticalScrollIndicator={false}>
+        <BottomSheetScrollView style={s.scroll} showsVerticalScrollIndicator={false}>
           {displayRows.length === 0 ? (
             <View style={s.emptyState}>
               <Text style={s.emptyText}>
@@ -209,7 +242,7 @@ export function IntonationTable({
             ))
           )}
           <View style={{ height: 24 }} />
-        </ScrollView>
+        </BottomSheetScrollView>
 
         <View style={s.footer}>
           <View style={s.footerRow}>
@@ -242,7 +275,7 @@ export function IntonationTable({
           </View>
         </View>
       </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 
@@ -250,7 +283,8 @@ const COL_NOTE = 72; const COL_MEAN = 80; const COL_STD = 68; const COL_N = 44;
 
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
-    root: { flex: 1, backgroundColor: C.bg, paddingTop: 40 },
+    // No paddingTop — the BottomSheetModal handle area handles top spacing.
+    root: { flex: 1, backgroundColor: C.bg },
     header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomColor: C.edge, borderBottomWidth: 1 },
     headerBtn: { paddingHorizontal: 14, paddingVertical: 10, borderColor: C.edge, borderWidth: 1, borderRadius: 4, minWidth: 72, minHeight: H.touchTarget, alignItems: 'center', justifyContent: 'center' },
     headerBtnPressed: { backgroundColor: C.edge },
