@@ -161,9 +161,9 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
               <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextPrimary]}>SAVE</Text>
             </Pressable>
             <Pressable
-              onPress={deck.clearTake}
+              onPress={deck.requestClearTake}
               accessibilityRole="button"
-              accessibilityLabel="Clear the current take"
+              accessibilityLabel="Clear the current take (will ask to confirm)"
               style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnDanger, pressed && styles.deckActionBtnPressed]}
             >
               <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextDanger]}>CLEAR</Text>
@@ -227,6 +227,47 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
                 style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnDanger, pressed && styles.deckActionBtnPressed]}
               >
                 <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextDanger]}>DISCARD + RECORD</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* v1.0 — CLEAR confirmation. Same Modal shape as discard-and-record so
+          users see one consistent destructive-action pattern. */}
+      <Modal
+        visible={deck.pendingConfirm === 'clear-take'}
+        transparent
+        animationType="fade"
+        onRequestClose={deck.cancelClearTake}
+        statusBarTranslucent
+      >
+        <Pressable
+          style={styles.deckConfirmRoot}
+          onPress={deck.cancelClearTake}
+          accessibilityLabel="Dismiss confirmation"
+        >
+          <Pressable style={styles.deckConfirmCard} onPress={() => {}}>
+            <Text style={styles.deckConfirmTitle}>DISCARD CURRENT TAKE?</Text>
+            <Text style={styles.deckConfirmBody}>
+              Removes this take from playback. Saved copies on disk are not affected.
+            </Text>
+            <View style={styles.deckConfirmRow}>
+              <Pressable
+                onPress={deck.cancelClearTake}
+                accessibilityRole="button"
+                accessibilityLabel="Keep the current take"
+                style={({ pressed }) => [styles.deckActionBtn, pressed && styles.deckActionBtnPressed]}
+              >
+                <Text style={styles.deckActionBtnText}>KEEP</Text>
+              </Pressable>
+              <Pressable
+                onPress={deck.confirmClearTake}
+                accessibilityRole="button"
+                accessibilityLabel="Discard the take permanently"
+                style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnDanger, pressed && styles.deckActionBtnPressed]}
+              >
+                <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextDanger]}>DISCARD</Text>
               </Pressable>
             </View>
           </Pressable>

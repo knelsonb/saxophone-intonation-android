@@ -35,6 +35,10 @@ import type { AudioPlayer } from 'expo-audio';
 
 const MAX_RECORDING_SECONDS = 5 * 60; // 5 minutes
 
+// v1.0 — anything shorter than this on a background-forced stop is treated
+// as an accidental tap and dropped rather than kept as an orphan take.
+const MIN_VALID_TAKE_SEC = 0.5;
+
 const SAVED_DIRNAME = 'bellcurve-recordings';
 
 export type DeckMode = 'idle' | 'recording' | 'have-take' | 'playing';
@@ -63,18 +67,23 @@ export interface DeckState {
   playPos: number;
   /** Playback duration in seconds. 0 until first load. */
   playDur: number;
-  /** True while a confirmation dialog is pending (record-over-existing). */
-  pendingConfirm: 'discard-and-record' | null;
+  /** True while a confirmation dialog is pending. */
+  pendingConfirm: 'discard-and-record' | 'clear-take' | null;
   toast: DeckToast | null;
   // Actions
   startRecord: () => void;
   stopRecord: () => Promise<void>;
   togglePlayPause: () => void;
   scrubTo: (frac: number) => void;
+  /** Immediate clear — no confirm. Prefer `requestClearTake` from the UI. */
   clearTake: () => void;
   saveTake: () => Promise<void>;
   confirmDiscardAndRecord: () => void;
   cancelDiscardAndRecord: () => void;
+  // v1.0 — CLEAR is destructive: route the UI through a confirm gate.
+  requestClearTake: () => void;
+  confirmClearTake: () => void;
+  cancelClearTake: () => void;
 }
 
 export function useDeck(): DeckState {
@@ -262,6 +271,23 @@ export function useDeck(): DeckState {
     setTake(null);
   }, [disposePlayer]);
 
+  // v1.0 — confirm gate for CLEAR. We don't track a "saved to disk" flag on
+  // the take (Save copies but the in-memory take stays), so confirm always.
+  const requestClearTake = useCallback(() => {
+    if (!take) return;
+    setPendingConfirm('clear-take');
+  }, [take]);
+
+  const confirmClearTake = useCallback(() => {
+    setPendingConfirm(null);
+    disposePlayer();
+    setTake(null);
+  }, [disposePlayer]);
+
+  const cancelClearTake = useCallback(() => {
+    setPendingConfirm(null);
+  }, []);
+
   const saveTake = useCallback(async () => {
     if (!take) return;
     try {
@@ -290,12 +316,33 @@ export function useDeck(): DeckState {
 
   // Background → stop recording. Don't auto-resume; user must hit RECORD
   // again. (Background recording would need a foreground service we don't
-  // ship.)
+  // ship.) v1.0 — actually PRESERVE the take if there's one in flight:
+  // await the stop, capture the URI + duration, and write it into state so
+  // returning to the foreground finds the take ready for review/save.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background' || nextState === 'inactive') {
         if (recState.isRecording) {
-          recorder.stop().catch(() => {});
+          // Snapshot duration before stop — recState updates may not propagate
+          // before we read the URI.
+          const durSec = (recState.durationMillis ?? 0) / 1000;
+          (async () => {
+            try {
+              await recorder.stop();
+            } catch {
+              // If stop itself blew up there's nothing to salvage.
+              return;
+            }
+            const uri = recorder.uri;
+            if (!uri) return;
+            if (durSec < MIN_VALID_TAKE_SEC) return; // drop orphan silently
+            disposePlayer();
+            setTake({
+              uri,
+              durationSec: durSec,
+              capturedAtMs: Date.now(),
+            });
+          })();
         }
         const p = playerRef.current;
         if (p && playing) {
@@ -305,7 +352,7 @@ export function useDeck(): DeckState {
       }
     });
     return () => sub.remove();
-  }, [recorder, recState.isRecording, playing]);
+  }, [recorder, recState.isRecording, recState.durationMillis, playing, disposePlayer]);
 
   useEffect(() => {
     return () => disposePlayer();
@@ -337,5 +384,8 @@ export function useDeck(): DeckState {
     saveTake,
     confirmDiscardAndRecord,
     cancelDiscardAndRecord,
+    requestClearTake,
+    confirmClearTake,
+    cancelClearTake,
   };
 }

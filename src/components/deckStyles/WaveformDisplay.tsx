@@ -116,6 +116,17 @@ export function WaveformDisplay({
         {/* Explicit center line — anchors the eye on the symmetric envelope. */}
         <View style={styles.centerLine} pointerEvents="none" />
 
+        {/* v1.0 — honesty chip. Until real RMS is wired (v1.1), the envelope
+            is a seeded PRNG, not a measurement. Tell the user. */}
+        <View
+          style={styles.decorativeChip}
+          accessible
+          accessibilityLabel="Decorative visualization. Amplitude not measured from audio."
+          pointerEvents="none"
+        >
+          <Text style={styles.decorativeChipText}>DECORATIVE</Text>
+        </View>
+
         {env.length === 0 ? (
           <Text style={styles.placeholder}>NO SIGNAL</Text>
         ) : (
@@ -211,5 +222,22 @@ function makeStyles(C: ThemePalette) {
     timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, paddingHorizontal: 4 },
     timeText: { color: C.inkMid, fontSize: 12, letterSpacing: 1, fontVariant: ['tabular-nums'] },
     status: { color: C.inkDim, fontSize: 11, letterSpacing: 3, marginTop: 6, textAlign: 'center', fontWeight: '700' },
+    decorativeChip: {
+      position: 'absolute',
+      top: 4,
+      right: 4,
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      borderRadius: 2,
+      borderWidth: 1,
+      borderColor: C.inkDim,
+      backgroundColor: C.bg,
+    },
+    decorativeChipText: {
+      color: C.inkDim,
+      fontSize: 8,
+      letterSpacing: 1.5,
+      fontWeight: '700',
+    },
   });
 }

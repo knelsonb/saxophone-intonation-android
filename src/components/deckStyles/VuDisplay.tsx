@@ -236,6 +236,15 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
 
   return (
     <View style={styles.root}>
+      {/* v1.0 — needle motion is synthesized (see file header). Flag it. */}
+      <View
+        style={styles.decorativeChip}
+        accessible
+        accessibilityLabel="Decorative visualization. Amplitude not measured from audio."
+        pointerEvents="none"
+      >
+        <Text style={styles.decorativeChipText}>DECORATIVE</Text>
+      </View>
       <View style={styles.row}>
         {renderMeter('L', lAnim)}
         {renderMeter('R', rAnim)}
@@ -247,9 +256,27 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
 
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
-    root: { alignItems: 'center', marginTop: 8, marginBottom: 8 },
+    root: { alignItems: 'center', marginTop: 8, marginBottom: 8, position: 'relative' },
     row: { flexDirection: 'row', gap: 14 },
     meter: { alignItems: 'center' },
+    decorativeChip: {
+      position: 'absolute',
+      top: 0,
+      right: 4,
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      borderRadius: 2,
+      borderWidth: 1,
+      borderColor: C.inkDim,
+      backgroundColor: C.bg,
+      zIndex: 2,
+    },
+    decorativeChipText: {
+      color: C.inkDim,
+      fontSize: 8,
+      letterSpacing: 1.5,
+      fontWeight: '700',
+    },
 
     face: {
       width: DIAL_W,
