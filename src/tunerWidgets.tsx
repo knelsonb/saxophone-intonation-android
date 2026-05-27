@@ -23,6 +23,7 @@
  * built by `makeStyles` in `uiShared.tsx`.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { TabKey } from './components/TabBar'; // v1.2 — tab-aware TopBar
 import {
   Animated,
   DimensionValue,
@@ -40,6 +41,7 @@ import {
 } from '@gorhom/bottom-sheet';
 import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
 import { useTheme } from './theme';
+import type { ThemePalette } from './theme'; // v1.2 — needed by makeTopBarStyles
 import {
   makeStyles,
   PEAK_PAD,
@@ -202,14 +204,20 @@ export function DiagnosticLine({
 }
 
 // ---------------------------------------------------------------------------
-// TopBar — tab-aware. Without a gear icon (SETUP is its own tab now).
+// TopBar — tab-aware (v1.2). Fixed total height 136dp across all four tabs.
+// Non-rendered slots become invisible spacers so body content never reflows.
 // ---------------------------------------------------------------------------
 
+// v1.2 — total height constant matches §14.3 pixel budget (136dp locked).
+const TOP_BAR_HEIGHT = 136;
+
 export function TopBar({
+  activeTab,                           // v1.2 — drives per-tab pill rendering
   status, streamErrorReason, refHz, setRefHz, compact,
   badgeText, displayMode, setDisplayMode, onBadgePress, onTablePress, onPipesPress,
   hornName,
 }: {
+  activeTab: TabKey;                   // v1.2 — NEW
   status: EngineStatus;
   streamErrorReason: string | null;
   refHz: number;
@@ -225,7 +233,15 @@ export function TopBar({
 }) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
+  const tb = useMemo(() => makeTopBarStyles(C), [C]);
   void compact;
+
+  // v1.2 — tab guards
+  const isTuner = activeTab === 'tuner';
+  const isMetro = activeTab === 'metro';
+  const isDeck  = activeTab === 'deck';
+  const isSetup = activeTab === 'setup';
+  void isSetup; // always-on rows cover setup; no positive branch needed
 
   const bump = (d: number) =>
     setRefHz(Math.max(REF_HZ_MIN, Math.min(REF_HZ_MAX, refHz + d)));
@@ -241,76 +257,21 @@ export function TopBar({
     status === 'stream-failed' ? 'NO AUDIO' :
                                 'WAITING FOR MIC';
 
+  // v1.2 — status caption text (empty string reserves the slot on all tabs)
+  const captionText = statusLabel !== null
+    ? `${statusLabel}${streamErrorReason !== null ? ` — ${streamErrorReason.slice(0, 40)}` : ''}`
+    : '';
+
   return (
-    <View style={styles.topBar}>
-      <Text style={styles.brand} numberOfLines={1}>{APP_NAME}</Text>
+    // v1.2 — outer container locked at 136dp; overflow hidden prevents bleed.
+    // [styles.topBar] supplies the bottom border + borderBottomColor; we
+    // overlay height + overflow via the local tb.container key.
+    <View style={[styles.topBar, tb.container]}>
 
-      <View style={styles.topRow2}>
-        <Pressable
-          onPress={onBadgePress}
-          accessibilityRole="button"
-          accessibilityLabel={
-            hornName.length > 0
-              ? `Current instrument: ${badgeText}. Horn: ${hornName}. Tap to change.`
-              : `Current instrument: ${badgeText}. Tap to change.`
-          }
-          style={({ pressed }) => [styles.badgePressable, pressed && styles.badgePressablePressed]}
-        >
-          <Text style={styles.instrumentBadge} numberOfLines={1}>{badgeText}</Text>
-          {hornName.length > 0 && (
-            <Text style={styles.hornNameCaption} numberOfLines={1}>{hornName}</Text>
-          )}
-        </Pressable>
-
-        <View style={styles.refContainer}>
-          <Pressable
-            onPress={() => bump(-1)}
-            accessibilityRole="button"
-            accessibilityLabel="Decrease reference by 1 Hz"
-            style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
-          >
-            <Text style={styles.stepBtnText}>−</Text>
-          </Pressable>
-          <Text style={styles.refValue}>A={refHz}</Text>
-          <Pressable
-            onPress={() => bump(1)}
-            accessibilityRole="button"
-            accessibilityLabel="Increase reference by 1 Hz"
-            style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
-          >
-            <Text style={styles.stepBtnText}>+</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.displayToggle}>
-          <Pressable
-            onPress={() => setDisplayMode('griff')}
-            accessibilityRole="button"
-            accessibilityLabel="Show the note as written on the page (fingered pitch)"
-            accessibilityState={{ selected: displayMode === 'griff' }}
-            style={({ pressed }) => [
-              styles.displayPill,
-              displayMode === 'griff' && styles.displayPillActive,
-              pressed && styles.gainPillPressed,
-            ]}
-          >
-            <Text style={[styles.displayPillText, displayMode === 'griff' && styles.displayPillTextActive]}>PAGE</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setDisplayMode('klingend')}
-            accessibilityRole="button"
-            accessibilityLabel="Show the concert pitch — what comes out of the horn"
-            accessibilityState={{ selected: displayMode === 'klingend' }}
-            style={({ pressed }) => [
-              styles.displayPill,
-              displayMode === 'klingend' && styles.displayPillActive,
-              pressed && styles.gainPillPressed,
-            ]}
-          >
-            <Text style={[styles.displayPillText, displayMode === 'klingend' && styles.displayPillTextActive]}>CONCERT</Text>
-          </Pressable>
-        </View>
-
+      {/* ── Row 1: BELLCURVE wordmark + status dot — always-on ── */}
+      {/* Status dot lifted out of topRow2 into the always-on row (§14.1). */}
+      <View style={tb.wordmarkRow}>
+        <Text style={styles.brand} numberOfLines={1}>{APP_NAME}</Text>
         <View
           style={[styles.statusDotLarge, { backgroundColor: statusColor }]}
           accessibilityRole="image"
@@ -318,31 +279,126 @@ export function TopBar({
         />
       </View>
 
-      {statusLabel !== null && (
-        <Text style={styles.statusCaption} numberOfLines={1}>
-          {statusLabel}{streamErrorReason !== null ? ` — ${streamErrorReason.slice(0, 40)}` : ''}
-        </Text>
+      {/* ── Row 2: badge + A= + optional displayToggle — tab-conditional ── */}
+      {/*
+          TUNER  → full row: badge + A= stepper + PAGE/CONCERT toggle
+          METRO  → lite row: badge + A= stepper (no PAGE/CONCERT)
+          DECK   → lite row: badge + A= stepper (no PAGE/CONCERT)
+          SETUP  → invisible spacer only
+      */}
+      {(isTuner || isMetro || isDeck) ? (
+        <View style={tb.pillsRow}>
+          {/* Instrument badge */}
+          <Pressable
+            onPress={onBadgePress}
+            accessibilityRole="button"
+            accessibilityLabel={
+              hornName.length > 0
+                ? `Current instrument: ${badgeText}. Horn: ${hornName}. Tap to change.`
+                : `Current instrument: ${badgeText}. Tap to change.`
+            }
+            style={({ pressed }) => [styles.badgePressable, tb.badgeCompact, pressed && styles.badgePressablePressed]}
+          >
+            <Text style={styles.instrumentBadge} numberOfLines={1}>{badgeText}</Text>
+            {hornName.length > 0 && (
+              <Text style={styles.hornNameCaption} numberOfLines={1}>{hornName}</Text>
+            )}
+          </Pressable>
+
+          {/* A= stepper */}
+          <View style={[styles.refContainer, tb.refCompact]}>
+            <Pressable
+              onPress={() => bump(-1)}
+              accessibilityRole="button"
+              accessibilityLabel="Decrease reference by 1 Hz"
+              style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+            >
+              <Text style={styles.stepBtnText}>−</Text>
+            </Pressable>
+            <Text style={styles.refValue}>A={refHz}</Text>
+            <Pressable
+              onPress={() => bump(1)}
+              accessibilityRole="button"
+              accessibilityLabel="Increase reference by 1 Hz"
+              style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+            >
+              <Text style={styles.stepBtnText}>+</Text>
+            </Pressable>
+          </View>
+
+          {/* PAGE/CONCERT toggle — TUNER only (§14.2, §15.Q14.3) */}
+          {isTuner && (
+            <View style={styles.displayToggle}>
+              <Pressable
+                onPress={() => setDisplayMode('griff')}
+                accessibilityRole="button"
+                accessibilityLabel="Show the note as written on the page (fingered pitch)"
+                accessibilityState={{ selected: displayMode === 'griff' }}
+                style={({ pressed }) => [
+                  styles.displayPill,
+                  tb.pillCompact,
+                  displayMode === 'griff' && styles.displayPillActive,
+                  pressed && styles.gainPillPressed,
+                ]}
+              >
+                <Text style={[styles.displayPillText, displayMode === 'griff' && styles.displayPillTextActive]}>PAGE</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setDisplayMode('klingend')}
+                accessibilityRole="button"
+                accessibilityLabel="Show the concert pitch — what comes out of the horn"
+                accessibilityState={{ selected: displayMode === 'klingend' }}
+                style={({ pressed }) => [
+                  styles.displayPill,
+                  tb.pillCompact,
+                  displayMode === 'klingend' && styles.displayPillActive,
+                  pressed && styles.gainPillPressed,
+                ]}
+              >
+                <Text style={[styles.displayPillText, displayMode === 'klingend' && styles.displayPillTextActive]}>CONCERT</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      ) : (
+        // SETUP — invisible spacer preserves 136dp height invariant (§14.3)
+        <View style={tb.pillsSpacer} accessibilityElementsHidden importantForAccessibility="no" />
       )}
 
-      {/* TABLE + PIPES row. The gear icon is gone — SETUP is the bottom tab. */}
-      <View style={styles.topNavRow}>
-        <Pressable
-          onPress={onTablePress}
-          accessibilityRole="button"
-          accessibilityLabel="Open intonation table"
-          style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
-        >
-          <Text style={styles.iconBtnText}>TABLE</Text>
-        </Pressable>
-        <Pressable
-          onPress={onPipesPress}
-          accessibilityRole="button"
-          accessibilityLabel="Open pitch pipes"
-          style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
-        >
-          <Text style={styles.iconBtnText}>PIPES</Text>
-        </Pressable>
-      </View>
+      {/* ── Status caption slot — always rendered; empty string = reserved height ── */}
+      {/* §14.1: reserves 16dp slot even when status is healthy (no reflow). */}
+      <Text
+        style={[styles.statusCaption, tb.captionSlot]}
+        numberOfLines={1}
+        accessibilityLiveRegion="polite"
+      >
+        {captionText}
+      </Text>
+
+      {/* ── Row 4: TABLE + PIPES nav — TUNER only; spacer on other tabs ── */}
+      {isTuner ? (
+        <View style={[styles.topNavRow, tb.navRowCompact]}>
+          <Pressable
+            onPress={onTablePress}
+            accessibilityRole="button"
+            accessibilityLabel="Open intonation table"
+            style={({ pressed }) => [styles.iconBtn, tb.navBtnCompact, pressed && styles.iconBtnPressed]}
+          >
+            <Text style={styles.iconBtnText}>TABLE</Text>
+          </Pressable>
+          <Pressable
+            onPress={onPipesPress}
+            accessibilityRole="button"
+            accessibilityLabel="Open pitch pipes"
+            style={({ pressed }) => [styles.iconBtn, tb.navBtnCompact, pressed && styles.iconBtnPressed]}
+          >
+            <Text style={styles.iconBtnText}>PIPES</Text>
+          </Pressable>
+        </View>
+      ) : (
+        // Invisible spacer — same height as navRow — keeps 136dp invariant
+        <View style={tb.navSpacer} accessibilityElementsHidden importantForAccessibility="no" />
+      )}
     </View>
   );
 }
@@ -1091,6 +1147,102 @@ export function HornNameEditor({
     </BottomSheetModal>
   );
 }
+
+// ---------------------------------------------------------------------------
+// makeTopBarStyles — local style factory for TopBar only.
+// Lives here (not in uiShared.tsx) because uiShared is Frodo's wave-2 territory.
+//
+// Height budget (§14.3 — 136dp locked):
+//   wordmarkRow  42dp  (brand fontSize:28 + paddingTop:8 + paddingBottom:6 → fits in 42 via overflow:hidden)
+//   pillsRow     44dp  (H.pillHeight; badge + refContainer clipped to this height)
+//   captionSlot  16dp  (always rendered; empty when status = 'listening')
+//   navRow       28dp  (TABLE/PIPES buttons or spacer; paddingTop stripped)
+//   topBar.paddingBottom  6dp  (from uiShared topBar style)
+//   ──────────────────────────
+//   TOTAL       136dp  ✓
+// ---------------------------------------------------------------------------
+
+function makeTopBarStyles(C: ThemePalette) {
+  return StyleSheet.create({
+    // Outer container — locks total height. Merges with uiShared styles.topBar
+    // (border + paddingBottom) via array spread in JSX.
+    container: {
+      height: TOP_BAR_HEIGHT,
+      overflow: 'hidden',
+    },
+
+    // Row 1: BELLCURVE wordmark + status dot (always-on)
+    // brand style's own paddingTop:8 + fontSize:28 + paddingBottom:6 ≈ 42dp.
+    wordmarkRow: {
+      height: 42,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      overflow: 'hidden',
+    },
+
+    // Row 2 (TUNER/METRO/DECK): badge + A= + optional displayToggle
+    pillsRow: {
+      height: 44,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      overflow: 'hidden',
+    },
+
+    // Row 2 SETUP spacer — same 44dp, invisible
+    pillsSpacer: {
+      height: 44,
+    },
+
+    // Override badgePressable minHeight so it fits inside the 44dp pillsRow
+    badgeCompact: {
+      minHeight: 36,
+      paddingVertical: 4,
+    },
+
+    // Override refContainer minHeight to fit inside 44dp pillsRow
+    refCompact: {
+      minHeight: 36,
+    },
+
+    // Override displayPill height to fit inside 44dp pillsRow
+    pillCompact: {
+      height: 36,
+    },
+
+    // Status caption slot — always rendered (empty string when status = 'listening').
+    // 16dp reserved regardless of content; kills reflow when status changes.
+    captionSlot: {
+      height: 16,
+      marginTop: 0, // neutralise the marginTop:2 from uiShared statusCaption
+      lineHeight: 14,
+    },
+
+    // Row 4 (TUNER): TABLE + PIPES nav row — compacted from uiShared topNavRow
+    // (uiShared has paddingTop:8 + paddingBottom:2 + iconBtn height:48 = 58dp;
+    //  here we strip padding and shrink btn height to 28dp)
+    navRowCompact: {
+      height: 28,
+      paddingTop: 0,
+      paddingBottom: 0,
+      alignItems: 'center',
+    },
+
+    // Compact nav buttons — height reduced to fit 28dp row
+    navBtnCompact: {
+      height: 28,
+      minWidth: 56,
+    },
+
+    // Row 4 spacer for non-TUNER tabs — same 28dp, invisible
+    navSpacer: {
+      height: 28,
+    },
+  });
+}
+// Re-export for potential future use, but the factory is consumed locally above.
+export { makeTopBarStyles };
 
 // ---------------------------------------------------------------------------
 // PermissionGate

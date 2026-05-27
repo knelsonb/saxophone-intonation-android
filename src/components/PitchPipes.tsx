@@ -6,14 +6,14 @@
  * area uses BottomSheetScrollView so the inner scroll and the sheet's
  * drag-to-dismiss gesture coexist correctly — no responder fights.
  *
- * Audio path unchanged: pitchTones.buildWavBase64() emits a properly-looped
- * sine wave as base64-encoded 16-bit PCM WAV. Android's ExoPlayer rejects
- * data: URIs, so we write the bytes to the cache directory and hand the
- * resulting file:// path to expo-audio's createAudioPlayer. Each note
- * re-uses (or regenerates if refHz changed) its own cache file, keyed by
- * midi + refHz.
+ * v1.3 Wave 2C: audio path swapped from the expo-audio WAV-loop to a
+ * MIDI-bus-mediated infinite-sustain pipe (see src/usePitchPipes.ts and
+ * docs/v1.3-state-machine-scrub.md §6.5.10). UI layout unchanged — only
+ * the tap handler and the "is playing" highlight bind through the hook.
+ * The legacy WAV synth (pitchTones.buildWavBase64) is retained for now
+ * per G15 (`@deprecated` one release, delete in v1.4).
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   BottomSheetBackdrop,
@@ -21,10 +21,8 @@ import {
   BottomSheetScrollView,
 } from '@gorhom/bottom-sheet';
 import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
-import { File, Paths } from 'expo-file-system';
-import { createAudioPlayer } from 'expo-audio';
-import type { AudioPlayer } from 'expo-audio';
-import { CHROMATIC_OCTAVE, buildWavBase64, midiToFrequency, tuningNoteForInstrument } from '../pitchTones';
+import { CHROMATIC_OCTAVE, midiToFrequency, tuningNoteForInstrument } from '../pitchTones';
+import type { PipesState } from '../usePitchPipes';
 import { useTheme, H } from '../theme';
 import type { ThemePalette } from '../theme';
 
@@ -33,13 +31,20 @@ interface PitchPipesProps {
   onClose: () => void;
   refHz: number;
   instrumentKey: string;
+  // v1.3.1 hotfix — pipes state lifted to App.tsx (single owner of the
+  // 'pipes' channel reservation). Passing the hook return down as a prop
+  // so the modal doesn't claim the channel a second time and lose to the
+  // bus's first-claimant-wins policy. (U23 silent fallback was hiding this.)
+  pipes: PipesState;
 }
 
-export function PitchPipes({ visible, onClose, refHz, instrumentKey }: PitchPipesProps) {
+export function PitchPipes({ visible, onClose, refHz, instrumentKey, pipes }: PitchPipesProps) {
   const C = useTheme();
   const s = useMemo(() => makeStyles(C), [C]);
-  const [playingMidi, setPlayingMidi] = useState<number | null>(null);
-  const playerRef = useRef<AudioPlayer | null>(null);
+  void refHz; // a4Hz is consumed inside the App-level usePitchPipes call.
+
+  const playingMidi = pipes.currentMidi;
+
   const tuningMidi = tuningNoteForInstrument(instrumentKey)?.sounding_midi ?? null;
 
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -53,52 +58,23 @@ export function PitchPipes({ visible, onClose, refHz, instrumentKey }: PitchPipe
     <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.72} pressBehavior="close" />
   ), []);
 
-  const stopTone = useCallback(() => {
-    const p = playerRef.current;
-    if (p) {
-      try { p.pause(); } catch { /* ignore */ }
-      try { p.remove(); } catch { /* ignore */ }
-      playerRef.current = null;
-    }
-    setPlayingMidi(null);
-  }, []);
-
-  const startTone = useCallback(async (midi: number) => {
-    try {
-      stopTone();
-      const b64 = buildWavBase64(midi, refHz);
-      const file = new File(Paths.cache, `tone_${midi}_${Math.round(refHz)}.wav`);
-      if (file.exists) file.delete();
-      file.create();
-      file.write(b64, { encoding: 'base64' });
-      const player = createAudioPlayer({ uri: file.uri });
-      player.loop = true;
-      player.play();
-      playerRef.current = player;
-      setPlayingMidi(midi);
-    } catch {
-      // If anything failed, still flip the visual indicator so the user gets
-      // *some* feedback. The audible feedback is the bonus.
-      setPlayingMidi(midi);
-    }
-  }, [refHz, stopTone]);
-
   const handlePadPress = useCallback((midi: number) => {
-    if (playingMidi === midi) stopTone(); else startTone(midi);
-  }, [playingMidi, startTone, stopTone]);
+    pipes.toggle(midi);
+  }, [pipes]);
 
-  useEffect(() => { if (!visible) stopTone(); }, [visible, stopTone]);
-
-  const prevRefHz = useRef(refHz);
+  // When the modal hides, kill the sustaining pipe so the user never has a
+  // "ghost note" continuing when they expect silence. The hook's a4Hz dep
+  // already handles refHz mid-sustain by re-applying the baseline bend, so
+  // we don't need to stop on refHz change.
   useEffect(() => {
-    if (prevRefHz.current !== refHz) { stopTone(); prevRefHz.current = refHz; }
-  }, [refHz, stopTone]);
+    if (!visible) pipes.release();
+  }, [visible, pipes]);
 
   return (
     <BottomSheetModal
       ref={sheetRef}
       snapPoints={snapPoints}
-      onDismiss={() => { stopTone(); onClose(); }}
+      onDismiss={() => { pipes.release(); onClose(); }}
       backdropComponent={renderBackdrop}
       handleIndicatorStyle={{ backgroundColor: C.inkDim }}
       backgroundStyle={{ backgroundColor: C.face, borderTopLeftRadius: 6, borderTopRightRadius: 6 }}

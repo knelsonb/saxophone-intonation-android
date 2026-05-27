@@ -20,10 +20,13 @@
  *      remembers the previous run state so it can resume when the user
  *      returns.
  *
- * Audio path: two short percussive WAV blobs (one `accent`, one `normal`),
- * written once to the cache directory and replayed via `expo-audio`'s
- * `createAudioPlayer`. Each beat seeks back to 0 and calls `play()` — the
- * cost is small relative to the 500 ms gap between beats at 120 BPM.
+ * Audio path (v1.3): the metronome is purely a scheduler. Every beat tick
+ * produces a `noteOn(midi, velocity)` on the bus's reserved `'drums'`
+ * channel (GM channel 9). The bus decides whether the noteOn lands on TSF
+ * or on the WAV-fallback path during synth warm-up (G13 — bus owns the
+ * fallback). useMetronome no longer imports expo-audio, no longer holds
+ * AudioPlayer refs, no longer generates click WAVs, no longer polls
+ * synth.isReady — those concerns moved into the bus in Wave 1A.
  *
  * VERIFICATION: hand-tune `metroClickOffsetMs` by recording the device
  * speaker + screen with another phone's 240fps slow-mo camera. Step through
@@ -33,26 +36,94 @@
  * window; user can nudge ±5 ms from SETUP if the room or output route
  * changes.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
-import { File, Paths } from 'expo-file-system';
-import { createAudioPlayer } from 'expo-audio';
-import type { AudioPlayer } from 'expo-audio';
-import { buildClickWavBase64 } from './audioGen';
-import { loadPrefs, savePrefs } from './storage/prefs';
+import { loadMetroProfiles, loadPrefs, prefsUpdate, savePrefs } from './storage/prefs';
+import type { MetroProfile } from './storage/prefs';
+import type { ChannelHandle, ChannelRole, MidiBusState } from './useMidiBusCore';
+import type { EditableProfile } from './components/ProfileEditorAccordion';
+import { log } from './log';
 
-export type TimeSig = '2/4' | '3/4' | '4/4' | '6/8';
+// v1.2 — TimeSig is a tagged union. The denominator is for notation only;
+// beats-per-bar = numerator regardless of denominator (the existing 6/8
+// preset already counts six eighth-notes per bar at the displayed BPM —
+// custom inherits that). Future engineers WILL try to make 6/8 sound like
+// 6/8 — do not let them.
+export type TimeSigPreset = '2/4' | '3/4' | '4/4' | '6/8';
+export type TimeSig =
+  | { kind: 'preset'; value: TimeSigPreset }
+  | { kind: 'custom'; num: number; den: 2 | 4 | 8 | 16 | 32 };
 
-const TIME_SIG_BEATS: Record<TimeSig, number> = {
+const TIME_SIG_PRESET_BEATS: Record<TimeSigPreset, number> = {
   '2/4': 2,
   '3/4': 3,
   '4/4': 4,
   '6/8': 6,
 };
 
+/** Beats-per-bar — numerator for custom, hard-coded count for presets. */
+export function beatsPerBar(ts: TimeSig): number {
+  if (ts.kind === 'preset') return TIME_SIG_PRESET_BEATS[ts.value];
+  return ts.num;
+}
+
+/**
+ * v1.2 — per-beat instrument. Velocity carried in the type for forward-compat
+ * with v1.3's per-cell-velocity UI (§15.Q11.4); v1.2 surfaces no velocity UI.
+ *
+ * v1.3 (G14) — `channel` is RESERVED for v1.4 multi-channel patterns
+ * (e.g. fire a kick on 'drums' AND a cowbell on 'aux1' from the same cell).
+ * v1.3 ALWAYS omits this field; the dispatcher unconditionally routes to
+ * the 'drums' channel handle reserved on hook mount. The field is typed
+ * here purely for forward-compatibility so future profile JSON written
+ * by v1.4 doesn't have to widen the schema.
+ */
+export interface BeatInstrument {
+  /** GM percussion note 35..81 (channel 9). */
+  midi: number;
+  /** MIDI velocity 1..127. */
+  velocity: number;
+  /**
+   * v1.4-reserved per-cell channel override. v1.3 ignores this field; do
+   * not populate it from any v1.3 code path. See council G14.
+   */
+  channel?: ChannelRole;
+}
+
+// v1.2 — subdivision mode. Mutually exclusive (§15.Q11.2).
+export type Subdivision = 'off' | '8th' | '16th' | 'triplet';
+
+const SUBS_PER_BEAT: Record<Subdivision, number> = {
+  'off':     1,
+  '8th':     2,
+  '16th':    4,
+  'triplet': 3,
+};
+
+// v1.2 — hard-coded GM drum defaults. Wave 2 may import these from
+// src/drumVoices.ts (created by Ent); hard-coding here avoids a build-time
+// dependency on a not-yet-landed sibling.
+const DEFAULT_BEAT_1_MIDI = 36;      // Bass Drum 1
+const DEFAULT_BEAT_1_VELOCITY = 110; // accented downbeat
+const DEFAULT_BEAT_N_MIDI = 76;      // High Wood Block (§15.Q11.1)
+const DEFAULT_BEAT_N_VELOCITY = 90;
+const DEFAULT_SUB_MIDI = 42;         // Closed Hi-Hat
+const DEFAULT_SUB_VELOCITY = 70;     // §15.Q11.9
+
+const DRUM_MIDI_LO = 35;
+const DRUM_MIDI_HI = 81;
+// Drums are percussive; release the note shortly after onset so polyphony
+// doesn't pile up. 80ms covers a kick's perceptible body without bleeding
+// into the next beat at 300 BPM (200ms inter-beat).
+const DRUM_NOTE_RELEASE_MS = 80;
+
 export const BPM_MIN = 30;
 export const BPM_MAX = 300;
 export const BPM_DEFAULT = 100;
+
+export const MIN_NUMERATOR = 1;
+export const MAX_NUMERATOR = 32; // §15.Q11.5
+const ALLOWED_DENOMINATORS: readonly (2 | 4 | 8 | 16 | 32)[] = [2, 4, 8, 16, 32];
 
 const TAP_RESET_MS = 2000;
 const TAP_WINDOW = 4;
@@ -78,8 +149,23 @@ export interface MetronomeState {
   bpm: number;
   setBpm: (n: number) => void;
   bumpBpm: (delta: number) => void;
+  // v1.2 — tagged-union time signature. setTimeSig accepts the full value;
+  // setCustomNum / setCustomDen are shortcuts that switch kind to 'custom'
+  // and mutate one field at a time.
   timeSig: TimeSig;
   setTimeSig: (s: TimeSig) => void;
+  setCustomNum: (n: number) => void;
+  setCustomDen: (d: 2 | 4 | 8 | 16 | 32) => void;
+  // v1.2 — per-beat pattern. Length always === beatsPerBar(timeSig).
+  // Resized in-place on time-sig change (preserves overlap, fills new
+  // tail cells with the default click voice).
+  pattern: BeatInstrument[];
+  setBeatInstrument: (beatIdx: number, midi: number) => void;
+  // v1.2 — subdivisions + single global sub-tick voice.
+  subdivisions: Subdivision;
+  setSubdivisions: (s: Subdivision) => void;
+  subdivisionVoice: BeatInstrument;
+  setSubdivisionVoice: (midi: number) => void;
   running: boolean;
   start: () => void;
   stop: () => void;
@@ -98,10 +184,18 @@ export interface MetronomeState {
    * off it without relying on object-equality checks.
    */
   pulse: number;
-  // v1.1 — click volume 0..1; 0 = mute, 1 = full. Both accent + normal
-  // players are updated immediately so the change takes effect next beat.
+  // v1.1 — click volume 0..1; 0 = mute, 1 = full. Multiplied into bus noteOn
+  // velocity at audio dispatch (§15.Q11.10): 0 suppresses the noteOn entirely.
   clickVolume: number;
   setClickVolume: (v: number) => void;
+  /**
+   * v1.4 — L3: atomically load all fields from an EditableProfile into live
+   * state in one synchronous batch, then fire a SINGLE prefsUpdate() call so
+   * the debouncer coalesces the write. BPM is restored when present on the
+   * profile (FRESH-START). Calls clearScheduleTimers() + schedule() so the
+   * metronome immediately reflects the new pattern/tempo.
+   */
+  loadProfile: (p: EditableProfile) => void;
 }
 
 function clampBpm(n: number): number {
@@ -109,17 +203,87 @@ function clampBpm(n: number): number {
   return Math.max(BPM_MIN, Math.min(BPM_MAX, Math.round(n)));
 }
 
+function clampNumerator(n: number): number {
+  if (!Number.isFinite(n)) return 4;
+  return Math.max(MIN_NUMERATOR, Math.min(MAX_NUMERATOR, Math.trunc(n)));
+}
+
+function clampDrumMidi(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_BEAT_N_MIDI;
+  const t = Math.trunc(n);
+  return Math.max(DRUM_MIDI_LO, Math.min(DRUM_MIDI_HI, t));
+}
+
+// v1.2 — default pattern for N beats: kick on 1, click on 2..N.
+function buildDefaultPattern(beats: number): BeatInstrument[] {
+  const out: BeatInstrument[] = new Array(beats);
+  for (let i = 0; i < beats; i++) {
+    out[i] = i === 0
+      ? { midi: DEFAULT_BEAT_1_MIDI, velocity: DEFAULT_BEAT_1_VELOCITY }
+      : { midi: DEFAULT_BEAT_N_MIDI, velocity: DEFAULT_BEAT_N_VELOCITY };
+  }
+  return out;
+}
+
+// v1.2 — resize an existing pattern to a new beat count without losing user
+// assignments. If shrinking, drop the tail. If growing, fill new cells with
+// the default click voice (matches the default-pattern's non-downbeat slot).
+function resizePattern(old: BeatInstrument[], newBeats: number): BeatInstrument[] {
+  if (newBeats <= 0) return [];
+  if (old.length === newBeats) return old;
+  if (old.length > newBeats) return old.slice(0, newBeats);
+  const out = old.slice();
+  while (out.length < newBeats) {
+    out.push({ midi: DEFAULT_BEAT_N_MIDI, velocity: DEFAULT_BEAT_N_VELOCITY });
+  }
+  return out;
+}
+
+// v1.2 — validate a parsed pattern against current beats-per-bar. Returns
+// the input if it's well-formed and length-matched, else null (caller falls
+// back to the default).
+function validatePatternForBeats(p: unknown, beats: number): BeatInstrument[] | null {
+  if (!Array.isArray(p) || p.length !== beats) return null;
+  const out: BeatInstrument[] = [];
+  for (const e of p) {
+    if (typeof e !== 'object' || e === null) return null;
+    const rec = e as { midi?: unknown; velocity?: unknown };
+    const midi = Number(rec.midi);
+    const velocity = Number(rec.velocity);
+    if (!Number.isFinite(midi) || midi < DRUM_MIDI_LO || midi > DRUM_MIDI_HI) return null;
+    if (!Number.isFinite(velocity) || velocity < 1 || velocity > 127) return null;
+    out.push({ midi: Math.trunc(midi), velocity: Math.trunc(velocity) });
+  }
+  return out;
+}
+
 export interface UseMetronomeArgs {
+  /**
+   * MIDI bus. The hook reserves the 'drums' channel on mount and routes
+   * every beat noteOn through the returned handle. If reservation is
+   * denied (another consumer holds 'drums'), the scheduler still runs
+   * visually but emits no audio — same defensive null-handle pattern as
+   * the parallel drone migration. U23: no user-visible error.
+   */
+  bus: MidiBusState;
   /** User-tunable click offset in ms. Stacks on route latency. */
   clickOffsetMs: number;
   /** Selected output route — drives the base latency offset. */
   outputRoute: MetroOutputRoute;
 }
 
-export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, outputRoute: 'speaker' }): MetronomeState {
-  const { clickOffsetMs, outputRoute } = args;
+export function useMetronome(args: UseMetronomeArgs): MetronomeState {
+  const { bus, clickOffsetMs, outputRoute } = args;
   const [bpm, setBpmState] = useState<number>(BPM_DEFAULT);
-  const [timeSig, setTimeSigState] = useState<TimeSig>('4/4');
+  // v1.2 — default to 4/4 preset; loadPrefs migration may overwrite from a
+  // legacy `timeSig` string on mount.
+  const [timeSig, setTimeSigState] = useState<TimeSig>({ kind: 'preset', value: '4/4' });
+  const [pattern, setPatternState] = useState<BeatInstrument[]>(() => buildDefaultPattern(4));
+  const [subdivisions, setSubdivisionsState] = useState<Subdivision>('off');
+  const [subdivisionVoice, setSubdivisionVoiceState] = useState<BeatInstrument>({
+    midi: DEFAULT_SUB_MIDI,
+    velocity: DEFAULT_SUB_VELOCITY,
+  });
   const [running, setRunning] = useState<boolean>(false);
   const [beat, setBeat] = useState<number>(1);
   const [pulse, setPulse] = useState<number>(0);
@@ -130,8 +294,14 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
   // Refs that the scheduler reads without rebinding the callback.
   const bpmRef = useRef(BPM_DEFAULT);
   bpmRef.current = bpm;
-  const sigRef = useRef<TimeSig>('4/4');
+  const sigRef = useRef<TimeSig>(timeSig);
   sigRef.current = timeSig;
+  const patternRef = useRef<BeatInstrument[]>(pattern);
+  patternRef.current = pattern;
+  const subdivisionsRef = useRef<Subdivision>(subdivisions);
+  subdivisionsRef.current = subdivisions;
+  const subdivisionVoiceRef = useRef<BeatInstrument>(subdivisionVoice);
+  subdivisionVoiceRef.current = subdivisionVoice;
   const runningRef = useRef(false);
   runningRef.current = running;
   // Calibration refs — refreshed every render so live changes from SETUP
@@ -142,9 +312,20 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
   outputRouteRef.current = outputRoute;
   clickVolumeRef.current = clickVolume;
 
-  // Players (one per click kind), populated on first start.
-  const accentPlayerRef = useRef<AudioPlayer | null>(null);
-  const normalPlayerRef = useRef<AudioPlayer | null>(null);
+  // v1.3 — bus channel handle for 'drums'. Reserved on mount, released on
+  // unmount. Stored in a ref so the scheduler reads the live handle without
+  // rebinding the callback. `null` means reservation was denied (another
+  // consumer holds the role); the scheduler then runs silently.
+  const channelRef = useRef<ChannelHandle | null>(null);
+
+  // v1.4 — busRef tracks the live bus interface (which the v1.3.4 B1 split
+  // intentionally rebinds on the ready → true edge). Captured into a ref so
+  // start/stop/schedule callbacks don't depend on `bus` identity — keeps
+  // the deps array of stop() empty + matches the channel-reservation effect
+  // dep-elision pattern (which uses `[]` deliberately).
+  const busRef = useRef<MidiBusState>(bus);
+  busRef.current = bus;
+
   // Index of the next beat we will fire (0-based within an "ever-running"
   // counter; modulo time-sig beats gives the bar position). Reset to 0 on
   // each start().
@@ -155,45 +336,119 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
   // visual peak. Both are tracked so stop()/restart can clear cleanly.
   const visualTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Back-compat alias — older code paths may reference timeoutRef. */
-  const timeoutRef = visualTimeoutRef;
+  // v1.2 — sub-tick noteOn + noteOff timers and per-beat noteOff timer.
+  // Collected so stop() can clear them cleanly.
+  // v1.3.4 — split into two sets so schedule() can cancel stale sub-tick
+  // noteOn timers from the previous beat without also cancelling the
+  // pending DRUM_NOTE_RELEASE_MS noteOff timers (which keep audio voices
+  // from sustaining forever). At 300 BPM the next schedule() recursion
+  // fires before the previous beat's 80 ms noteOff lands — so any clear
+  // that walks both kinds of timers would silently strand sounding notes.
+  const subTickTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const noteOffTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
-  // ---------- click player provisioning ----------
+  // ---------- bus channel reservation ----------
 
-  const ensurePlayers = useCallback(() => {
-    try {
-      if (!accentPlayerRef.current) {
-        const b64 = buildClickWavBase64('accent');
-        const f = new File(Paths.cache, 'metro_accent.wav');
-        if (f.exists) f.delete();
-        f.create();
-        f.write(b64, { encoding: 'base64' });
-        accentPlayerRef.current = createAudioPlayer({ uri: f.uri });
-        accentPlayerRef.current.loop = false;
-        accentPlayerRef.current.volume = clickVolumeRef.current; // v1.1
-      }
-      if (!normalPlayerRef.current) {
-        const b64 = buildClickWavBase64('normal');
-        const f = new File(Paths.cache, 'metro_normal.wav');
-        if (f.exists) f.delete();
-        f.create();
-        f.write(b64, { encoding: 'base64' });
-        normalPlayerRef.current = createAudioPlayer({ uri: f.uri });
-        normalPlayerRef.current.loop = false;
-        normalPlayerRef.current.volume = clickVolumeRef.current; // v1.1
-      }
-    } catch {
-      // Provisioning audio failed — the metronome still works visually. The
-      // user gets the pulse + beat counter without sound.
+  useEffect(() => {
+    const handle = bus.reserve('drums');
+    if (handle === null) {
+      // U23: silent to the user. Bus already emitted a forensic log entry.
+      // The scheduler still ticks (visual beat counter / pulse animate)
+      // but every dispatch is a no-op — same as the drone migration's
+      // defensive null-handle pattern.
+      log.w('Metronome', 'drums-channel-reservation-denied');
+      channelRef.current = null;
+      return;
     }
+    channelRef.current = handle;
+    return () => {
+      // Release the channel on unmount. Bus's own dispose() also walks the
+      // reservation map, so this is defence-in-depth.
+      try {
+        handle.release();
+      } catch {
+        /* ignore */
+      }
+      channelRef.current = null;
+    };
+    // v1.3.1 HOTFIX — deps `[]` not `[bus]`. The bus's MidiBusState identity
+    // rebinds when its internal `ready` flag flips (see useMidiBus.ts:90's
+    // useMemo([core, ready])). With `[bus]` deps, every ready-edge would
+    // release + re-reserve drums; any noteOn that landed inside the gap
+    // bailed silently because channelRef.current was momentarily null —
+    // which is exactly the "metronome played one beat then stopped" symptom
+    // the user reported. The underlying `core` is stable, so reserving via
+    // the initially-captured bus reference stays valid for the hook's
+    // lifetime. Matches useDrone:181 pattern.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---------- audio dispatch ----------
+
+  // v1.3 — fire a single drum noteOn through the bus's 'drums' handle, then
+  // schedule a noteOff after DRUM_NOTE_RELEASE_MS. The bus decides whether
+  // the noteOn lands on TSF or on the WAV-fallback path during warm-up
+  // (G13 — bus owns the fallback). Honours the clickVolume × velocity mute
+  // guard (§15.Q11.10): clickVolume===0 or velocity===0 fully suppresses
+  // the noteOn rather than firing at velocity 0. Result clamped to [1, 127].
+  //
+  // v1.3.2 — `tick` discriminator forwarded into the emitted BusEvent so
+  // PerBeatRow can skip sub-tick noteOns when stepping its bar-position
+  // counter. Bus event payload only — synth routing unchanged.
+  const fireBeatNote = useCallback((midi: number, velocity: number, tick: 'beat' | 'sub') => {
+    const cv = clickVolumeRef.current;
+    if (cv <= 0 || velocity <= 0) return;
+    const ch = channelRef.current;
+    if (ch === null) return; // reservation denied — silent scheduler.
+    const vEff = Math.max(1, Math.min(127, Math.round(velocity * cv)));
+    try {
+      ch.noteOn(midi, vEff, tick);
+    } catch {
+      /* ignore — bus already logged any underlying synth failure */
+    }
+    // Schedule a release shortly after onset. Drums are percussive — the
+    // sample's own decay does most of the work; noteOff just frees voices.
+    // v1.3.4 — release timer lives in noteOffTimeoutsRef (distinct from
+    // sub-tick noteOn timers) so schedule()'s pre-beat prune doesn't strand
+    // a still-sounding note.
+    const t = setTimeout(() => {
+      noteOffTimeoutsRef.current.delete(t);
+      const live = channelRef.current;
+      if (live === null) return;
+      try {
+        live.noteOff(midi);
+      } catch {
+        /* ignore */
+      }
+    }, DRUM_NOTE_RELEASE_MS);
+    noteOffTimeoutsRef.current.add(t);
   }, []);
 
   // ---------- scheduling ----------
 
   const schedule = useCallback(() => {
     if (!runningRef.current) return;
+    // v1.3.4 — clear any orphan timers from the previous beat before computing
+    // the new ones. The recursion path means we got here via the prior beat's
+    // visual timer firing, so visualTimeoutRef.current is the timer that just
+    // fired (already consumed by setTimeout) and must NOT be cleared. But the
+    // click + sub-tick timers from the previous beat may still be queued if
+    // the event loop ran late (visualDelay short, JS thread busy). Without
+    // this guard, the OVERWRITE below leaks the old setTimeout — it fires
+    // whenever the loop catches up, AND the new click fires on time. Two
+    // clicks back-to-back. setBpm / setTimeSig / start / stop all call
+    // clearScheduleTimers() before schedule(), so this prefix is redundant
+    // (but safe — clearTimeout on null/already-fired is a no-op) on those
+    // paths.
+    if (clickTimeoutRef.current !== null) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+    for (const t of subTickTimeoutsRef.current) clearTimeout(t);
+    subTickTimeoutsRef.current.clear();
     const bpmNow = bpmRef.current;
-    const beatsPerBar = TIME_SIG_BEATS[sigRef.current];
+    const sig = sigRef.current;
+    const beats = beatsPerBar(sig);
     const intervalMs = 60000 / bpmNow;
     const i = nextBeatIndexRef.current;
     const targetMs = startedAtMsRef.current + i * intervalMs;
@@ -215,26 +470,95 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
     const visualDelay = Math.max(0, targetMs - now);
     const clickDelay = Math.max(0, clickFireAt - now);
 
-    const beatInBar = (i % beatsPerBar) + 1;
+    const beatInBar = (i % beats) + 1;
     const isAccent = beatInBar === 1;
 
-    // Audio click — fire at clickFireAt. If clickFireAt has already passed
-    // (e.g. user just bumped offset huge negative, or BPM raced past) we
-    // fire immediately. Skip entirely if it sits in the past by more than
-    // half a beat, which means we're already in the next beat's window.
+    // Resolve the downbeat voice from pattern. patternRef may be a different
+    // length than `beats` for one render between setTimeSig's resize and the
+    // schedule rebind — fall back to the default voice in that gap.
+    const pat = patternRef.current;
+    const beatVoice: BeatInstrument =
+      pat[beatInBar - 1] ?? {
+        midi: isAccent ? DEFAULT_BEAT_1_MIDI : DEFAULT_BEAT_N_MIDI,
+        velocity: isAccent ? DEFAULT_BEAT_1_VELOCITY : DEFAULT_BEAT_N_VELOCITY,
+      };
+
+    // v1.4 Belt 2 — past-atFrame skip at schedule time. Compute atFrame for
+    // this beat's clickFireAt up front. If the heartbeat is so late that
+    // atFrame has already passed the synth's current frame-clock position,
+    // drop the bus.noteOnAt enqueue entirely. The same heartbeat continues
+    // with the NEXT beat (recursion via visual timer); if that's also late
+    // it's also skipped — the metronome briefly drops beats rather than
+    // catch-up-bursting (silence-over-wrong axiom).
+    //
+    // The audible legacy click path (fireBeatNote → expo-audio WAV) keeps
+    // its existing "skip if more than half a beat past" guard above —
+    // unchanged because the audible source migration is v1.4-followup.
+    const busNow = busRef.current;
+    const atFrameForBeat = busNow.atMsToAtFrame(clickFireAt);
+    const currentFrameAtSched = busNow.getCurrentFrame();
+    const beatAtFramePast = (
+      Number.isFinite(atFrameForBeat)
+      && currentFrameAtSched > 0
+      && atFrameForBeat <= currentFrameAtSched
+    );
+    if (beatAtFramePast) {
+      log.w('Metro', 'past-atFrame skipped', {
+        atFrame: atFrameForBeat,
+        currentFrame: currentFrameAtSched,
+        beat: i,
+        kind: 'beat',
+      });
+    }
+
+    // Audio click for the downbeat — fire at clickFireAt. If clickFireAt has
+    // already passed (e.g. user just bumped offset huge negative, or BPM raced
+    // past) we fire immediately. Skip entirely if it sits in the past by more
+    // than half a beat, which means we're already in the next beat's window.
     if (now - clickFireAt < intervalMs * 0.5) {
       clickTimeoutRef.current = setTimeout(() => {
         if (!runningRef.current) return;
-        const player = isAccent ? accentPlayerRef.current : normalPlayerRef.current;
-        if (player) {
+        fireBeatNote(beatVoice.midi, beatVoice.velocity, 'beat');
+        // v1.4 — bus.noteOnAt parallel-fire — audible source migration is v1.4-followup.
+        // The existing expo-audio click remains the audible source. The bus
+        // noteOnAt is an additional scheduled MIDI fire so render-thread-accurate
+        // fire events reach visual subscribers (PendulumDisplay et al.).
+        const ch = channelRef.current;
+        if (ch !== null && !beatAtFramePast) {
           try {
-            player.seekTo(0).catch(() => {});
-            player.play();
+            ch.noteOnAt(beatVoice.midi, beatVoice.velocity, clickFireAt, 'beat');
           } catch {
-            // Best-effort. Skipped clicks shouldn't crash the loop.
+            // Bus noteOnAt errors must not break the audible click path.
           }
         }
       }, clickDelay);
+    }
+
+    // v1.2 — schedule sub-ticks for this beat, if any. Sub-ticks use the
+    // global subdivisionVoice and DO NOT advance the beat counter (visual
+    // semantics stay 1..N downbeats only). Sub-ticks share the same routeLat
+    // + clickOffset lead so they land at the right wall-clock moment too.
+    // v1.3 — sub-ticks ride the same 'drums' channel through the bus. If
+    // the bus is still in WAV warm-up the bus internally drops them (it
+    // only synthesizes accent/normal WAV samples, not sub voices); once
+    // TSF is up the sub voice plays automatically.
+    const sub = subdivisionsRef.current;
+    if (sub !== 'off') {
+      const subsPerBeat = SUBS_PER_BEAT[sub];
+      const subVoice = subdivisionVoiceRef.current;
+      for (let k = 1; k < subsPerBeat; k++) {
+        const subTargetMs = targetMs + (intervalMs * k) / subsPerBeat;
+        const subFireAt = subTargetMs - routeLat + clickOffsetRef.current;
+        const subDelay = Math.max(0, subFireAt - now);
+        // Same too-late skip as the downbeat path.
+        if (now - subFireAt >= intervalMs * 0.5) continue;
+        const t = setTimeout(() => {
+          subTickTimeoutsRef.current.delete(t);
+          if (!runningRef.current) return;
+          fireBeatNote(subVoice.midi, subVoice.velocity, 'sub');
+        }, subDelay);
+        subTickTimeoutsRef.current.add(t);
+      }
     }
 
     // Visual peak — fires at targetMs. Bumps `beat` + `pulse` together so
@@ -250,9 +574,16 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
       // not from compounding interval errors.
       schedule();
     }, visualDelay);
-  }, []);
+  }, [fireBeatNote]);
 
-  // Helper used by start/stop/setBpm/setTimeSig to clear both timers.
+  // Helper used by start/stop/setBpm/setTimeSig to clear scheduling timers
+  // (visual / click / sub-tick noteOn).
+  // v1.3.4 — does NOT touch noteOffTimeoutsRef. Each pending noteOff is a
+  // 80 ms release on a note that's already sounding on the channel; if we
+  // cancelled it here, setBpm / setTimeSig (which call clearScheduleTimers
+  // mid-bar) would strand the prior beat's drum voice indefinitely. stop()
+  // calls ch.allNotesOff() after this helper to clean those up explicitly;
+  // setBpm / setTimeSig let the noteOff timers run to completion naturally.
   const clearScheduleTimers = useCallback(() => {
     if (visualTimeoutRef.current !== null) {
       clearTimeout(visualTimeoutRef.current);
@@ -262,23 +593,108 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
       clearTimeout(clickTimeoutRef.current);
       clickTimeoutRef.current = null;
     }
+    for (const t of subTickTimeoutsRef.current) clearTimeout(t);
+    subTickTimeoutsRef.current.clear();
   }, []);
 
-  const start = useCallback(() => {
+  // v1.3.4 B7 — `preservePhase` arg for AppState foreground resume.
+  //
+  // start() is called from two sites:
+  //   1. User presses PLAY (toggle → start()). Fresh start is correct — reset
+  //      phase to beat 1. preservePhase defaults to false.
+  //   2. AppState 'active' handler — app was running when it went to background,
+  //      now returning. We want the click cadence to continue from where it was,
+  //      not jump back to beat 1. Pass preservePhase=true.
+  //
+  // Phase-preserve math (mirrors setBpm):
+  //   The current beat at background time was (nextBeatIndexRef, startedAtMsRef).
+  //   We don't know how long the foreground was gone. We re-anchor startedAtMsRef
+  //   so that the NEXT beat fires at "now + (1-phase)*T" where phase is whatever
+  //   fraction of the beat had elapsed at the moment of resumption. Because we
+  //   don't capture elapsed-at-background, we treat phase as 0 (resume at the
+  //   START of the next beat from now). This avoids an immediate double-click
+  //   (phase=1 path) and keeps the visual aligned with the audio.
+  const start = useCallback((preservePhase = false) => {
     if (runningRef.current) return;
-    ensurePlayers();
     runningRef.current = true;
-    startedAtMsRef.current = Date.now();
-    nextBeatIndexRef.current = 0;
+    if (preservePhase) {
+      // v1.3.4 B7 — re-anchor the timeline so the next beat fires promptly
+      // from the foreground resume moment. nextBeatIndexRef is preserved so
+      // the bar position (beat 1/2/3…) continues without reset.
+      const bpmNow = bpmRef.current;
+      const T = 60000 / Math.max(1, bpmNow);
+      // Schedule the next beat to fire one beat interval from now.
+      startedAtMsRef.current = Date.now() - nextBeatIndexRef.current * T + T;
+      // v1.4 wave-3 B4 — AppState resume invariant. The renderer paused
+      // while we were in background, freezing the synth's frame counter
+      // while wall-clock advanced N seconds. The bus's frame-clock peg is
+      // now stale by exactly that gap, and the auto-repeg drift gate would
+      // REJECT a fresh peg because the implied shift exceeds the 2 ms
+      // threshold. Result without this block: atMsToAtFrame produces
+      // atFrames many seconds into the future and ~30 s of beats silently
+      // miss the past-atFrame guard until the renderer catches up.
+      //
+      // Fix: (a) drop any stale future-scheduled commands from the native
+      // queue, then (b) force-repeg the bus to anchor against the freshly
+      // resumed renderer. Now atMsToAtFrame computes against the current
+      // frame, scheduled atFrames land in the near future, and the next
+      // beat fires on time.
+      const busNow = busRef.current;
+      try {
+        busNow.clearScheduled();
+      } catch {
+        /* ignore — bus already logged any underlying synth failure */
+      }
+      try {
+        busNow.repegFrameClock({ force: true });
+      } catch {
+        /* ignore */
+      }
+    } else {
+      startedAtMsRef.current = Date.now();
+      nextBeatIndexRef.current = 0;
+    }
     setRunning(true);
-    setBeat(1);
+    if (!preservePhase) setBeat(1);
     schedule();
-  }, [ensurePlayers, schedule]);
+  }, [schedule]);
 
   const stop = useCallback(() => {
     runningRef.current = false;
     setRunning(false);
     clearScheduleTimers();
+    // v1.3.4 — drain pending DRUM_NOTE_RELEASE_MS noteOff timers from the
+    // PRIOR session BEFORE issuing allNotesOff(). If a fast restart follows
+    // (rapid stop+start hammer, AppState bg→fg cycle), a still-queued noteOff
+    // from this session would otherwise fire ~80ms later — landing AFTER the
+    // next session's first noteOn and silencing the new beat. Clear timers
+    // FIRST so they can't race the allNotesOff(); allNotesOff() then drops
+    // any currently-sounding voice immediately.
+    for (const t of noteOffTimeoutsRef.current) clearTimeout(t);
+    noteOffTimeoutsRef.current.clear();
+    // v1.4 Belt 1 — cancel ALL future-scheduled commands in the native queue
+    // BEFORE issuing allNotesOff(). Without this, the ~150 ms of bus.noteOnAt
+    // commands we enqueued earlier still fire on the next render quantum —
+    // ghost clicks AFTER the user pressed stop. Order matters: drop the
+    // future commands first, then silence any currently-sounding voices.
+    // Read busRef.current to avoid taking a dep on `bus` — its identity
+    // flips on the ready-edge (B1 split) and we don't want stop() to rebind.
+    try {
+      busRef.current.clearScheduled();
+    } catch {
+      /* ignore — bus already logged any underlying synth failure */
+    }
+    // v1.3 — kill any drum tails on the bus's drum channel so a fast stop()
+    // doesn't leave a kick ringing for 80ms. Goes through the handle so the
+    // bus's per-channel sounding-note bookkeeping stays accurate.
+    const ch = channelRef.current;
+    if (ch !== null) {
+      try {
+        ch.allNotesOff();
+      } catch {
+        /* ignore */
+      }
+    }
   }, [clearScheduleTimers]);
 
   const toggle = useCallback(() => {
@@ -322,8 +738,15 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
   // because the bar definition itself changed (next fired beat becomes the
   // new downbeat "1"). Keeps click cadence smooth — only the accent pattern
   // shifts.
+  //
+  // v1.2 — extended to the tagged-union TimeSig. Pattern is resized in
+  // place (preserve user assignments where indices overlap; default-fill
+  // any new tail cells). Persists the new timeSig fields back to prefs.
   const setTimeSig = useCallback((s: TimeSig) => {
     setTimeSigState(s);
+    // Resize pattern to match the new beat count.
+    const newBeats = beatsPerBar(s);
+    setPatternState((prev) => resizePattern(prev, newBeats));
     if (runningRef.current) {
       const now = Date.now();
       const bpmNow = bpmRef.current;
@@ -342,7 +765,114 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
       schedule();
     }
     setBeat(1);
+    // v1.2 — persist the new time-sig surface.
+    (async () => {
+      try {
+        const current = await loadPrefs();
+        if (s.kind === 'preset') {
+          await savePrefs({
+            ...current,
+            metroTimeSigKind: 'preset',
+            metroTimeSigPreset: s.value,
+          });
+        } else {
+          await savePrefs({
+            ...current,
+            metroTimeSigKind: 'custom',
+            metroCustomNumerator: clampNumerator(s.num),
+            metroCustomDenominator: s.den,
+          });
+        }
+      } catch { /* best-effort */ }
+    })();
   }, [schedule, clearScheduleTimers]);
+
+  // v1.2 — set numerator only. Switches kind to 'custom' (the only kind
+  // where the numerator is exposed). If we're currently on a preset we
+  // adopt the preset's existing num as the new baseline before clamping.
+  const setCustomNum = useCallback((n: number) => {
+    const num = clampNumerator(n);
+    const prev = sigRef.current;
+    const den: 2 | 4 | 8 | 16 | 32 = prev.kind === 'custom' ? prev.den : 4;
+    setTimeSig({ kind: 'custom', num, den });
+  }, [setTimeSig]);
+
+  const setCustomDen = useCallback((d: 2 | 4 | 8 | 16 | 32) => {
+    if (!ALLOWED_DENOMINATORS.includes(d)) return;
+    const prev = sigRef.current;
+    const num: number = prev.kind === 'custom' ? prev.num : beatsPerBar(prev);
+    setTimeSig({ kind: 'custom', num: clampNumerator(num), den: d });
+  }, [setTimeSig]);
+
+  // v1.2 — patch one beat cell's midi. Velocity preserved from the previous
+  // cell value so a future v1.3 velocity UI can mutate it independently;
+  // unknown midi values silently clamp to the GM percussion range.
+  //
+  // v1.3.4 B6 — after updating the pattern, reschedule so a mid-beat change
+  // (e.g. user changes beat-1 instrument while running) takes effect on the
+  // very next click rather than letting the pre-queued closure fire the old
+  // voice. Matches the pattern that setBpm and setTimeSig already use.
+  const setBeatInstrument = useCallback((beatIdx: number, midi: number) => {
+    setPatternState((prev) => {
+      if (beatIdx < 0 || beatIdx >= prev.length) return prev;
+      const next = prev.slice();
+      const cur = next[beatIdx];
+      next[beatIdx] = {
+        midi: clampDrumMidi(midi),
+        velocity: cur ? cur.velocity : (beatIdx === 0 ? DEFAULT_BEAT_1_VELOCITY : DEFAULT_BEAT_N_VELOCITY),
+      };
+      // Persist.
+      (async () => {
+        try {
+          const current = await loadPrefs();
+          await savePrefs({ ...current, metroPatternJson: JSON.stringify(next) });
+        } catch { /* best-effort */ }
+      })();
+      return next;
+    });
+    // v1.3.4 B6 — reschedule so the pre-queued click timer (which closed over
+    // the old voice) is replaced with a fresh one reading the updated pattern.
+    if (runningRef.current) {
+      clearScheduleTimers();
+      schedule();
+    }
+  }, [clearScheduleTimers, schedule]);
+
+  const setSubdivisions = useCallback((s: Subdivision) => {
+    setSubdivisionsState(s);
+    (async () => {
+      try {
+        const current = await loadPrefs();
+        await savePrefs({ ...current, metroSubdivisions: s });
+      } catch { /* best-effort */ }
+    })();
+  }, []);
+
+  // v1.3.4 B6 — setSubdivisionVoice also reschedules so the pre-queued
+  // sub-tick timers (which captured the old voice in their closures) are
+  // replaced. Without this, changing the sub voice mid-beat fires the old
+  // sample on the current beat and only picks up the new voice the beat after.
+  const setSubdivisionVoice = useCallback((midi: number) => {
+    const clamped = clampDrumMidi(midi);
+    setSubdivisionVoiceState((prev) => {
+      const next = { midi: clamped, velocity: prev.velocity };
+      (async () => {
+        try {
+          const current = await loadPrefs();
+          await savePrefs({
+            ...current,
+            metroSubdivisionVoiceMidi: next.midi,
+            metroSubdivisionVoiceVelocity: next.velocity,
+          });
+        } catch { /* best-effort */ }
+      })();
+      return next;
+    });
+    if (runningRef.current) {
+      clearScheduleTimers();
+      schedule();
+    }
+  }, [clearScheduleTimers, schedule]);
 
   // ---------- tap tempo ----------
 
@@ -371,12 +901,10 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
 
   // ---------- click volume ----------
 
-  // v1.1 — update both players immediately when the slider moves.
-  useEffect(() => {
-    if (accentPlayerRef.current) accentPlayerRef.current.volume = clickVolume;
-    if (normalPlayerRef.current) normalPlayerRef.current.volume = clickVolume;
-  }, [clickVolume]);
-
+  // v1.3 — clickVolume is a metronome-level concept (per-tab UX, not global).
+  // It multiplies into the bus noteOn velocity at dispatch time (see
+  // fireBeatNote). No AudioPlayer.volume sync — the bus's WAV fallback uses
+  // its own internal scaling, and TSF velocity is derived from velEff/127.
   const setClickVolume = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, Math.round(v * 10) / 10));
     setClickVolumeState(clamped);
@@ -388,12 +916,112 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
     })();
   }, []);
 
-  // Load persisted click volume on mount.
+  // Load persisted state on mount. v1.2 hydrates the full new surface;
+  // patternJson is parsed with a silent-reset guard (corrupt JSON → defaults).
+  //
+  // v1.3.2 / U22 (council F7) — profile-first hydration:
+  //   1. Try `loadMetroProfiles(prefs.metroProfilesJson)`. If it returns a
+  //      validated array AND `prefs.metroActiveProfileSlot` is a valid slot
+  //      index, seed live state from that profile's contents (timeSig +
+  //      pattern + subdivisions + subdivisionVoice; BPM is NOT applied here
+  //      — it lives outside the profile surface).
+  //   2. Otherwise fall through to the existing legacy-field path WITHOUT
+  //      overwriting the legacy fields. Aragorn-required U22 guard: a missing
+  //      / corrupt / unset profiles array MUST NOT wipe v1.2 settings.
+  //
+  // Both `metroProfilesJson` and `metroActiveProfileSlot` are not yet typed
+  // on AppPrefs (they're a v1.3 surface that landed alongside this hook).
+  // Reading them through an `unknown`-shaped view keeps this hook forward-
+  // compatible: if AsyncStorage doesn't carry them yet, loadMetroProfiles
+  // sees `undefined` → returns null → legacy path runs as before.
   useEffect(() => {
     (async () => {
       try {
         const prefs = await loadPrefs();
         setClickVolumeState(prefs.metroClickVolume);
+
+        // ---- U22: profile-first hydration attempt ----
+        const prefsAny = prefs as unknown as {
+          metroProfilesJson?: unknown;
+          metroActiveProfileSlot?: unknown;
+        };
+        const profiles = loadMetroProfiles(prefsAny.metroProfilesJson);
+        const slotRaw = prefsAny.metroActiveProfileSlot;
+        const slotNum = typeof slotRaw === 'number' && Number.isInteger(slotRaw) ? slotRaw : null;
+        if (
+          profiles !== null
+          && slotNum !== null
+          && slotNum >= 0
+          && slotNum < profiles.length
+        ) {
+          const prof: MetroProfile = profiles[slotNum];
+          // Reconstruct a TimeSig from the profile's flat schema. Profiles
+          // don't carry a custom denominator (validateProfile in prefs.ts
+          // accepts 'custom' with any pattern length but no den field), so
+          // we fall back to 4 — matches the v1.2 default-custom denominator
+          // and only affects notation display, not beats-per-bar.
+          let profSig: TimeSig;
+          if (prof.timeSig === 'custom') {
+            const num = clampNumerator(prof.pattern.length);
+            profSig = { kind: 'custom', num, den: 4 };
+          } else {
+            profSig = { kind: 'preset', value: prof.timeSig };
+          }
+          setTimeSigState(profSig);
+          const beats = beatsPerBar(profSig);
+          // Profile pattern is the canonical v1.3 surface — resize-to-fit if
+          // a 'custom' profile's pattern length disagrees with the
+          // numerator we derived. validateProfile already clamped midi /
+          // velocity to GM range, so the pattern is safe to push directly.
+          const profPattern: BeatInstrument[] = prof.pattern.map((c) => ({
+            midi: clampDrumMidi(c.midi),
+            velocity: Math.max(1, Math.min(127, Math.trunc(c.velocity))),
+          }));
+          setPatternState(resizePattern(profPattern, beats));
+          setSubdivisionsState(prof.subdivisions);
+          setSubdivisionVoiceState({
+            midi: clampDrumMidi(prof.subMidi),
+            velocity: Math.max(1, Math.min(127, Math.trunc(prof.subVel))),
+          });
+          return; // U22: profile applied; do NOT also run legacy hydration.
+        }
+
+        // ---- Legacy v1.2 fallback path — unchanged from the prior impl. ----
+        // Compose timeSig from the new prefs fields.
+        const sig: TimeSig = prefs.metroTimeSigKind === 'custom'
+          ? {
+              kind: 'custom',
+              num: clampNumerator(prefs.metroCustomNumerator),
+              den: prefs.metroCustomDenominator,
+            }
+          : { kind: 'preset', value: prefs.metroTimeSigPreset };
+        setTimeSigState(sig);
+        const beats = beatsPerBar(sig);
+
+        // Pattern: parse + validate against current beats. Any failure path
+        // silently resets to the default pattern at the correct length.
+        let pat: BeatInstrument[] | null = null;
+        try {
+          const parsed = JSON.parse(prefs.metroPatternJson) as unknown;
+          pat = validatePatternForBeats(parsed, beats);
+          // If length disagrees with beats but we have a valid shape, resize
+          // the parsed pattern rather than discarding it.
+          if (!pat && Array.isArray(parsed)) {
+            // Re-validate without the length constraint.
+            const lenient = validatePatternForBeats(
+              (parsed as unknown[]).slice(0, beats),
+              Math.min((parsed as unknown[]).length, beats),
+            );
+            if (lenient) pat = resizePattern(lenient, beats);
+          }
+        } catch { /* fall through to default */ }
+        setPatternState(pat ?? buildDefaultPattern(beats));
+
+        setSubdivisionsState(prefs.metroSubdivisions);
+        setSubdivisionVoiceState({
+          midi: clampDrumMidi(prefs.metroSubdivisionVoiceMidi),
+          velocity: Math.max(1, Math.min(127, Math.trunc(prefs.metroSubdivisionVoiceVelocity))),
+        });
       } catch { /* ignore */ }
     })();
   }, []);
@@ -410,33 +1038,120 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
       } else if (nextState === 'active') {
         if (wasRunningRef.current) {
           wasRunningRef.current = false;
-          start();
+          // v1.3.4 B7 — pass preservePhase=true so the metronome resumes
+          // from the correct bar position rather than jumping back to beat 1.
+          start(true);
         }
       }
     });
     return () => sub.remove();
   }, [start, stop]);
 
-  // Final teardown on unmount.
+  // Final teardown on unmount. The channel reservation's own cleanup effect
+  // handles handle.release(); here we just stop the scheduler so no in-flight
+  // setTimeout fires a noteOn after the handle is gone.
   useEffect(() => {
     return () => {
       runningRef.current = false;
       clearScheduleTimers();
-      try { accentPlayerRef.current?.remove(); } catch { /* ignore */ }
-      try { normalPlayerRef.current?.remove(); } catch { /* ignore */ }
-      accentPlayerRef.current = null;
-      normalPlayerRef.current = null;
+      const ch = channelRef.current;
+      if (ch !== null) {
+        try {
+          ch.allNotesOff();
+        } catch {
+          /* ignore */
+        }
+      }
     };
   // clearScheduleTimers is stable (useCallback []).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return {
+  // v1.4 — L3: atomic profile load. All React state setters are called
+  // synchronously in one JS task, then ONE prefsUpdate() fires with the full
+  // batch so the debouncer coalesces it with any in-flight write (per L2).
+  // BPM is restored (FRESH-START semantics — the old TODO is resolved here).
+  // Calls clearScheduleTimers() + schedule() so the click cadence immediately
+  // reflects the new pattern without a stop/start cycle.
+  const loadProfile = useCallback((p: EditableProfile) => {
+    // --- Synchronous state batch ---
+    const newBeats = beatsPerBar(p.timeSig);
+    const newPattern = p.pattern.slice(0, newBeats);
+    // Fill any tail cells with the default non-downbeat voice if the stored
+    // profile is shorter than the target beat count (defensive; shouldn't
+    // happen with validated profiles).
+    while (newPattern.length < newBeats) {
+      newPattern.push({ midi: DEFAULT_BEAT_N_MIDI, velocity: DEFAULT_BEAT_N_VELOCITY });
+    }
+
+    setTimeSigState(p.timeSig);
+    setPatternState(newPattern);
+    setSubdivisionsState(p.subdivisions);
+    setSubdivisionVoiceState({ ...p.subdivisionVoice });
+
+    // BPM: EditableProfile does not currently carry a bpm field (v1.3 schema).
+    // When the field is added in a future wave, apply it here. For now we
+    // leave BPM unchanged — the field is simply absent and we don't touch it.
+
+    // --- Re-anchor scheduler so the new pattern fires immediately ---
+    if (runningRef.current) {
+      // Preserve beat phase across the profile swap (same math as setTimeSig).
+      const now = Date.now();
+      const bpmNow = bpmRef.current;
+      const T = 60000 / bpmNow;
+      const i = nextBeatIndexRef.current;
+      const oldTargetMs = startedAtMsRef.current + i * T;
+      const remainingOld = oldTargetMs - now;
+      let phase = 1 - remainingOld / T;
+      if (!Number.isFinite(phase)) phase = 0;
+      phase = Math.max(0, Math.min(1, phase));
+      const nextBeatAtMs = now + (1 - phase) * T;
+      nextBeatIndexRef.current = 0;
+      startedAtMsRef.current = nextBeatAtMs;
+      clearScheduleTimers();
+      schedule();
+    }
+    setBeat(1);
+
+    // --- Single batched prefsUpdate — coalesces with in-flight writes (L2) ---
+    const patch: Record<string, unknown> = {
+      metroTimeSigKind: p.timeSig.kind,
+      metroSubdivisions: p.subdivisions,
+      metroSubdivisionVoiceMidi: p.subdivisionVoice.midi,
+      metroSubdivisionVoiceVelocity: p.subdivisionVoice.velocity,
+      metroPatternJson: JSON.stringify(newPattern),
+    };
+    if (p.timeSig.kind === 'preset') {
+      patch['metroTimeSigPreset'] = p.timeSig.value;
+    } else {
+      patch['metroCustomNumerator'] = clampNumerator(p.timeSig.num);
+      patch['metroCustomDenominator'] = p.timeSig.den;
+    }
+    // Cast: all keys belong to AppPrefs; the unknown-shaped cast is necessary
+    // because we build the patch incrementally above.
+    prefsUpdate(patch as Parameters<typeof prefsUpdate>[0]);
+  }, [clearScheduleTimers, schedule]);
+
+  // v1.2 hotfix — memoise the returned object so App.tsx's consumers don't see
+  // a fresh `metro` reference on every render. Without this, `pulse` ticks at
+  // beat rate but every screen sees a brand-new MetronomeState object and
+  // React cascades a full subtree re-render. Setters are all useCallback-
+  // wrapped (stable identity) so they only enter the deps array as identity
+  // sentinels — they won't trigger re-memos.
+  return useMemo<MetronomeState>(() => ({
     bpm,
     setBpm,
     bumpBpm,
     timeSig,
     setTimeSig,
+    setCustomNum,
+    setCustomDen,
+    pattern,
+    setBeatInstrument,
+    subdivisions,
+    setSubdivisions,
+    subdivisionVoice,
+    setSubdivisionVoice,
     running,
     start,
     stop,
@@ -446,5 +1161,30 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
     pulse,
     clickVolume,
     setClickVolume,
-  };
+    loadProfile,
+  }), [
+    bpm,
+    timeSig,
+    pattern,
+    subdivisions,
+    subdivisionVoice,
+    running,
+    beat,
+    pulse,
+    clickVolume,
+    setBpm,
+    bumpBpm,
+    setTimeSig,
+    setCustomNum,
+    setCustomDen,
+    setBeatInstrument,
+    setSubdivisions,
+    setSubdivisionVoice,
+    start,
+    stop,
+    toggle,
+    registerTap,
+    setClickVolume,
+    loadProfile,
+  ]);
 }

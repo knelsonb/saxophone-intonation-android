@@ -2,6 +2,7 @@ import { EventSubscription, NativeModule, requireNativeModule } from 'expo-modul
 
 import type {
   RawAudioOutput,
+  SynthCommandFiredEvent,
   SynthErrorEvent,
   SynthReadyEvent,
   SynthUnderrunEvent,
@@ -15,6 +16,7 @@ type RawAudioOutputEvents = {
   ready: (payload: SynthReadyEvent) => void;
   audioOutputUnderrun: (payload: SynthUnderrunEvent) => void;
   audioOutputError: (payload: SynthErrorEvent) => void;
+  commandFired: (payload: SynthCommandFiredEvent) => void;
 };
 
 declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEvents> {
@@ -28,6 +30,10 @@ declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEven
   allNotesOff(channel: number): void;
   setMasterGain(gain: number): void;
   isReady(): boolean;
+  // v1.4
+  noteOnAt(channel: number, midi: number, velocity: number, atFrame: number, tickKind: number): void;
+  getCurrentFrame(): number;
+  clearScheduled(): void; // v1.4 — renamed from clearQueue
 }
 
 const NativeRawAudioOutput =
@@ -62,6 +68,14 @@ const synth: RawAudioOutput = {
 
   isReady: () => NativeRawAudioOutput.isReady(),
 
+  // v1.4
+  noteOnAt: (channel, midi, velocity, atFrame, tickKind) =>
+    NativeRawAudioOutput.noteOnAt(channel, midi, velocity, atFrame, tickKind),
+
+  getCurrentFrame: () => NativeRawAudioOutput.getCurrentFrame(),
+
+  clearScheduled: () => NativeRawAudioOutput.clearScheduled(), // v1.4 — renamed from clearQueue
+
   addReadyListener: (cb) => {
     const sub: EventSubscription = NativeRawAudioOutput.addListener(
       'ready',
@@ -85,13 +99,22 @@ const synth: RawAudioOutput = {
     );
     return sub;
   },
+
+  addCommandFiredListener: (cb) => {
+    const sub: EventSubscription = NativeRawAudioOutput.addListener(
+      'commandFired',
+      cb,
+    );
+    return sub;
+  },
 };
 
 export default synth;
 
 export type {
   RawAudioOutput,
+  SynthCommandFiredEvent,
+  SynthErrorEvent,
   SynthReadyEvent,
   SynthUnderrunEvent,
-  SynthErrorEvent,
 };

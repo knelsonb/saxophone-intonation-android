@@ -27,6 +27,41 @@ export interface SynthErrorEvent {
   reason: string;
 }
 
+/**
+ * Fires from the audio render thread (relayed via a Kotlin coroutine
+ * dispatcher) at the moment a queued command is applied to TSF. NoteOn
+ * is the typical interesting case — listeners use it to sync visual
+ * state to the EXACT render quantum the audio fires in, not to the
+ * (jittery) JS-thread enqueue moment.
+ *
+ * `kind`:
+ *   1 = NoteOn
+ *   2 = NoteOff
+ *   3 = ProgramChange (midi field carries the program number)
+ *   4 = PitchBend     (velocity field carries the semitone value)
+ *   5 = AllNotesOff
+ *   6 = SetMasterGain
+ *
+ * `tickKind`:
+ *   0 = unspecified (legacy ASAP path / noteOn callers)
+ *   1 = beat        (scheduler's beat-tick intent)
+ *   2 = sub         (scheduler's sub-division tick intent)
+ *
+ * `atFrame`:
+ *   The absolute frame index in the synth's monotonic clock at which the
+ *   command was scheduled to apply. -1 if it was a fire-ASAP command.
+ *   For listeners pegging visuals back to wall-clock, combine with the
+ *   frame-clock peg established at init.
+ */
+export interface SynthCommandFiredEvent {
+  kind: number;
+  tickKind: number;
+  channel: number;
+  midi: number;
+  velocity: number;
+  atFrame: number;
+}
+
 export interface RawAudioOutput {
   /**
    * Copy the bundled SF2 from assets to cache and load it into TSF.
@@ -68,8 +103,50 @@ export interface RawAudioOutput {
   /** True once prepareAsync has completed successfully. */
   isReady(): boolean;
 
+  // ---- v1.4 — scheduled-command surface ----
+
+  /**
+   * Scheduled noteOn. `atFrame` is the absolute render-frame index at which
+   * the synth applies the noteOn. Buffer-granular: a command with atFrame
+   * inside the current render buffer applies at the START of that buffer
+   * (~23 ms at 1024 frames @ 44.1 kHz). Sub-buffer accuracy is out of scope.
+   *
+   * `tickKind` is round-tripped to the `commandFired` event so listeners can
+   * correlate which scheduler intent (0=none, 1=beat, 2=sub) the fire
+   * belongs to.
+   */
+  noteOnAt(channel: number, midi: number, velocity: number, atFrame: number, tickKind: number): void;
+
+  /**
+   * Monotonic render-frame counter. Increments by `framesPerRender` (1024)
+   * on every successful render. Returns 0 before the first render. JS uses
+   * this paired with Date.now() to peg a wall-clock → frame-clock mapping
+   * for `noteOnAt` scheduling.
+   */
+  getCurrentFrame(): number;
+
+  /**
+   * v1.4 — Drop ALL pending scheduled commands (immediate + deferred). Call
+   * from stop paths to prevent tail-firing after user-requested silence.
+   *
+   * Without this, a stop() that only issues allNotesOff() still leaves any
+   * future-scheduled noteOns (e.g. the metronome's ~150 ms heartbeat-ahead
+   * queue) sitting in the native command queue; they apply on the next
+   * render quantum AFTER the user pressed stop and produce ghost clicks.
+   *
+   * Idempotent. Safe to call before prepareAsync resolves.
+   */
+  clearScheduled(): void;
+
   // ---- Event subscription ----
   addReadyListener(cb: (e: SynthReadyEvent) => void): { remove(): void };
   addUnderrunListener(cb: (e: SynthUnderrunEvent) => void): { remove(): void };
   addErrorListener(cb: (e: SynthErrorEvent) => void): { remove(): void };
+  /**
+   * Subscribe to the per-command fire event. The callback runs on the JS
+   * thread (the native bridge marshals from the audio render thread via a
+   * Kotlin dispatcher). Suitable for driving visual state that must match
+   * the audio fire moment.
+   */
+  addCommandFiredListener(cb: (e: SynthCommandFiredEvent) => void): { remove(): void };
 }

@@ -31,6 +31,7 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
+import type { MidiBusState } from '../../useMidiBusCore';
 
 const SWING_DEG = 26;
 
@@ -54,39 +55,81 @@ const FRAME_H = ARM_H + BODY_H - PIVOT_FROM_BODY_TOP + 4;
 export interface PendulumDisplayProps {
   running: boolean;
   beat: number;
+  /**
+   * v1.3.4 — `pulse` is no longer used to drive the swing (it lagged by one
+   * React reconcile frame ~16 ms because the pulse setState batched after
+   * the audio noteOn fired). Kept on the prop surface for backward compat
+   * with the call site; swing is now driven by a direct `bus.on('noteOn')`
+   * subscription that runs SYNCHRONOUSLY in the noteOn call stack (U21
+   * invariant). Will be removed when MetroScreen drops the prop.
+   */
   pulse: number;
   bpm: number;
+  /**
+   * v1.3.4 — MIDI bus reference for the synchronous swing subscription.
+   * Optional so the renderCount test harness's MetroScreen mock doesn't
+   * need to thread it; when absent, the pendulum sits idle (no swing).
+   */
+  bus?: MidiBusState;
 }
 
-export function PendulumDisplay({ running, beat, pulse, bpm }: PendulumDisplayProps) {
+export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
 
-  // -1 = left extreme, +1 = right extreme.
-  // v1.0 — derive side from `pulse` parity instead of a local toggle ref.
-  // `pulse` is monotonically increasing and never resets — survives stop/
-  // resume cleanly, robust across odd time sigs (unlike `beat` which resets
-  // each bar). Convention: first pulse (1) = RIGHT (+1), then alternate.
+  // -1 = left extreme, +1 = right extreme. Rest position is +1 (RIGHT) so the
+  // first noteOn (which snaps to RIGHT before animating to LEFT) doesn't
+  // produce a visible jolt at the rest→running transition.
   const armAnim = useRef(new Animated.Value(1)).current;
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
   const restAnimRef = useRef<Animated.CompositeAnimation | null>(null);
 
+  // v1.3.4 — local pulse counter driven by the bus listener, NOT by React
+  // state. Bypasses the reconcile lag that made the swing fire 1 frame
+  // (~16 ms @ 60Hz) after the audible click — the listener runs in the same
+  // call stack as the noteOn that produced the audio (U21 invariant), so
+  // armAnim.setValue lands on the same JS tick as the synth note attack.
+  const pulseLocalRef = useRef(0);
+
+  // v1.3.4 B2 — bpmRef allows the listener to read a fresh BPM value on
+  // every noteOn without `bpm` appearing in the effect's deps array. Without
+  // this, every BPM change caused listener teardown + remount, creating a
+  // window where a beat firing during the gap was silently dropped.
+  const bpmRef = useRef(bpm);
+  useEffect(() => { bpmRef.current = bpm; }, [bpm]);
+
+  // Bus-driven swing. Same channel + tick filter as PerBeatRow so the
+  // listener fires exactly once per audible beat (sub-ticks excluded).
+  // v1.3.4 B2 — deps are [running, bus, armAnim] only; bpm is read via
+  // bpmRef.current so BPM changes never trigger a listener rebind.
   useEffect(() => {
-    if (!running || pulse === 0) return;
-    animRef.current?.stop();
-    restAnimRef.current?.stop();
-    const side: 1 | -1 = pulse % 2 === 1 ? 1 : -1;
-    const dur = Math.max(60, 60000 / Math.max(1, bpm));
-    const a = Animated.timing(armAnim, {
-      toValue: side,
-      duration: dur,
-      easing: Easing.inOut(Easing.sin),
-      useNativeDriver: true,
+    if (!running || !bus) return;
+    const off = bus.on('noteOn', (evt) => {
+      if (evt.channel !== 'drums') return;
+      if ((evt.velocity ?? 0) <= 0) return;
+      // v1.3.4 — sub-tick guard matches PerBeatRow; only beats swing.
+      if (evt.tick === 'sub') return;
+      pulseLocalRef.current += 1;
+      const p = pulseLocalRef.current;
+      // Convention preserved: first pulse (1) = RIGHT (+1), then alternate.
+      const here: 1 | -1 = p % 2 === 1 ? 1 : -1;
+      const there: 1 | -1 = (-here) as 1 | -1;
+      animRef.current?.stop();
+      restAnimRef.current?.stop();
+      armAnim.setValue(here);
+      // Read current BPM from ref so the listener closure never goes stale.
+      const dur = Math.max(60, 60000 / Math.max(1, bpmRef.current));
+      const a = Animated.timing(armAnim, {
+        toValue: there,
+        duration: dur,
+        easing: Easing.inOut(Easing.sin),
+        useNativeDriver: true,
+      });
+      animRef.current = a;
+      a.start();
     });
-    animRef.current = a;
-    a.start();
-    return () => { animRef.current?.stop(); };
-  }, [pulse, running, bpm, armAnim]);
+    return () => { off(); };
+  }, [running, bus, armAnim]);
 
   useEffect(() => {
     if (!running) {
@@ -101,6 +144,14 @@ export function PendulumDisplay({ running, beat, pulse, bpm }: PendulumDisplayPr
       });
       restAnimRef.current = a;
       a.start();
+    } else {
+      // v1.3.4 — running flipped TRUE. Reset the local pulse counter and
+      // snap the arm back to its RIGHT rest position so the first noteOn
+      // (pulse=1 → here=RIGHT) doesn't visibly jolt. animRef is left as-is;
+      // the next noteOn listener invocation stops it before re-animating.
+      pulseLocalRef.current = 0;
+      restAnimRef.current?.stop();
+      armAnim.setValue(1);
     }
   }, [running, armAnim]);
 

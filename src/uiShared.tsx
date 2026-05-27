@@ -874,5 +874,320 @@ export function makeStyles(C: ThemePalette) {
   // Program number — fixed-width tabular so labels align cleanly.
   setupVoiceGmProgram: { color: C.inkDim, fontSize: 11, fontVariant: ['tabular-nums'], letterSpacing: 1, minWidth: 28 },
   setupVoiceGmLabel: { color: C.inkMid, fontSize: 13, letterSpacing: 0.5, flex: 1 },
+
+  // ---------------------------------------------------------------------------
+  // v1.2 — METRO additions
+  // metro2_*       — METRO tab additions (CUSTOM pill spacer)
+  // customTimeSig_*— CustomTimeSigPanel
+  // setupMetro2_*  — METRO VOICES group on SETUP
+  // perBeat_*      — PerBeatRow cells
+  // subdivPicker_* — SubdivisionPicker rows
+  // ---------------------------------------------------------------------------
+
+  // Invisible spacer that reserves the CUSTOM panel's height when CUSTOM is
+  // NOT active. Keeps the layout below the time-sig row anchored so flipping
+  // the CUSTOM pill never shifts START/STOP up/down (§10 anti-flicker).
+  metro2_customSpacer: { height: 60 },
+
+  // CustomTimeSigPanel ------------------------------------------------------
+  customTimeSig_row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    marginTop: 6,
+    minHeight: 52,
+  },
+  customTimeSig_cluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  customTimeSig_label: {
+    color: C.inkDim,
+    fontSize: 10,
+    letterSpacing: 2,
+    fontWeight: '700',
+    marginRight: 2,
+  },
+  // Direct-entry field. Fixed width keeps the layout from shifting when the
+  // user types 1- vs 2-digit values (tabular-nums + minWidth).
+  customTimeSig_input: {
+    minWidth: 44,
+    height: 44,
+    paddingHorizontal: 6,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 4,
+    backgroundColor: C.face,
+    color: C.ink,
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+
+  // SETUP — METRO VOICES group helpers --------------------------------------
+  setupMetro2_subLabel: {
+    color: C.inkDim,
+    fontSize: 10,
+    letterSpacing: 2,
+    fontWeight: '700',
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  setupMetro2_section: { marginTop: 4 },
+
+  // PerBeatRow --------------------------------------------------------------
+  perBeat_row: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+  },
+  perBeat_scrollOuter: { paddingVertical: 6 },
+  perBeat_scrollContent: { gap: 6, paddingHorizontal: 2 },
+  // Cell: ≥48dp touch target (Aragorn §15.Q11.5), fixed 56dp width so the
+  // drum short label has stable room and the row math at high N is sane.
+  perBeat_cell: {
+    width: 56,
+    minHeight: 56,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 4,
+    backgroundColor: C.face,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    gap: 4,
+  },
+  // Beat-1 marker — permanent left accent stripe regardless of drum.
+  perBeat_cellDownbeat: {
+    borderLeftWidth: 3,
+    borderLeftColor: C.accent,
+  },
+  // Live-flash: BORDER COLOR SWAP ONLY. No opacity/background animation
+  // (§15.Q11.12 Legolas constraint). Pure render-time prop.
+  perBeat_cellLive: {
+    borderColor: C.inTune,
+  },
+  perBeat_cellPressed: { backgroundColor: C.edgeSoft },
+  perBeat_beatNumber: {
+    color: C.inkDim,
+    fontSize: 12,
+    letterSpacing: 1,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '700',
+  },
+  perBeat_drumLabel: {
+    color: C.ink,
+    fontSize: 11,
+    letterSpacing: 1,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+
+  // SubdivisionPicker -------------------------------------------------------
+  subdivPicker_radioRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+    paddingVertical: 6,
+  },
+  // Tap row — looks like a settingsRow but is itself the Pressable. ≥48dp.
+  subdivPicker_voiceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    minHeight: 48,
+    borderTopColor: C.edgeSoft,
+    borderTopWidth: 1,
+    marginTop: 6,
+    gap: 12,
+  },
+  subdivPicker_voiceRowPressed: { backgroundColor: C.edgeSoft },
+  subdivPicker_voiceRowLabel: {
+    color: C.ink,
+    fontSize: 13,
+    letterSpacing: 1,
+  },
+  subdivPicker_voiceRowValue: {
+    color: C.accent,
+    fontSize: 13,
+    letterSpacing: 1,
+    fontWeight: '700',
+    flexShrink: 1,
+    textAlign: 'right',
+  },
+
+  // ---------------------------------------------------------------------------
+  // v1.3 — top-pill sub-nav + profile slot grid + profile editor accordion
+  // topPillNav_*    — TopPillNav (sub-page nav under TopBar)
+  // profileSlot_*   — ProfileSlotGrid (METRONOME bottom 2×4 row)
+  // profileEditor_* — ProfileEditorAccordion (CUSTOMIZATION editor)
+  // ---------------------------------------------------------------------------
+
+  // TopPillNav — equal-width split, fixed height. Reserves identical height
+  // across sub-page swaps so toggling never moves siblings (anti-flicker).
+  // v1.3.2 — drop the prior paddingHorizontal: 2 so the pill row's left edge
+  // aligns with the BPM ± buttons + Beat-pattern row below (both share the
+  // scene's 24dp gutter). The 2dp inset made the pills look 22dp narrower
+  // per side than the content beneath because the inner pill borders +
+  // accent fill landed a hair short of the BPM stepper's accent borders.
+  topPillNav_row: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 6,
+  },
+  topPillNav_pill: {
+    flex: 1,
+    minHeight: 48,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topPillNav_pillActive: {
+    backgroundColor: C.accent,
+    borderColor: C.accent,
+  },
+  topPillNav_pillPressed: { opacity: 0.7 },
+  topPillNav_pillText: {
+    color: C.inkMid,
+    fontSize: 13,
+    letterSpacing: 3,
+    fontWeight: '700',
+  },
+  topPillNav_pillTextActive: { color: C.onAccent },
+
+  // ProfileSlotGrid — 2 rows of 4 pills each. Row pills use flex:1 so the
+  // four pills share the row width equally; height locked to the metroSigPill
+  // height so the bottom of METRONOME stays a fixed 2-row footer.
+  profileSlot_grid: {
+    marginTop: 4,
+    paddingHorizontal: 2,
+    gap: 6,
+  },
+  profileSlot_row: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  // Each pill flexes to share its row's width. metroSigPill provides the
+  // base look + height (44dp); v1.3.2 bumps the local override to 48dp to
+  // meet the HIG minimum touch target on the 2×4 grid.
+  profileSlot_pill: {
+    flex: 1,
+    minWidth: 0, // allow truncation in narrow widths
+    minHeight: 48,
+    paddingHorizontal: 6,
+  },
+  // User-row visual variant — dashed border on idle so the user can see at a
+  // glance which row is presets vs slots. Active state (metroSigPillActive)
+  // overrides borderColor for selected slot, matching presets visually.
+  profileSlot_pillUser: {
+    borderStyle: 'dashed',
+  },
+
+  // ProfileEditorAccordion -------------------------------------------------
+  // Top header (per U18 / §4): "CUSTOM SOUND SET · CUSTOM BEAT PATTERNS".
+  profileEditor_header: {
+    color: C.inkDim,
+    fontSize: 10,
+    letterSpacing: 3,
+    fontWeight: '700',
+    marginTop: 14,
+    marginBottom: 6,
+    paddingBottom: 6,
+    borderBottomColor: C.edgeSoft,
+    borderBottomWidth: 1,
+  },
+  profileEditor_section: {
+    marginBottom: 6,
+    borderColor: C.edgeSoft,
+    borderWidth: 1,
+    borderRadius: 4,
+    backgroundColor: C.face,
+  },
+  profileEditor_sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    minHeight: 56,
+    gap: 8,
+  },
+  profileEditor_sectionHeaderPressed: { backgroundColor: C.edgeSoft },
+  profileEditor_sectionHeaderTitle: {
+    color: C.ink,
+    fontSize: 13,
+    letterSpacing: 2,
+    fontWeight: '700',
+  },
+  profileEditor_sectionHeaderSubtitle: {
+    color: C.inkDim,
+    fontSize: 11,
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+  profileEditor_sectionHeaderChevron: {
+    color: C.accent,
+    fontSize: 16,
+    fontWeight: '700',
+    minWidth: 18,
+    textAlign: 'right',
+  },
+  profileEditor_sectionBody: {
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 14,
+    borderTopColor: C.edgeSoft,
+    borderTopWidth: 1,
+    gap: 4,
+  },
+  profileEditor_fieldLabel: {
+    color: C.inkDim,
+    fontSize: 10,
+    letterSpacing: 2,
+    fontWeight: '700',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  profileEditor_nameInput: {
+    minHeight: 44,
+    paddingHorizontal: 10,
+    borderColor: C.edge,
+    borderWidth: 1,
+    borderRadius: 4,
+    backgroundColor: C.bg,
+    color: C.ink,
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  profileEditor_tsKindRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 4,
+  },
+  profileEditor_tsPresetRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginTop: 2,
+  },
+  // v1.3.2 — reserve a fixed height for the time-sig VALUE region inside
+  // the accordion body so flipping PRESET↔CUSTOM doesn't shift the Beat
+  // pattern / Subdivisions sections below it. Sized to the taller side:
+  // CustomTimeSigPanel uses customTimeSig_row's minHeight 52 + its label
+  // line + paddings ≈ 96dp, plus a 14dp buffer for ascender variance = 110.
+  profileEditor_tsValueReserve: {
+    minHeight: 110,
+  },
   });
 }

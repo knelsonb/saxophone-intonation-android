@@ -1,31 +1,48 @@
 /**
  * StrobeDisplay — Peterson StroboPlus emulation.
  *
- * 16 vertical bars (period ≈ 20 dp) animate horizontally. Velocity is
- * proportional to cents deviation: positive cents → scroll right (sharp),
- * negative → scroll left (flat), zero → stationary.
+ * A single group of vertical bars (period = BAR_WIDTH + BAR_GAP) is rendered
+ * once and animated horizontally via `transform: translateX`. The translation
+ * is driven by an Animated.loop on a single Animated.Value, which means
+ * `useNativeDriver: true` works — the bar movement runs on the native UI
+ * thread, free of JS-side frame drops.
  *
- * The RAF loop short-circuits to a slow heartbeat when cents stays at 0,
- * keeping CPU at idle when the player is in tune.
+ * v1.3.2 rebuild (Frodo):
+ *   - useNativeDriver: true (was false — JS-thread re-render per frame).
+ *   - Speed envelope: piecewise so the bars don't whip past at small cents
+ *     and never reverse (wagon-wheel) at large cents.
+ *   - Hard-locked direction: FLAT → bars move LEFT, SHARP → bars move RIGHT.
+ *   - When |cents| > 30¢, draw a subtle red tint on the side of error so
+ *     the user still knows which way they're off even though speed is capped.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
 import type { NoteDisplay } from '../../tunerWidgets';
 
 const STRIP_HEIGHT = 120;
-// v0.9.8 duty cycle 50/50 — real Peterson strobe gratings are equal
-// bar/gap, which makes the moving pattern read as an optical field rather
-// than a railroad-tie picket fence. Previous 6/14 (30% duty) didn't strobe.
 const BAR_WIDTH = 10;
 const BAR_GAP = 10;
-const PERIOD = BAR_WIDTH + BAR_GAP;
-const BAR_COUNT = 24; // enough to fully cover any reasonable screen width
+const PERIOD = BAR_WIDTH + BAR_GAP; // 20 dp
+const BAR_COUNT = 24; // enough to cover any reasonable phone width
 
-// Velocity scaling: 0.15 px/frame per cent at 60 fps = 9 px/s per cent. At
-// ±20¢ the strip travels ~180 px/s, brisk but readable.
-const PX_PER_FRAME_PER_CENT = 0.15;
+// v1.3.2 speed envelope. Output is "periods per second" — i.e. how many
+// PERIOD widths the bar pattern shifts per second. Capped at ~4 Hz so the
+// eye never aliases into a backwards-moving pattern.
+//   0–5¢   : gentle ramp, max 0.5 Hz at 5¢
+//   5–15¢  : medium scaling, 0.5 → 2.0 Hz
+//   15–30¢ : medium-fast, 2.0 → 4.0 Hz
+//   30¢+   : plateau at 4.0 Hz
+const SPEED_CAP_HZ = 4.0;
+function centsToPeriodsPerSec(absCents: number): number {
+  const c = Math.abs(absCents);
+  if (c < 0.5) return 0;
+  if (c <= 5)  return (c / 5) * 0.5;                       // 0 → 0.5 Hz
+  if (c <= 15) return 0.5 + ((c - 5) / 10) * (2.0 - 0.5);  // 0.5 → 2.0 Hz
+  if (c <= 30) return 2.0 + ((c - 15) / 15) * (SPEED_CAP_HZ - 2.0); // 2.0 → 4.0 Hz
+  return SPEED_CAP_HZ;
+}
 
 export interface StrobeDisplayProps {
   noteDisplay: NoteDisplay | null;
@@ -37,58 +54,75 @@ export function StrobeDisplay({ noteDisplay, freqHz, isOutOfRange }: StrobeDispl
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
 
-  // The offset is a JS-side number we re-apply each frame. We store it in a
-  // ref to avoid re-rendering 60 times per second; a single setState bumps
-  // the visible offset state when it materially changed (every frame while
-  // animating, throttled when idle).
-  const offsetRef = useRef(0);
-  const [offset, setOffset] = useState(0);
-  const rafRef = useRef<number | null>(null);
+  // The translateX driver. Loops continuously between two fixed endpoints
+  // (one PERIOD apart in either direction); we restart the animation with
+  // a new duration / direction whenever cents crosses a meaningful boundary.
+  const translate = useRef(new Animated.Value(0)).current;
+  const loopRef = useRef<Animated.CompositeAnimation | null>(null);
+  // Last applied (sign, speedHz) — used to skip pointless restarts.
+  const lastConfigRef = useRef<{ sign: 0 | 1 | -1; speedHz: number }>({ sign: 0, speedHz: 0 });
 
-  const centsRef = useRef<number | null>(null);
-  centsRef.current = noteDisplay?.cents ?? null;
+  const cents = noteDisplay?.cents ?? 0;
+  const hasNote = noteDisplay !== null;
 
   useEffect(() => {
-    let cancelled = false;
-    let lastForcedTickMs = Date.now();
-    const tick = () => {
-      if (cancelled) return;
-      const c = centsRef.current;
-      if (c !== null && Math.abs(c) > 0.5) {
-        // v0.9.8 sign flip — bars are drawn at `i * PERIOD - offset`, so a
-        // POSITIVE offset shifts them LEFT and a NEGATIVE offset shifts
-        // them RIGHT. Sharp (positive cents) should drift RIGHT per the
-        // legend below; the prior `+ c * PX...` formula inverted this and
-        // told the user to tune the wrong way — a lying tuner is worse
-        // than no tuner. Subtracting c restores correct directionality.
-        offsetRef.current = (offsetRef.current - c * PX_PER_FRAME_PER_CENT) % PERIOD;
-        // Keep offset in (-PERIOD, +PERIOD)
-        if (offsetRef.current < 0) offsetRef.current += PERIOD;
-        setOffset(offsetRef.current);
-        rafRef.current = requestAnimationFrame(tick);
-      } else {
-        // Idle: drop to ~4 Hz heartbeat. Keeps the loop reactive without
-        // burning a frame per vsync when the player is in tune.
-        const now = Date.now();
-        if (now - lastForcedTickMs > 250) {
-          lastForcedTickMs = now;
-          setOffset(offsetRef.current);
-        }
-        rafRef.current = requestAnimationFrame(tick);
-      }
-    };
-    rafRef.current = requestAnimationFrame(tick);
+    // Determine target direction + speed.
+    // Direction hard-lock: FLAT (cents < 0) → translateX moves LEFT (negative);
+    // SHARP (cents > 0) → translateX moves RIGHT (positive). The bars shift
+    // toward "lower frequency" when flat and "higher" when sharp, matching
+    // the legend.
+    const speedHz = hasNote ? centsToPeriodsPerSec(cents) : 0;
+    const sign: 0 | 1 | -1 = speedHz < 0.01 ? 0 : cents < 0 ? -1 : 1;
+
+    // Skip if config unchanged (within tolerance) — avoids stutter from
+    // restarting the loop on tiny cents jitter.
+    const last = lastConfigRef.current;
+    if (last.sign === sign && Math.abs(last.speedHz - speedHz) < 0.05) return;
+    lastConfigRef.current = { sign, speedHz };
+
+    // Stop the previous loop if any.
+    if (loopRef.current) {
+      loopRef.current.stop();
+      loopRef.current = null;
+    }
+    translate.setValue(0);
+
+    if (sign === 0) {
+      // Idle — leave translate at 0 (bars stationary). No loop, no CPU.
+      return;
+    }
+
+    // Duration = 1000 / speedHz ms per PERIOD. translateX goes 0 → sign*PERIOD,
+    // then resets to 0 (no reverse — that would look like the bars moving
+    // backward). The bar pattern is wider than the strip so the wrap is
+    // visually invisible.
+    const durationMs = Math.max(40, 1000 / speedHz); // floor 40ms guards div-by-zero
+    const anim = Animated.loop(
+      Animated.timing(translate, {
+        toValue: sign * PERIOD,
+        duration: durationMs,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+      { resetBeforeIteration: true },
+    );
+    loopRef.current = anim;
+    anim.start();
+  }, [cents, hasNote, translate]);
+
+  // Cleanup on unmount.
+  useEffect(() => {
     return () => {
-      cancelled = true;
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (loopRef.current) {
+        loopRef.current.stop();
+        loopRef.current = null;
+      }
     };
   }, []);
 
   const letter = noteDisplay?.letter ?? '—';
   const accidental = noteDisplay?.accidental ?? '';
   const octave = noteDisplay?.octave;
-  const hasNote = noteDisplay !== null;
-  const cents = noteDisplay?.cents ?? 0;
   const hzText = freqHz !== null ? freqHz.toFixed(1) : '— — —';
   const centsText = noteDisplay
     ? `${cents >= 0 ? '+' : ''}${cents.toFixed(noteDisplay.precision === 1.0 ? 0 : 1)}`
@@ -99,14 +133,22 @@ export function StrobeDisplay({ noteDisplay, freqHz, isOutOfRange }: StrobeDispl
     Math.abs(cents) <= 15 ? C.accent :
                             C.sharp;
 
-  // Render bars positioned at `i * PERIOD - offset` so they march in step.
+  // Side-of-error tint: when |cents| > 30, the speed is capped and the
+  // motion alone may not be enough to tell direction at a glance. Add a
+  // subtle red tint on the appropriate side so the user has a static cue.
+  const wayOff = hasNote && !isOutOfRange && Math.abs(cents) > 30;
+  const flatTint = wayOff && cents < 0;
+  const sharpTint = wayOff && cents > 0;
+
+  // Render BAR_COUNT bars at fixed positions inside an Animated.View whose
+  // transform shifts the whole group. Bars start at -2*PERIOD so the leftmost
+  // bars stay covered even when the group has shifted right by a full PERIOD.
   const bars: React.ReactNode[] = [];
   for (let i = -2; i < BAR_COUNT; i++) {
-    const left = i * PERIOD - offset;
     bars.push(
       <View
         key={i}
-        style={[styles.bar, { left, opacity: isOutOfRange ? 0.25 : 1 }]}
+        style={[styles.bar, { left: i * PERIOD, opacity: isOutOfRange ? 0.25 : 1 }]}
         pointerEvents="none"
       />,
     );
@@ -133,13 +175,22 @@ export function StrobeDisplay({ noteDisplay, freqHz, isOutOfRange }: StrobeDispl
         </View>
       </View>
 
-      {/* The strobe strip itself */}
+      {/* The strobe strip itself. Bars live inside an Animated.View whose
+          `transform: translateX` drives motion on the native thread. */}
       <View style={styles.strip}>
-        {bars}
-        {/* Edge fades (top + bottom strips so the active area still reads cleanly). */}
+        <Animated.View
+          style={[styles.barGroup, { transform: [{ translateX: translate }] }]}
+          pointerEvents="none"
+        >
+          {bars}
+        </Animated.View>
+        {/* Edge fades. */}
         <View style={styles.fadeLeft} pointerEvents="none" />
         <View style={styles.fadeRight} pointerEvents="none" />
-        {/* Centre marker — a thin line at the centre column for orientation. */}
+        {/* Way-off direction cue (only when |cents| > 30 and speed is capped). */}
+        {flatTint  && <View style={styles.errorTintLeft}  pointerEvents="none" />}
+        {sharpTint && <View style={styles.errorTintRight} pointerEvents="none" />}
+        {/* Centre marker. */}
         <View style={styles.centerLine} pointerEvents="none" />
       </View>
 
@@ -173,6 +224,13 @@ function makeStyles(C: ThemePalette) {
       overflow: 'hidden',
       position: 'relative',
     },
+    barGroup: {
+      // Fills the strip — bars are positioned absolutely inside it. The
+      // Animated transform shifts the whole group together so the native
+      // driver moves a single view rather than 26.
+      position: 'absolute',
+      top: 0, bottom: 0, left: 0, right: 0,
+    },
     bar: {
       position: 'absolute',
       top: 8,
@@ -192,6 +250,20 @@ function makeStyles(C: ThemePalette) {
       top: 0, bottom: 0, right: 0, width: 40,
       backgroundColor: C.face,
       opacity: 0.75,
+    },
+    // Side-of-error cue — only rendered when |cents| > 30. Sharp colour at
+    // low opacity so it tints the edge without competing with the bars.
+    errorTintLeft: {
+      position: 'absolute',
+      top: 0, bottom: 0, left: 0, width: 60,
+      backgroundColor: C.sharp,
+      opacity: 0.18,
+    },
+    errorTintRight: {
+      position: 'absolute',
+      top: 0, bottom: 0, right: 0, width: 60,
+      backgroundColor: C.sharp,
+      opacity: 0.18,
     },
     centerLine: {
       position: 'absolute',

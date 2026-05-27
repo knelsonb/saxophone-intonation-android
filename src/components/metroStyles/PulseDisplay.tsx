@@ -11,11 +11,17 @@
  * COLOR ONLY (inTune green vs accent amber). The prior 26-vs-22 size
  * caused the row to shift horizontally between beats 1 and 2-N — a layout
  * jitter that read as a bug.
+ *
+ * v1.3.4 B5 — converted from `pulse` prop to a synchronous `bus.on('noteOn')`
+ * subscription, eliminating the 1-frame (~16 ms) React reconciler lag that
+ * the prop path incurred. The `pulse` prop is retained for backward-compat
+ * but is no longer used for animation (same migration pattern as PendulumDisplay).
  */
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
+import type { MidiBusState } from '../../useMidiBusCore';
 
 const BEATS_OF_SIG: Record<string, number> = {
   '2/4': 2, '3/4': 3, '4/4': 4, '6/8': 6,
@@ -27,11 +33,21 @@ const DOT_GAP = 8;
 export interface PulseDisplayProps {
   running: boolean;
   beat: number;
+  /**
+   * @deprecated since v1.3.4 — no longer drives animation; bus subscription is
+   * used instead. Kept on the prop surface for backward-compat with call sites.
+   * Will be removed in v1.4.
+   */
   pulse: number;
   timeSig: '2/4' | '3/4' | '4/4' | '6/8';
+  /**
+   * v1.3.4 — bus reference for the synchronous beat subscription.
+   * When absent (test harness, editor preview) animation stays idle.
+   */
+  bus?: MidiBusState;
 }
 
-export function PulseDisplay({ running, beat, pulse, timeSig }: PulseDisplayProps) {
+export function PulseDisplay({ running, beat, timeSig, bus }: PulseDisplayProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
 
@@ -43,15 +59,27 @@ export function PulseDisplay({ running, beat, pulse, timeSig }: PulseDisplayProp
   // period ≤ 222ms) the prior 220ms tween isn't done when the next fires.
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
+
+  // v1.3.4 B5 — subscribe synchronously to bus.on('noteOn') so the dot flash
+  // lands on the same JS tick as the audio attack (U21 invariant). The `pulse`
+  // prop approach batched through React reconciler → ~16 ms lag.
   useEffect(() => {
-    if (!running || pulse === 0) return;
-    animRef.current?.stop();
-    pulseAnim.setValue(1.6);
-    const a = Animated.timing(pulseAnim, { toValue: 1, duration: 220, useNativeDriver: true });
-    animRef.current = a;
-    a.start();
-    return () => { animRef.current?.stop(); };
-  }, [pulse, running, pulseAnim]);
+    if (!running || !bus) return;
+    const off = bus.on('noteOn', (evt) => {
+      if (evt.channel !== 'drums') return;
+      if ((evt.velocity ?? 0) <= 0) return;
+      if (evt.tick === 'sub') return;
+      animRef.current?.stop();
+      pulseAnim.setValue(1.6);
+      const a = Animated.timing(pulseAnim, { toValue: 1, duration: 220, useNativeDriver: true });
+      animRef.current = a;
+      a.start();
+    });
+    return () => {
+      off();
+      animRef.current?.stop();
+    };
+  }, [running, bus, pulseAnim]);
 
   return (
     <View style={styles.root}>

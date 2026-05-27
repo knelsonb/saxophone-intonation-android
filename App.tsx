@@ -23,7 +23,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -32,6 +32,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 
+import { log } from './src/log';
 import { useAudioEngine } from './src/useAudioEngine';
 import type { DisplayMode } from './src/useAudioEngine';
 import { transpMap, getInstrument, rangeMap } from './src/instruments';
@@ -78,6 +79,9 @@ import { MetroScreen } from './src/screens/MetroScreen';
 import { DeckScreen } from './src/screens/DeckScreen';
 import { SetupScreen } from './src/screens/SetupScreen';
 import { useMetronome } from './src/useMetronome';
+import { useMidiBus } from './src/useMidiBus';
+import { usePitchPipes } from './src/usePitchPipes';
+import { useUiPrefsStore } from './src/useUiPrefsStore';
 import { useDeck } from './src/useDeck';
 import { useDrone } from './src/useDrone';
 // v1.1 — droneVoice is now a stable string id; the catalog lives in droneVoices.ts.
@@ -140,6 +144,47 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   const styles = useMemo(() => makeStyles(C), [C]);
   const { width, height } = useWindowDimensions();
   const isLandscape = width >= height;
+  // v1.2 — safe-area insets push the persistent header below the system status
+  // bar + camera cutout. On the tablet, top inset is ~51dp (153px / 3x DPR).
+  // Applied to faceplateHeader's paddingTop so the wordmark clears the cutout.
+  const insets = useSafeAreaInsets();
+
+  // ----- forensic logger wiring -----
+
+  // Boot message — lets us correlate logcat sessions with ring-buffer tails.
+  useEffect(() => {
+    log.i('App', 'BellCurve v1.2.1 boot, versionCode 11');
+  }, []);
+
+  // Recover last-session ring buffer and warn so the developer knows the
+  // previous run logged something (useful immediately after a crash repro).
+  useEffect(() => {
+    log.loadLastSession().then((entries) => {
+      if (entries.length > 0) {
+        log.w('App', 'Recovered ' + entries.length + ' entries from last session');
+      }
+    }).catch(() => {});
+  }, []);
+
+  // Global unhandled-error hook — log fatal + non-fatal JS errors and persist
+  // immediately so a hard crash leaves evidence in AsyncStorage.
+  useEffect(() => {
+    const g = globalThis as unknown as { ErrorUtils?: {
+      getGlobalHandler?: () => ((err: Error, isFatal: boolean) => void) | null;
+      setGlobalHandler?: (h: (err: Error, isFatal: boolean) => void) => void;
+    } };
+    const prev = g.ErrorUtils?.getGlobalHandler?.() ?? null;
+    g.ErrorUtils?.setGlobalHandler?.(
+      (err: Error, isFatal: boolean) => {
+        log.e(
+          'GlobalErrorHandler',
+          `${isFatal ? 'FATAL ' : ''}${err?.name ?? 'Error'}: ${err?.message ?? '(no message)'}\n${err?.stack ?? '(no stack)'}`,
+        );
+        log.flushAsync().catch(() => {}); // belt-and-suspenders persist before crash
+        if (typeof prev === 'function') prev(err, isFatal);
+      },
+    );
+  }, []);
 
   // ----- top-level state -----
 
@@ -149,6 +194,11 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // this file.
 
   const [refHz, setRefHz] = useState(REF_HZ_DEFAULT);
+
+  // v1.2 — active tab lifted out of the navigator so the persistent TopBar
+  // (rendered above NavigationContainer) can be tab-aware per U7. Mirrors the
+  // navigator's active route name; updated via NavigationContainer.onStateChange.
+  const [activeTab, setActiveTab] = useState<TabKey>('tuner');
 
   // Modals owned by App (transient overlays, not screens).
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -392,14 +442,23 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   })();
   const badgeText = instrumentDisplayName;
 
-  // ----- Sub-hooks: metronome, deck, drone -----
+  // v1.3 — MIDI bus owns synth singleton + WAV fallback + per-channel reservation.
+  // All synth consumers (drone, metronome, pipes) reserve their channel from this bus.
+  const bus = useMidiBus();
+  // v1.3 — UI prefs store; v1.3.0 consumes pipesVoice from here (other fields
+  // still flow via engine until Wave 3.5 migrates consumers off useAudioEngine).
+  const uiPrefs = useUiPrefsStore();
+
+  // ----- Sub-hooks: metronome, deck, drone, pipes -----
 
   const metro = useMetronome({
+    bus,
     clickOffsetMs: engine.metroClickOffsetMs,
     outputRoute: engine.metroOutputRoute,
   });
   const deck = useDeck();
   const drone = useDrone({
+    bus,
     incumbentMidi: engine.incumbentMidi,
     a4Hz: refHz,
     voice: droneVoice,
@@ -408,11 +467,14 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     setDroneCurrentMidi: engine.setDroneCurrentMidi,
     installDroneDuckHandler: engine.installDroneDuckHandler,
   });
+  // v1.3 — pipes reserve 'pipes' channel; infinite sustain via tap-toggle.
+  const pipes = usePitchPipes({ bus, a4Hz: refHz });
 
-  // v1.0 BUG-4 — mute drone while recording so the mic doesn't pick it up.
+  // v1.3 — v1.0 BUG-4 fix moves to the bus layer (G12 council).
+  // Mute the whole synth singleton while deck is recording so no MIDI consumer leaks into the mic.
   useEffect(() => {
-    drone.setMuted(deck.mode === 'recording');
-  }, [deck.mode, drone]);
+    bus.setMasterMute(deck.mode === 'recording');
+  }, [deck.mode, bus]);
 
   // Permission gate short-circuits the entire tabbed UI.
   if (engine.status === 'mic-denied' || engine.status === 'stream-failed') {
@@ -467,6 +529,10 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       droneSemitones={droneSemitones}
       setDroneVolume={setDroneVolume}
       setDroneSemitones={setDroneSemitones}
+      droneVoice={droneVoice}
+      setDroneVoice={setDroneVoice}
+      pipesVoice={uiPrefs.pipesVoice}
+      setPipesVoice={uiPrefs.setPipesVoice}
       carState={carState}
       callState={callState}
       onClaimMic={handleClaimMic}
@@ -474,7 +540,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     />
   );
   const renderMetroScreen = () => (
-    <MetroScreen metro={metro} metroStyle={engine.metroStyle} outputRoute={engine.metroOutputRoute} />
+    <MetroScreen metro={metro} metroStyle={engine.metroStyle} outputRoute={engine.metroOutputRoute} bus={bus} />
   );
   const renderDeckScreen = () => (
     <DeckScreen deck={deck} deckStyle={engine.deckStyle} />
@@ -492,8 +558,6 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       onOpenPipes={() => setPipesOpen(true)}
       onOpenRangeEditor={() => setRangeEditorOpen(true)}
       onEditHornName={() => { setHornNameDraft(engine.nickname); setHornNameEdit(true); }}
-      droneVoice={droneVoice}
-      setDroneVoice={setDroneVoice}
       metro={metro}
     />
   );
@@ -502,8 +566,9 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     <View style={styles.rootTabbed}>
       {/* Persistent header — TopBar + banners stay visible across all tabs
           (architecturally, they sit OUTSIDE the navigator). */}
-      <View style={styles.faceplateHeader}>
+      <View style={[styles.faceplateHeader, { paddingTop: insets.top }]}>
         <TopBar
+          activeTab={activeTab}
           status={engine.status}
           streamErrorReason={engine.streamErrorReason}
           refHz={refHz}
@@ -535,7 +600,16 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           we used to get from `faceplateTabbed`. Android back from a non-
           initial tab returns to the initial tab now, which is the standard
           tab-app expectation. */}
-      <NavigationContainer>
+      <NavigationContainer
+        onStateChange={(state) => {
+          // v1.2 — lift active route name out of the navigator so the
+          // persistent TopBar (rendered outside NavigationContainer) can
+          // be tab-aware per U7. Identity mapping; route names are TabKey.
+          if (!state) return;
+          const name = state.routes[state.index]?.name as TabKey | undefined;
+          if (name && name !== activeTab) setActiveTab(name);
+        }}
+      >
         <Tab.Navigator
           initialRouteName="tuner"
           screenOptions={{
@@ -602,6 +676,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
         onClose={() => setPipesOpen(false)}
         refHz={refHz}
         instrumentKey={instrumentKey}
+        pipes={pipes}
       />
       <HornNameEditor
         visible={hornNameEdit}

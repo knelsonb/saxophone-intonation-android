@@ -22,7 +22,7 @@
  * background mic-recording requires foreground service config we don't ship)
  * but leaves a finished take in memory for the next foregrounding.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { File, Directory, Paths } from 'expo-file-system';
 import {
@@ -102,14 +102,19 @@ export function useDeck(): DeckState {
   const [pendingConfirm, setPendingConfirm] = useState<DeckState['pendingConfirm']>(null);
   const [toast, setToast] = useState<DeckToast | null>(null);
   const toastIdRef = useRef(0);
+  // v1.3.4 B8 — track pending toast timers so unmount can clear them and
+  // avoid setState-on-unmounted-component warnings.
+  const toastTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   const flashToast = useCallback((text: string, kind: 'ok' | 'error') => {
     toastIdRef.current += 1;
     const id = toastIdRef.current;
     setToast({ text, kind, id });
-    setTimeout(() => {
+    const t = setTimeout(() => {
+      toastTimersRef.current.delete(t);
       setToast((prev) => (prev && prev.id === id ? null : prev));
     }, 2500);
+    toastTimersRef.current.add(t);
   }, []);
 
   // Disposes the active player if any.
@@ -393,6 +398,15 @@ export function useDeck(): DeckState {
     return () => disposePlayer();
   }, [disposePlayer]);
 
+  // v1.3.4 B8 — clear all pending toast timers on unmount so no setState
+  // fires into a dead component.
+  useEffect(() => {
+    return () => {
+      for (const t of toastTimersRef.current) clearTimeout(t);
+      toastTimersRef.current.clear();
+    };
+  }, []);
+
   // Derive overall mode.
   let mode: DeckMode = 'idle';
   if (recState.isRecording) mode = 'recording';
@@ -403,7 +417,11 @@ export function useDeck(): DeckState {
     ? Math.floor((recState.durationMillis ?? 0) / 1000)
     : 0;
 
-  return {
+  // v1.2 hotfix — memoise the returned object so App.tsx's consumers don't
+  // see a fresh `deck` reference on every render. `mode` + `recordingSeconds`
+  // are derived locally each render; including them in deps is sufficient
+  // because they're scalars computed from the same source state.
+  return useMemo<DeckState>(() => ({
     mode,
     recordingSeconds,
     take,
@@ -422,5 +440,24 @@ export function useDeck(): DeckState {
     requestClearTake,
     confirmClearTake,
     cancelClearTake,
-  };
+  }), [
+    mode,
+    recordingSeconds,
+    take,
+    playPos,
+    playDur,
+    pendingConfirm,
+    toast,
+    startRecord,
+    stopRecord,
+    togglePlayPause,
+    scrubTo,
+    clearTake,
+    saveTake,
+    confirmDiscardAndRecord,
+    cancelDiscardAndRecord,
+    requestClearTake,
+    confirmClearTake,
+    cancelClearTake,
+  ]);
 }

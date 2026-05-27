@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ThemeName } from '../theme';
+import { log } from '../log';
 // v1.1 — droneVoice is now a stable string id (DroneVoice.id from droneVoices.ts).
 // The old union type 'cello' | 'sine' | 'saw' is gone. Resolution lives at the
 // consumer site via resolveDroneVoice(id).
@@ -108,6 +109,28 @@ export interface AppPrefs {
   // v1.1 METRO CLICK VOLUME — 0..1 playback gain applied to both the accent
   // and normal click WAVs. 0 = mute, 1 = full amplitude. Default 0.8.
   metroClickVolume: number;
+  // v1.2 — TimeSig kind. 'preset' = use metroTimeSigPreset; 'custom' = use
+  // metroCustomNumerator / metroCustomDenominator. Default 'preset' / '4/4'.
+  metroTimeSigKind: 'preset' | 'custom';
+  metroTimeSigPreset: '2/4' | '3/4' | '4/4' | '6/8';
+  // v1.2 — last-used custom values, persisted independently of preset selection
+  // so toggling between preset and CUSTOM never loses the user's custom value.
+  // Numerator clamped to [1, 32]; denominator constrained to {2,4,8,16,32}.
+  metroCustomNumerator: number;
+  metroCustomDenominator: 2 | 4 | 8 | 16 | 32;
+  // v1.2 — per-beat pattern, JSON-stringified BeatInstrument[]. Length must
+  // match the current beatsPerBar at load time; on any deserialization
+  // failure or schema mismatch (length, missing fields, midi out of 35..81),
+  // silently reset to the default pattern (kick on 1, click on 2..N).
+  // Stored as a string because AsyncStorage is fussier about nested objects.
+  metroPatternJson: string;
+  // v1.2 — subdivision mode. 'off' fires one click per beat (today's
+  // behaviour); the others schedule extra sub-ticks per beat.
+  metroSubdivisions: 'off' | '8th' | '16th' | 'triplet';
+  // v1.2 — voice fired for every sub-tick. Single global voice per §15.Q11.3.
+  // Default GM 42 (Closed Hi-Hat), velocity 70.
+  metroSubdivisionVoiceMidi: number;
+  metroSubdivisionVoiceVelocity: number;
   // v0.9.0 DRONE — sustained reference tone that tracks the user's detected
   // pitch ± a semitone offset. Tuner-screen-only.
   // v1.1 — droneVoice is the stable DroneVoice.id string (e.g. 'organ',
@@ -120,6 +143,11 @@ export interface AppPrefs {
   // droneSemitones: signed semitone offset added to the detected MIDI before
   // synthesizing the drone pitch. Range [-12, +12], integer. Default 0.
   droneSemitones: number;
+  // v1.3 PIPES VOICE — GM program number 0..127 for the pitch-pipes channel
+  // (channel role 'pipes' on the MIDI bus). Default 80 (Synth Lead Square)
+  // per council decision U25 — a reference-tone-like timbre that's clearly
+  // pitched and sustained. See docs/v1.3-council-decisions.md U25.
+  pipesVoice: number;
 }
 
 export const DEFAULT_PREFS: AppPrefs = {
@@ -153,12 +181,33 @@ export const DEFAULT_PREFS: AppPrefs = {
   droneVoice: DRONE_DEFAULT_VOICE.id, // v1.1 — 'organ' (TSF Church Organ patch 19)
   droneVolume: 0.5,
   droneSemitones: 0,
+  // v1.3 — Synth Lead Square (GM 80), per council U25.
+  pipesVoice: 80,
   tunerStyle: 'arc',
   metroStyle: 'pulse',
   deckStyle: 'reels',
   metroClickOffsetMs: 0,
   metroOutputRoute: 'speaker',
   metroClickVolume: 0.8,
+  // v1.2 — fresh install: 4/4 preset, default kick+click pattern is built by
+  // useMetronome on mount from numerator (see metroPatternJson note below).
+  metroTimeSigKind: 'preset',
+  metroTimeSigPreset: '4/4',
+  metroCustomNumerator: 5,
+  metroCustomDenominator: 8,
+  // Default pattern matches a fresh-install 4-beat bar: kick on 1, click on
+  // 2..4. The hook re-derives the pattern from beatsPerBar when the parsed
+  // length disagrees with the current numerator, so this string is only the
+  // "remembered" pattern, not a binding declaration of length.
+  metroPatternJson: JSON.stringify([
+    { midi: 36, velocity: 110 },
+    { midi: 76, velocity: 90 },
+    { midi: 76, velocity: 90 },
+    { midi: 76, velocity: 90 },
+  ]),
+  metroSubdivisions: 'off',
+  metroSubdivisionVoiceMidi: 42,       // Closed Hi-Hat
+  metroSubdivisionVoiceVelocity: 70,   // §15.Q11.9
 };
 
 // ---------------------------------------------------------------------------
@@ -206,6 +255,36 @@ function asStr(v: unknown, def: string): string {
 function asOneOf<T extends string>(v: unknown, allowed: readonly T[], def: T): T {
   const s = asStr(v, def);
   return (allowed as readonly string[]).includes(s) ? (s as T) : def;
+}
+
+// v1.2 — patternJson silent-reset guard (§15.Q3 acceptance criterion).
+// AsyncStorage may have stale or corrupt JSON. We parse defensively and
+// validate every element. On ANY failure path (bad JSON, non-array,
+// missing fields, midi out of GM-drum range 35..81, velocity out of
+// 1..127), return null so the caller falls back to the default pattern.
+// The hook re-derives default pattern length on mount from beatsPerBar,
+// so an empty-but-valid array also returns null (length mismatch is
+// re-checked at the hook level after coercion of customNum / preset).
+function coercePatternJson(v: unknown): { midi: number; velocity: number }[] | null {
+  if (typeof v !== 'string' || v.length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+  const out: { midi: number; velocity: number }[] = [];
+  for (const elem of parsed) {
+    if (typeof elem !== 'object' || elem === null) return null;
+    const rec = elem as Record<string, unknown>;
+    const midi = Number(rec.midi);
+    const velocity = Number(rec.velocity);
+    if (!Number.isFinite(midi) || midi < 35 || midi > 81) return null;
+    if (!Number.isFinite(velocity) || velocity < 1 || velocity > 127) return null;
+    out.push({ midi: Math.trunc(midi), velocity: Math.trunc(velocity) });
+  }
+  return out;
 }
 
 // v1.1 — drone voice id migration. Pre-v1.1 prefs stored a closed union
@@ -269,12 +348,54 @@ export async function loadPrefs(): Promise<AppPrefs> {
       droneVoice:          migrateDroneVoiceId(d.droneVoice, DEFAULT_PREFS.droneVoice),
       droneVolume:         asFloat(d.droneVolume, DEFAULT_PREFS.droneVolume, 0.0, 1.0),
       droneSemitones:      Math.max(-12, Math.min(12, asInt(d.droneSemitones, DEFAULT_PREFS.droneSemitones))),
+      // v1.3 — GM patch 0..127. asInt clamps to integer; on any invalid value
+      // (NaN, string non-numeric, missing) fall back to DEFAULT_PREFS.pipesVoice
+      // (80 = Synth Lead Square per U25). Clamp to the valid GM patch range.
+      pipesVoice:          Math.max(0, Math.min(127, asInt(d.pipesVoice, DEFAULT_PREFS.pipesVoice))),
       tunerStyle:          asOneOf(d.tunerStyle, ['arc', 'strobe', 'led'] as const, DEFAULT_PREFS.tunerStyle),
       metroStyle:          asOneOf(d.metroStyle, ['pulse', 'pendulum', 'flash'] as const, DEFAULT_PREFS.metroStyle),
       deckStyle:           asOneOf(d.deckStyle, ['reels', 'vu', 'waveform'] as const, DEFAULT_PREFS.deckStyle),
       metroClickOffsetMs:  Math.max(-50, Math.min(50, asInt(d.metroClickOffsetMs, DEFAULT_PREFS.metroClickOffsetMs))),
       metroOutputRoute:    asOneOf(d.metroOutputRoute, ['speaker', 'wired', 'bluetooth'] as const, DEFAULT_PREFS.metroOutputRoute),
       metroClickVolume:    asFloat(d.metroClickVolume, DEFAULT_PREFS.metroClickVolume, 0.0, 1.0),
+      // v1.2 — time signature migration.
+      //   Legacy: top-level `timeSig: '2/4'|'3/4'|'4/4'|'6/8'` string.
+      //   New: split into `metroTimeSigKind` + `metroTimeSigPreset`
+      //   (+ customNum/Den for kind === 'custom').
+      // If the new kind field is missing but the legacy `timeSig` exists,
+      // adopt it as the preset; otherwise default to '4/4' preset.
+      metroTimeSigKind: asOneOf(
+        d.metroTimeSigKind,
+        ['preset', 'custom'] as const,
+        DEFAULT_PREFS.metroTimeSigKind,
+      ),
+      metroTimeSigPreset: asOneOf(
+        d.metroTimeSigPreset ?? d.timeSig,
+        ['2/4', '3/4', '4/4', '6/8'] as const,
+        DEFAULT_PREFS.metroTimeSigPreset,
+      ),
+      // Numerator [1, 32], denominator constrained to {2,4,8,16,32}.
+      metroCustomNumerator: Math.max(1, Math.min(32, asInt(d.metroCustomNumerator, DEFAULT_PREFS.metroCustomNumerator))),
+      metroCustomDenominator: ((): 2 | 4 | 8 | 16 | 32 => {
+        const n = asInt(d.metroCustomDenominator, DEFAULT_PREFS.metroCustomDenominator);
+        return (n === 2 || n === 4 || n === 8 || n === 16 || n === 32)
+          ? (n as 2 | 4 | 8 | 16 | 32)
+          : DEFAULT_PREFS.metroCustomDenominator;
+      })(),
+      // patternJson: silent reset on bad JSON / schema mismatch. We keep
+      // the raw string in prefs (re-serializing it normalises shape but
+      // also strips unknown keys, which is what we want).
+      metroPatternJson: (() => {
+        const coerced = coercePatternJson(d.metroPatternJson);
+        return coerced ? JSON.stringify(coerced) : DEFAULT_PREFS.metroPatternJson;
+      })(),
+      metroSubdivisions: asOneOf(
+        d.metroSubdivisions,
+        ['off', '8th', '16th', 'triplet'] as const,
+        DEFAULT_PREFS.metroSubdivisions,
+      ),
+      metroSubdivisionVoiceMidi: Math.max(35, Math.min(81, asInt(d.metroSubdivisionVoiceMidi, DEFAULT_PREFS.metroSubdivisionVoiceMidi))),
+      metroSubdivisionVoiceVelocity: Math.max(1, Math.min(127, asInt(d.metroSubdivisionVoiceVelocity, DEFAULT_PREFS.metroSubdivisionVoiceVelocity))),
     };
   } catch {
     return { ...DEFAULT_PREFS };
@@ -289,4 +410,286 @@ export async function savePrefs(p: AppPrefs): Promise<void> {
   } catch {
     // Best-effort. AsyncStorage errors must never reach the UI.
   }
+}
+
+// ---------------------------------------------------------------------------
+// prefs.update() — single debounced writer (G3, v1.3 council decision).
+//
+// Replaces the inline IIFE pattern (loadPrefs → savePrefs) that previously
+// lived inside each setter in useAudioEngine. All per-field setters in the
+// new hooks (useUiPrefsStore, useDronePrefs) call update() instead, which:
+//
+//   1. Merges `patch` into pendingSave in memory.
+//   2. Resets a 250 ms debounce timer.
+//   3. On fire: reads the current stored prefs once, merges pending, writes.
+//   4. Returns void — callers do NOT await.
+//
+// This eliminates the read-modify-write race where two near-simultaneous
+// setters each do a separate loadPrefs() and the second save clobbers
+// fields from the first (see §4.3 of v1.3-state-machine-scrub.md).
+//
+// Module-level state: intentional — the debounce timer and pending patch
+// outlive any single hook mount/unmount cycle. Only one timer is ever
+// live at a time.
+// ---------------------------------------------------------------------------
+
+let _pendingPatch: Partial<AppPrefs> | null = null;
+let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+// v1.4 — L2: serialise writes — at most one AsyncStorage RMW in flight.
+// Debounce fire AND retry fire both check this before starting an async write.
+// If true, the caller re-arms with a short delay (50 ms) and bails so the
+// in-flight write completes first. Cleared in the finally block.
+let _writeInFlight: boolean = false;
+const DEBOUNCE_MS = 250;
+
+/**
+ * Write a partial update to AsyncStorage with 250 ms debounce.
+ * Multiple calls within the window are coalesced (last value wins per field).
+ * Returns void; never rejects (all errors are swallowed as best-effort).
+ */
+// v1.3.4 B10 — backoff delay for retry on write failure.
+const DEBOUNCE_RETRY_MS = 500;
+
+export function prefsUpdate(patch: Partial<AppPrefs>): void {
+  // Accumulate patch.
+  _pendingPatch = { ...(_pendingPatch ?? {}), ...patch };
+
+  // Reset debounce timer.
+  if (_debounceTimer !== null) clearTimeout(_debounceTimer);
+  _debounceTimer = setTimeout(() => {
+    _debounceTimer = null;
+    // v1.4 — L2: if a write is already in flight, back off 50 ms so we don't
+    // race two concurrent AsyncStorage RMW operations.
+    if (_writeInFlight) {
+      _debounceTimer = setTimeout(() => {
+        _debounceTimer = null;
+        const deferred = _pendingPatch;
+        if (deferred === null) return;
+        _pendingPatch = null;
+        void _doWrite(deferred);
+      }, 50);
+      return;
+    }
+    const toBeSaved = _pendingPatch;
+    if (toBeSaved === null) return;
+    _pendingPatch = null;
+    void _doWrite(toBeSaved);
+  }, DEBOUNCE_MS);
+}
+
+// v1.4 — L2: single shared async write helper. Sets _writeInFlight before
+// the await and clears it when done. On failure, re-merges the patch and
+// re-arms a ONE-SHOT retry (B10 backoff). Second failure gives up to avoid
+// a retry storm on a full-disk or revoked-storage condition.
+async function _doWrite(toBeSaved: Partial<AppPrefs>): Promise<void> {
+  _writeInFlight = true;
+  let scheduleRetry = false;
+  try {
+    const current = await loadPrefs();
+    await savePrefs({ ...current, ...toBeSaved });
+  } catch (err) {
+    log.e('prefsUpdate', `AsyncStorage write failed — will retry in ${DEBOUNCE_RETRY_MS} ms: ${String(err)}`);
+    // Re-merge: newer patch wins over the failed one so no data is lost.
+    _pendingPatch = { ...toBeSaved, ...(_pendingPatch ?? {}) };
+    // Arm a one-shot retry timer. _writeInFlight stays true until the retry
+    // either succeeds or fails — so any concurrent prefsUpdate() debounce fire
+    // backs off via the 50 ms guard in prefsUpdate rather than racing us.
+    if (_debounceTimer !== null) { clearTimeout(_debounceTimer); _debounceTimer = null; }
+    scheduleRetry = true;
+    _debounceTimer = setTimeout(() => {
+      _debounceTimer = null;
+      const retryPatch = _pendingPatch;
+      if (retryPatch === null) { _writeInFlight = false; return; }
+      _pendingPatch = null;
+      (async () => {
+        try {
+          const current = await loadPrefs();
+          await savePrefs({ ...current, ...retryPatch });
+        } catch (retryErr) {
+          // Second failure — log and give up to avoid an infinite retry storm.
+          log.e('prefsUpdate', `AsyncStorage retry also failed — data lost: ${String(retryErr)}`);
+        } finally {
+          _writeInFlight = false;
+        }
+      })();
+    }, DEBOUNCE_RETRY_MS);
+  } finally {
+    // Clear the in-flight guard ONLY if we did NOT schedule a retry.
+    // When scheduleRetry is true the guard must stay set until the retry
+    // completes; the retry's own finally block clears it.
+    if (!scheduleRetry) _writeInFlight = false;
+  }
+}
+
+/**
+ * Flush any pending debounced write immediately.
+ * Useful in AppState 'background' handlers and tests.
+ * Returns a promise that resolves once the write is complete (or there was
+ * nothing pending).
+ */
+export async function prefsFlush(): Promise<void> {
+  if (_debounceTimer !== null) {
+    clearTimeout(_debounceTimer);
+    _debounceTimer = null;
+  }
+  const toBeSaved = _pendingPatch;
+  if (toBeSaved === null) return;
+  _pendingPatch = null;
+  // v1.4 — L2: respect the in-flight guard. If a write is already in
+  // progress, wait for it to clear before starting our own write. A simple
+  // polling loop is safe here because prefsFlush is called from AppState
+  // 'background' handlers where a short busy-wait is acceptable.
+  while (_writeInFlight) {
+    await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+  }
+  _writeInFlight = true;
+  try {
+    const current = await loadPrefs();
+    await savePrefs({ ...current, ...toBeSaved });
+  } catch {
+    // Best-effort.
+  } finally {
+    _writeInFlight = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// U22 — MetroProfile JSON validation guard (council-decisions.md U22 / F7).
+//
+// metroProfilesJson is a v1.3 field that holds 4 user-defined metro profiles
+// as a JSON string. On cold launch, this function validates the string before
+// any field is applied to live state. A single bad profile → entire load
+// returns null so the caller falls back silently to legacy v1.2 fields.
+//
+// Schema (per §11 F7 council decision):
+//   Array of exactly 4 MetroProfile objects. Each must have:
+//     name:     string (non-empty)
+//     bpm:      integer 20..300
+//     timeSig:  '2/4' | '3/4' | '4/4' | '6/8' | 'custom'
+//     pattern:  { midi: number (35..81), velocity: number (1..127) }[]
+//               length must match the time-sig numerator (or any length for
+//               'custom', validated non-empty).
+//     subdivisions: 'off' | '8th' | '16th' | 'triplet'
+//     subMidi:  integer 35..81
+//     subVel:   integer 1..127
+//
+// The check is strict — every field type-validated. On any mismatch the
+// entire load returns null so the caller falls back without overwriting
+// the user's working legacy settings.
+// ---------------------------------------------------------------------------
+
+export interface MetroProfile {
+  name:          string;
+  bpm:           number;
+  timeSig:       '2/4' | '3/4' | '4/4' | '6/8' | 'custom';
+  pattern:       { midi: number; velocity: number }[];
+  subdivisions:  'off' | '8th' | '16th' | 'triplet';
+  subMidi:       number;
+  subVel:        number;
+}
+
+// Expected count of profiles in the array.
+const METRO_PROFILE_COUNT = 4;
+
+// BPM range.
+const BPM_MIN  = 20;
+const BPM_MAX  = 300;
+
+// GM-drum MIDI range (same as coercePatternJson above).
+const MIDI_MIN = 35;
+const MIDI_MAX = 81;
+
+// Numerator per time-sig preset (used for pattern-length validation).
+const TIME_SIG_NUMERATOR: Record<string, number> = {
+  '2/4': 2,
+  '3/4': 3,
+  '4/4': 4,
+  '6/8': 6,
+};
+
+const VALID_TIME_SIGS = new Set(['2/4', '3/4', '4/4', '6/8', 'custom']);
+const VALID_SUBDIVS   = new Set(['off', '8th', '16th', 'triplet']);
+
+function validateProfile(elem: unknown, index: number): elem is MetroProfile {
+  if (typeof elem !== 'object' || elem === null || Array.isArray(elem)) return false;
+  const p = elem as Record<string, unknown>;
+
+  // name — non-empty string.
+  if (typeof p.name !== 'string' || p.name.length === 0) return false;
+
+  // bpm — integer 20..300.
+  const bpm = Number(p.bpm);
+  if (!Number.isFinite(bpm) || !Number.isInteger(bpm) || bpm < BPM_MIN || bpm > BPM_MAX) return false;
+
+  // timeSig — one of the allowed values.
+  if (typeof p.timeSig !== 'string' || !VALID_TIME_SIGS.has(p.timeSig)) return false;
+  const timeSig = p.timeSig as MetroProfile['timeSig'];
+
+  // pattern — array, validated per-element.
+  if (!Array.isArray(p.pattern) || p.pattern.length === 0) return false;
+  // Length must match time-sig numerator for presets; any non-zero length for 'custom'.
+  if (timeSig !== 'custom') {
+    const expectedLen = TIME_SIG_NUMERATOR[timeSig];
+    if (p.pattern.length !== expectedLen) return false;
+  }
+  for (const cell of p.pattern) {
+    if (typeof cell !== 'object' || cell === null || Array.isArray(cell)) return false;
+    const c = cell as Record<string, unknown>;
+    const midi = Number(c.midi);
+    const vel  = Number(c.velocity);
+    if (!Number.isFinite(midi) || !Number.isInteger(midi) || midi < MIDI_MIN || midi > MIDI_MAX) return false;
+    if (!Number.isFinite(vel)  || !Number.isInteger(vel)  || vel  < 1        || vel  > 127     ) return false;
+  }
+
+  // subdivisions — one of the allowed values.
+  if (typeof p.subdivisions !== 'string' || !VALID_SUBDIVS.has(p.subdivisions)) return false;
+
+  // subMidi — integer 35..81.
+  const subMidi = Number(p.subMidi);
+  if (!Number.isFinite(subMidi) || !Number.isInteger(subMidi) || subMidi < MIDI_MIN || subMidi > MIDI_MAX) return false;
+
+  // subVel — integer 1..127.
+  const subVel = Number(p.subVel);
+  if (!Number.isFinite(subVel) || !Number.isInteger(subVel) || subVel < 1 || subVel > 127) return false;
+
+  void index; // index kept for future diagnostic logging.
+  return true;
+}
+
+/**
+ * Parse and strictly validate a `metroProfilesJson` string.
+ *
+ * Returns the validated array on success, or null on any failure (bad JSON,
+ * wrong array length, schema mismatch in any single profile, or midi / BPM
+ * values out of range). The caller MUST fall back to legacy v1.2 fields when
+ * this returns null — it must NOT overwrite working settings with defaults
+ * (U22 / F7 invariant).
+ */
+export function loadMetroProfiles(json: unknown): MetroProfile[] | null {
+  // Accept either a raw string (as stored in AsyncStorage) or already-parsed value.
+  let parsed: unknown;
+  if (typeof json === 'string') {
+    if (json.length === 0) return null;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      return null;
+    }
+  } else {
+    parsed = json;
+  }
+
+  // Must be a non-null, non-array object... wait — we want an ARRAY here.
+  if (!Array.isArray(parsed)) return null;
+
+  // Strict length check: must have exactly METRO_PROFILE_COUNT profiles.
+  if (parsed.length !== METRO_PROFILE_COUNT) return null;
+
+  // Validate every profile — a single bad one aborts the entire load.
+  for (let i = 0; i < parsed.length; i++) {
+    if (!validateProfile(parsed[i], i)) return null;
+  }
+
+  // All profiles valid — return the typed array.
+  return parsed as MetroProfile[];
 }

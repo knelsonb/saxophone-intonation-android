@@ -1,0 +1,320 @@
+/**
+ * Smoke tests for src/useMidiBusCore.ts — createMidiBus (v1.4 factory).
+ *
+ * Run with Node 24 (no test runner required):
+ *   node --experimental-strip-types src/__tests__/midiBus.test.ts
+ *
+ * Strategy: pure-JS mock of the MidiBusSynthPort surface. We assert that:
+ *   1. noteOnAt routes through to synth.noteOnAt with the correct atFrame
+ *      computed from the bus's frame-clock peg (wall-clock → frame).
+ *   2. ChannelHandle.noteOnAt forwards the tick discriminator (beat/sub/none).
+ *   3. The bus re-emits the native commandFired event as a normalised
+ *      FiredEvent to subscribers.
+ *   4. Repeg advances the peg origin; subsequent atMsToAtFrame uses the new
+ *      origin (no off-by-one accumulation).
+ *
+ * NOT covered (requires native bridge):
+ *   - JNI trampoline thread-attach correctness.
+ *   - Render-quantum partition logic in synth.cpp.
+ *   - AudioTrack write underrun behaviour.
+ *
+ * Adapted from Sauron's midiBus.test.ts: SynthPort → MidiBusSynthPort so the
+ * lightweight mock (no prepareAsync/start/addReadyListener) satisfies the
+ * narrower createMidiBus port type.
+ */
+
+// @ts-ignore: .ts extension required for node --experimental-strip-types
+import { createMidiBus, vel127To01, type FiredPayload, type MidiBusSynthPort } from '../useMidiBusCore.ts';
+
+function assert(condition: boolean, message: string): void {
+  if (!condition) { console.error(`FAIL: ${message}`); process.exit(1); }
+  console.log(`PASS: ${message}`);
+}
+
+function assertEqual<T>(actual: T, expected: T, label: string): void {
+  assert(actual === expected,
+    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+}
+
+// ---------------------------------------------------------------------------
+// MidiBusSynthPort mock — captures calls and lets the test inject a frame clock.
+// ---------------------------------------------------------------------------
+
+interface NoteOnAtCall {
+  channel: number; midi: number; velocity: number; atFrame: number; tickKind: number;
+}
+
+function makeMockSynth(initialFrame: number = 0): {
+  port: MidiBusSynthPort;
+  setFrame: (f: number) => void;
+  fire: (p: FiredPayload) => void;
+  calls: { noteOn: any[]; noteOnAt: NoteOnAtCall[]; noteOff: any[]; allNotesOff: number[] };
+} {
+  let currentFrame = initialFrame;
+  const callsNoteOn: any[] = [];
+  const callsNoteOnAt: NoteOnAtCall[] = [];
+  const callsNoteOff: any[] = [];
+  const callsAllNotesOff: number[] = [];
+  const firedListeners: Array<(e: FiredPayload) => void> = [];
+
+  const port: MidiBusSynthPort = {
+    noteOn(channel, midi, velocity) { callsNoteOn.push({ channel, midi, velocity }); },
+    noteOff(channel, midi) { callsNoteOff.push({ channel, midi }); },
+    programChange() { /* unused in tests */ },
+    pitchBend() { /* unused */ },
+    allNotesOff(channel) { callsAllNotesOff.push(channel); },
+    noteOnAt(channel, midi, velocity, atFrame, tickKind) {
+      callsNoteOnAt.push({ channel, midi, velocity, atFrame, tickKind });
+    },
+    getCurrentFrame() { return currentFrame; },
+    addCommandFiredListener(cb) {
+      firedListeners.push(cb);
+      return { remove() {
+        const i = firedListeners.indexOf(cb);
+        if (i >= 0) firedListeners.splice(i, 1);
+      } };
+    },
+  };
+
+  return {
+    port,
+    setFrame(f) { currentFrame = f; },
+    fire(p) { for (const cb of firedListeners) cb(p); },
+    calls: { noteOn: callsNoteOn, noteOnAt: callsNoteOnAt, noteOff: callsNoteOff, allNotesOff: callsAllNotesOff },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 1. Frame-clock peg math.
+//
+// Peg at t=10_000 ms, frame=44100. SampleRate=44100. atMs=10_500 ms must
+// resolve to atFrame = 44100 + (500 * 44100 / 1000) = 44100 + 22050 = 66150.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(44100);
+  let nowMs = 10_000;
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => nowMs,
+    repegIntervalMs: 0, // disable auto-repeg; we control peg explicitly
+  });
+  // Manual initial peg at the snapshot above.
+  bus.repeg();
+
+  const af = bus.atMsToAtFrame(10_500);
+  assertEqual(af, 66150, 'atMsToAtFrame at +500ms');
+
+  const af2 = bus.atMsToAtFrame(10_000);
+  assertEqual(af2, 44100, 'atMsToAtFrame at peg origin');
+
+  const af3 = bus.atMsToAtFrame(9_500);
+  assertEqual(af3, 22050, 'atMsToAtFrame at -500ms (past) — still valid; native treats as fire-ASAP');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 2. ChannelHandle.noteOnAt forwards with tick discriminator.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(0);
+  let nowMs = 1_000;
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => nowMs,
+    repegIntervalMs: 0,
+  });
+  bus.repeg(); // peg at (1000ms, frame=0)
+
+  const ch = bus.channel(9);
+  ch.noteOnAt(60, 100, 1_010, 'beat');  // +10 ms → 441 frames
+  ch.noteOnAt(62, 80, 1_020, 'sub');    // +20 ms → 882 frames
+  ch.noteOnAt(64, 127, 1_030);          // default tick='none'
+
+  assertEqual(mock.calls.noteOnAt.length, 3, 'three noteOnAt calls forwarded');
+  assertEqual(mock.calls.noteOnAt[0].channel, 9, 'channel preserved');
+  assertEqual(mock.calls.noteOnAt[0].midi, 60, 'midi preserved');
+  assertEqual(mock.calls.noteOnAt[0].atFrame, 441, 'atFrame for +10ms');
+  assertEqual(mock.calls.noteOnAt[0].tickKind, 1, 'tickKind beat=1');
+  assertEqual(mock.calls.noteOnAt[1].tickKind, 2, 'tickKind sub=2');
+  assertEqual(mock.calls.noteOnAt[2].tickKind, 0, 'tickKind none=0 (default)');
+
+  // Velocity is 0..1 normalised.
+  assertEqual(mock.calls.noteOnAt[0].velocity, 100 / 127, 'velocity 100/127');
+  assertEqual(mock.calls.noteOnAt[2].velocity, 1, 'velocity 127 → 1.0');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 3. Re-emit native commandFired as bus FiredEvent.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(0);
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => 0,
+    repegIntervalMs: 0,
+  });
+
+  const seen: any[] = [];
+  const unsub = bus.addFiredListener((e) => seen.push(e));
+
+  // Native fires NoteOn (kind=1) tickKind=1 (beat).
+  mock.fire({ kind: 1, tickKind: 1, channel: 9, midi: 37, velocity: 0.78, atFrame: 12345 });
+  // Native fires NoteOff (kind=2) tickKind=0.
+  mock.fire({ kind: 2, tickKind: 0, channel: 9, midi: 37, velocity: 0, atFrame: 12500 });
+
+  assertEqual(seen.length, 2, 'two events re-emitted');
+  assertEqual(seen[0].kind, 'noteOn', 'first event kind=noteOn');
+  assertEqual(seen[0].tick, 'beat', 'first event tick=beat');
+  assertEqual(seen[0].channel, 9, 'first event channel preserved');
+  assertEqual(seen[0].midi, 37, 'first event midi preserved');
+  assertEqual(seen[0].atFrame, 12345, 'first event atFrame preserved');
+  assertEqual(seen[1].kind, 'noteOff', 'second event kind=noteOff');
+  assertEqual(seen[1].tick, 'none', 'second event tick=none');
+
+  unsub();
+  mock.fire({ kind: 1, tickKind: 1, channel: 9, midi: 38, velocity: 1, atFrame: 99999 });
+  assertEqual(seen.length, 2, 'no events after unsubscribe');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 4. Repeg moves the origin; subsequent math uses the new origin.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(0);
+  let nowMs = 1_000;
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => nowMs,
+    repegIntervalMs: 0,
+  });
+  bus.repeg(); // peg (1000ms, 0)
+
+  // 5 seconds later, advance frame to 220_500 (= 5 * 44100). A faithful
+  // peg sample at this moment should yield (6000ms, 220500) — i.e. the
+  // ratio holds; any future atMs computes against the new origin without
+  // accumulating bias.
+  nowMs = 6_000;
+  mock.setFrame(220_500);
+  bus.repeg();
+
+  // atMs = 6_500 → +500ms → +22050 frames → 242550.
+  const af = bus.atMsToAtFrame(6_500);
+  assertEqual(af, 242550, 'atMsToAtFrame after repeg');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 5. vel127To01 helper boundary behaviour.
+// ---------------------------------------------------------------------------
+
+{
+  assertEqual(vel127To01(0), 0, 'vel 0 → 0');
+  assertEqual(vel127To01(127), 1, 'vel 127 → 1');
+  assertEqual(vel127To01(-5), 0, 'vel <0 clamped to 0');
+  assertEqual(vel127To01(200), 1, 'vel >127 clamped to 1');
+  assertEqual(vel127To01(64), 64 / 127, 'vel 64 mid-range');
+  assertEqual(vel127To01(Number.NaN), 0, 'vel NaN → 0');
+}
+
+// ---------------------------------------------------------------------------
+// 6. v1.4 Belt 1 — clearScheduled() routes through to synth.clearScheduled.
+// ---------------------------------------------------------------------------
+
+{
+  let cleared = 0;
+  const mock = makeMockSynth(0);
+  // Extend the mock with a clearScheduled probe.
+  (mock.port as any).clearScheduled = () => { cleared += 1; };
+
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => 0,
+    repegIntervalMs: 0,
+  });
+
+  bus.clearScheduled();
+  assertEqual(cleared, 1, 'Belt-1: bus.clearScheduled forwards to synth.clearScheduled');
+
+  bus.clearScheduled();
+  assertEqual(cleared, 2, 'Belt-1: clearScheduled is idempotent (calls each time)');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 7. v1.4 Belt 1 — clearScheduled on a port without the method is a no-op.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(0);
+  // Ensure no clearScheduled is present.
+  delete (mock.port as any).clearScheduled;
+
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => 0,
+    repegIntervalMs: 0,
+  });
+
+  let threw = false;
+  try { bus.clearScheduled(); } catch { threw = true; }
+  assertEqual(threw, false, 'Belt-1: clearScheduled on legacy port is silent no-op (no throw)');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 8. v1.4 Belt 2 — past-atFrame check primitives (atMsToAtFrame, currentFrame
+//     comparison). Verifies the math underpinning useMetronome's schedule()
+//     guard: a wall-clock target in the past projects to an atFrame strictly
+//     less than the synth's current frame.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(0);
+  let nowMs = 1_000;
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => nowMs,
+    repegIntervalMs: 0,
+  });
+  bus.repeg(); // peg (1000ms, 0)
+
+  // Advance the synth frame clock to 44100 (1 second of real time) without
+  // re-pegging. atMs=1500 is "in the past" if currentFrame has advanced past
+  // its projected position. Project: 1500ms is 500ms after the peg origin →
+  // atFrame=22050. currentFrame=44100. atFrame < currentFrame → past.
+  mock.setFrame(44100);
+  const atFrame = bus.atMsToAtFrame(1_500);
+  assertEqual(atFrame, 22050, 'Belt-2: atFrame for atMs in the past');
+  const currentFrame = mock.port.getCurrentFrame ? mock.port.getCurrentFrame() : 0;
+  assert(atFrame < currentFrame, 'Belt-2: atFrame strictly < currentFrame for past atMs');
+
+  // Forward case: atMs in the future projects to atFrame > currentFrame.
+  // atMs=2_000 → 1000ms after peg → atFrame=44100. currentFrame=44100.
+  // atFrame == currentFrame is the boundary (treated as past per spec '<=').
+  const atFrameFuture = bus.atMsToAtFrame(2_500);
+  assertEqual(atFrameFuture, 66150, 'Belt-2: atFrame for atMs in the future');
+  assert(atFrameFuture > currentFrame, 'Belt-2: atFrame strictly > currentFrame for future atMs');
+
+  bus.dispose();
+}
+
+console.log('ALL PASS: midiBus.test.ts');

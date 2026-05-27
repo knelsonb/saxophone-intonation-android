@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
+import timber.log.Timber
 
 /**
  * Owns the AudioTrack and the dedicated render thread.
@@ -49,7 +50,9 @@ internal class SynthRenderer(
 
     fun start() {
         if (running) return
+        Timber.tag(TAG).d("start() — sampleRate=%d channels=%d framesPerRender=%d", sampleRate, channels, framesPerRender)
         if (!SynthBridge.isLoaded) {
+            Timber.tag(TAG).e("start(): native library not loaded — aborting")
             onError("native library not loaded")
             return
         }
@@ -59,11 +62,13 @@ internal class SynthRenderer(
 
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf == AudioTrack.ERROR_BAD_VALUE || minBuf == AudioTrack.ERROR) {
+            Timber.tag(TAG).e("start(): getMinBufferSize returned %d", minBuf)
             onError("AudioTrack.getMinBufferSize returned $minBuf")
             return
         }
         // Double the minimum to give the worker some slack against scheduler jitter.
         val bufSizeBytes = minBuf * 2
+        Timber.tag(TAG).d("start(): minBuf=%d bufSizeBytes=%d", minBuf, bufSizeBytes)
 
         val track = try {
             AudioTrack.Builder()
@@ -84,19 +89,23 @@ internal class SynthRenderer(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
         } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "start(): AudioTrack.Builder threw: %s", e.message)
             onError("AudioTrack.Builder threw: ${e.message}")
             return
         }
 
         if (track.state != AudioTrack.STATE_INITIALIZED) {
+            Timber.tag(TAG).e("start(): AudioTrack failed to initialize (state=%d)", track.state)
             onError("AudioTrack failed to initialize (state=${track.state})")
             try { track.release() } catch (_: Exception) {}
             return
         }
+        Timber.tag(TAG).i("start(): AudioTrack created OK — bufSizeBytes=%d state=%d", bufSizeBytes, track.state)
 
         audioTrack = track
         running = true
         try { track.play() } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "start(): AudioTrack.play threw: %s", e.message)
             onError("AudioTrack.play threw: ${e.message}")
             running = false
             try { track.release() } catch (_: Exception) {}
@@ -110,10 +119,12 @@ internal class SynthRenderer(
             it.priority = Thread.NORM_PRIORITY + 1
             it.start()
         }
+        Timber.tag(TAG).i("start(): render thread started")
     }
 
     fun stop() {
         if (!running && thread == null) return
+        Timber.tag(TAG).d("stop() — signalling render thread to exit")
 
         running = false
 
@@ -129,15 +140,18 @@ internal class SynthRenderer(
             try { t.join(1500) } catch (_: InterruptedException) {}
             if (t.isAlive) {
                 Log.w(TAG, "render thread did not exit within join window; leaking AudioTrack")
+                Timber.tag(TAG).w("stop(): render thread did not exit within 1500 ms join window — leaking AudioTrack")
             } else {
                 try { track?.stop() } catch (_: Exception) {}
                 try { track?.release() } catch (_: Exception) {}
                 audioTrack = null
+                Timber.tag(TAG).i("stop(): render thread exited cleanly, AudioTrack released")
             }
         } else {
             try { track?.stop() } catch (_: Exception) {}
             try { track?.release() } catch (_: Exception) {}
             audioTrack = null
+            Timber.tag(TAG).d("stop(): no render thread, AudioTrack released directly")
         }
         thread = null
     }
@@ -168,7 +182,10 @@ internal class SynthRenderer(
                 written >= 0 -> {
                     // Short write — buffer not fully accepted. Counts as underrun.
                     underrunStreak += 1
-                    if (underrunStreak == 1) onUnderrun(written)
+                    if (underrunStreak == 1) {
+                        Timber.tag(TAG).w("renderLoop: underrun — accepted %d of %d samples", written, samplesPerWrite)
+                        onUnderrun(written)
+                    }
                 }
 
                 written == AudioTrack.ERROR_INVALID_OPERATION -> {

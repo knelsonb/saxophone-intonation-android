@@ -322,3 +322,43 @@ async function loadPrefs(s: FakeAsyncStorage): Promise<AppPrefs> {
     assertEqual(reloaded.a4Hz, 440, 'no aliasing: mutating loaded copy leaves store unchanged');
   })().catch((err: unknown) => { console.error('FAIL:', err); process.exit(1); });
 }
+
+// ---------------------------------------------------------------------------
+// Test 15 (v1.4 L1 regression) — median helper: even-length arrays average
+// the two middle elements; odd-length arrays return the exact middle;
+// empty array returns null (silence-over-wrong).
+// ---------------------------------------------------------------------------
+{
+  /** Mirrors the L1-fixed median used in useAudioEngine.ts. */
+  function median(arr: number[]): number | null {
+    if (arr.length === 0) return null;
+    const sorted = arr.slice().sort((a, b) => a - b);
+    const n = sorted.length;
+    return n % 2 === 1
+      ? sorted[Math.floor(n / 2)]
+      : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+  }
+
+  // Empty → null (silence-over-wrong).
+  assert(median([]) === null, 'L1: median([]) === null');
+
+  // Odd length — exact middle element.
+  assertEqual(median([3, 1, 2]), 2, 'L1: median([3,1,2]) === 2 (odd, middle after sort)');
+  assertEqual(median([5]), 5, 'L1: median([5]) === 5 (single element)');
+  assertEqual(median([10, 30, 20]), 20, 'L1: median([10,30,20]) === 20');
+
+  // Even length — average of the two middles (the pre-v1.4 bug was
+  // Math.floor(n/2) which returned the UPPER middle without averaging).
+  const twoElem = median([440, 442]);
+  assert(twoElem !== null && Math.abs(twoElem - 441) < 1e-10, `L1: median([440,442]) === 441, got ${twoElem}`);
+
+  const fourElem = median([100, 200, 300, 400]);
+  assert(fourElem !== null && Math.abs(fourElem - 250) < 1e-10, `L1: median([100,200,300,400]) === 250, got ${fourElem}`);
+
+  // Verify sort is on a copy — source array must not be mutated.
+  const src = [440, 438, 442];
+  median(src);
+  assert(src[0] === 440 && src[1] === 438 && src[2] === 442, 'L1: median does not mutate source array');
+
+  console.log('\nAll L1 median regression tests passed.');
+}

@@ -8,11 +8,19 @@
  * inside the 3–30 Hz PSE trigger band. Above 150 BPM (= 2.5 Hz, below the
  * band) we demote to a 24dp corner dot. Also honors the system reduce-motion
  * preference — corner dot regardless of BPM.
+ *
+ * v1.3.4 B5 — converted from `pulse` prop to a synchronous `bus.on('noteOn')`
+ * subscription, eliminating the 1-frame (~16 ms) React reconciler lag that
+ * the prop path incurred. `pulse` prop retained for backward-compat; `beat`
+ * prop is still used by the safe-mode numeral display (no change there).
+ * `bpm` is read via a ref inside the listener so BPM changes don't force a
+ * listener rebind.
  */
 import React, { useEffect, useMemo, useRef } from 'react';
 import { AccessibilityInfo, Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
+import type { MidiBusState } from '../../useMidiBusCore';
 
 // v1.0 — hard cap. 150 BPM = 2.5 Hz; one step above and we enter the PSE band.
 const PSE_BPM_CAP = 150;
@@ -20,15 +28,29 @@ const PSE_BPM_CAP = 150;
 export interface FlashDisplayProps {
   running: boolean;
   beat: number;
+  /**
+   * @deprecated since v1.3.4 — no longer drives animation; bus subscription is
+   * used instead. Kept on the prop surface for backward-compat with call sites.
+   * Will be removed in v1.4.
+   */
   pulse: number;
   bpm: number;
   timeSig: '2/4' | '3/4' | '4/4' | '6/8';
+  /**
+   * v1.3.4 — bus reference for the synchronous beat subscription.
+   * When absent (test harness, editor preview) animation stays idle.
+   */
+  bus?: MidiBusState;
 }
 
-export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDisplayProps) {
+export function FlashDisplay({ running, beat, bpm, timeSig, bus }: FlashDisplayProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
-  const halfBeatMs = Math.max(50, Math.min(1000, (60000 / Math.max(1, bpm)) * 0.5));
+
+  // v1.3.4 B5 — bpmRef keeps bpm fresh inside the listener without
+  // adding bpm to the subscription effect's dep list.
+  const bpmRef = useRef(bpm);
+  useEffect(() => { bpmRef.current = bpm; }, [bpm]);
 
   // v1.0 — read system reduce-motion preference. Re-read on mount and on
   // subscription change. If RN's listener isn't available we fall back to
@@ -80,24 +102,41 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
   const flashColorRef = useRef(C.accent);
   const [flashBg, setFlashBg] = React.useState(C.accent);
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
+
+  // v1.3.4 B5 — subscribe synchronously to bus.on('noteOn') so the flash
+  // lands on the same JS tick as the audio attack (U21). The `pulse` prop
+  // approach batched through React reconciler → ~16 ms lag.
+  // beat is read via beatRef so its identity churn doesn't force a rebind.
+  const beatRef = useRef(beat);
+  useEffect(() => { beatRef.current = beat; }, [beat]);
+
   useEffect(() => {
-    if (!running || pulse === 0) return;
-    animRef.current?.stop();
-    const color = beat === 1 ? C.inTune : C.accent;
-    flashColorRef.current = color;
-    setFlashBg(color);
-    flashAnim.setValue(1);
-    const a = Animated.timing(flashAnim, {
-      toValue: 0,
-      duration: halfBeatMs,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
+    if (!running || !bus) return;
+    const off = bus.on('noteOn', (evt) => {
+      if (evt.channel !== 'drums') return;
+      if ((evt.velocity ?? 0) <= 0) return;
+      if (evt.tick === 'sub') return;
+      animRef.current?.stop();
+      // Snapshot color based on the current beat at the moment of the noteOn.
+      const color = beatRef.current === 1 ? C.inTune : C.accent;
+      flashColorRef.current = color;
+      setFlashBg(color);
+      flashAnim.setValue(1);
+      const halfBeatMs = Math.max(50, Math.min(1000, (60000 / Math.max(1, bpmRef.current)) * 0.5));
+      const a = Animated.timing(flashAnim, {
+        toValue: 0,
+        duration: halfBeatMs,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      });
+      animRef.current = a;
+      a.start();
     });
-    animRef.current = a;
-    a.start();
-    return () => { animRef.current?.stop(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pulse, running, halfBeatMs, flashAnim]);
+    return () => {
+      off();
+      animRef.current?.stop();
+    };
+  }, [running, bus, flashAnim, C.inTune, C.accent]);
 
   const opacityInterp = flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 

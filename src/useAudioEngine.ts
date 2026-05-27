@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { AudioModule, useAudioStream } from 'expo-audio';
 import type { AudioStreamBuffer } from 'expo-audio';
@@ -1908,8 +1908,13 @@ export function useAudioEngine(): AudioEngineState {
             }
           }
           if (winnerFreqs.length > 0) {
-            winnerFreqs.sort(_compareAsc);
-            displayFreq = winnerFreqs[Math.floor(winnerFreqs.length / 2)];
+            // v1.4 — L1: correct even-length median (average two middles).
+            // Also sorts a COPY so the ring-buffer source array is not mutated.
+            const sorted = winnerFreqs.slice().sort(_compareAsc);
+            const n = sorted.length;
+            displayFreq = n % 2 === 1
+              ? sorted[Math.floor(n / 2)]
+              : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
           }
         }
 
@@ -1957,7 +1962,19 @@ export function useAudioEngine(): AudioEngineState {
     };
   }, []);
 
-  return {
+  // v1.2 hotfix — memoise the returned engine object. Without this, audio-rate
+  // state ticks (meterFill at ~40Hz, freqHz, rmsDb) each produce a brand-new
+  // AudioEngineState reference, App.tsx's consumers see a new `engine` prop
+  // every tick, and the WHOLE screen tree re-renders. After this wrap, the
+  // memo's identity only changes when one of its dependencies changes — and
+  // crucially, consumers (SetupScreen, MetroScreen, DeckScreen) that DON'T
+  // read meterFill/freqHz/rmsDb will keep their child sub-objects (`metro`,
+  // `deck`) referentially stable across audio ticks. AudioEngine-direct
+  // consumers (the tuner) still re-render at audio rate — that's by design.
+  // Every setter listed below is useCallback-wrapped at definition time so
+  // its identity is stable; including it in deps satisfies exhaustive-deps
+  // without causing extra re-memos.
+  return useMemo<AudioEngineState>(() => ({
     status,
     freqHz,
     rmsDb,
@@ -2018,5 +2035,66 @@ export function useAudioEngine(): AudioEngineState {
     setMetroOutputRoute,
     setDroneCurrentMidi,
     installDroneDuckHandler,
-  };
+  }), [
+    status,
+    freqHz,
+    rmsDb,
+    meterFill,
+    gainMode,
+    yinCallCount,
+    rawFreqHz,
+    filterMode,
+    instrumentKey,
+    displayMode,
+    micSilenced,
+    allowOutOfRange,
+    prefsLoaded,
+    nickname,
+    hiFiMode,
+    hiFiActive,
+    audioSourceLabel,
+    streamErrorReason,
+    peakLock,
+    lowCutDb,
+    activeBucket,
+    sessionActive,
+    sessionStartedAtMs,
+    droppedFrameCount,
+    lastDropReason,
+    theme,
+    nightDarken,
+    nightWarmth,
+    incumbentMidi,
+    tunerStyle,
+    metroStyle,
+    deckStyle,
+    metroClickOffsetMs,
+    metroOutputRoute,
+    setGainMode,
+    setFilterMode,
+    setInstrumentKey,
+    setDisplayMode,
+    setAllowOutOfRange,
+    setNickname,
+    savePrefsNow,
+    setHiFiMode,
+    retryPermission,
+    retryStream,
+    setPeakLock,
+    setLowCutDb,
+    clearActiveBucket,
+    logCurrentReading,
+    undoLastLog,
+    setSessionActive,
+    setTheme,
+    setNightDarken,
+    setNightWarmth,
+    setTunerStyle,
+    setMetroStyle,
+    setDeckStyle,
+    setMetroClickOffsetMs,
+    setMetroOutputRoute,
+    setDroneCurrentMidi,
+    installDroneDuckHandler,
+  ]);
 }
