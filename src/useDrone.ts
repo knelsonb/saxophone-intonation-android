@@ -31,6 +31,14 @@ import type { DroneVoice } from './audioGen';
 
 const CROSSFADE_MS = 50;
 
+// Duck envelope — used when the engine suspects mic leakage chase. We drop
+// the active player to `DUCK_DEPTH` of its target volume over a short fade,
+// hold for `holdMs`, then fade back. Tunable in case the perceptual chop
+// turns out wrong-feeling on devices with different speaker EQ.
+const DUCK_DEPTH = 0.3;
+const DUCK_FADE_IN_MS = 15;
+const DUCK_FADE_OUT_MS = 25;
+
 export interface DroneState {
   enabled: boolean;
   setEnabled: (v: boolean) => void;
@@ -49,6 +57,14 @@ export interface UseDroneArgs {
   volume: number;
   /** Signed semitone offset added to incumbentMidi before synth. */
   semitones: number;
+  /**
+   * Drone-chase guard wiring (v0.9.1). Engine reads the drone's currently
+   * sounding MIDI to vote-exclude it from incumbent voting; engine calls
+   * back into the drone's duck handler when it suspects mic leakage chase.
+   * Both are required when chase guard is active; pass no-ops to disable.
+   */
+  setDroneCurrentMidi: (midi: number | null) => void;
+  installDroneDuckHandler: (fn: ((ms: number) => void) | null) => void;
 }
 
 interface DronePlayerSlot {
@@ -97,7 +113,10 @@ function disposeSlot(slot: DronePlayerSlot) {
   slot.key = null;
 }
 
-export function useDrone({ incumbentMidi, a4Hz, voice, volume, semitones }: UseDroneArgs): DroneState {
+export function useDrone({
+  incumbentMidi, a4Hz, voice, volume, semitones,
+  setDroneCurrentMidi, installDroneDuckHandler,
+}: UseDroneArgs): DroneState {
   const [enabled, setEnabledState] = useState(false);
   const [currentMidi, setCurrentMidi] = useState<number | null>(null);
 
@@ -122,6 +141,15 @@ export function useDrone({ incumbentMidi, a4Hz, voice, volume, semitones }: UseD
   // so a brief silence between notes doesn't kill the drone.
   const heldMidiRef = useRef<number | null>(null);
 
+  // Stable refs for the engine wiring callbacks — keeps `transitionTo`
+  // dependency list short and avoids unnecessary callback recreation when
+  // the parent re-renders (engine's useCallback identity is stable, but the
+  // ref hop is cheap insurance).
+  const setDroneCurrentMidiRef = useRef(setDroneCurrentMidi);
+  setDroneCurrentMidiRef.current = setDroneCurrentMidi;
+  const installDroneDuckHandlerRef = useRef(installDroneDuckHandler);
+  installDroneDuckHandlerRef.current = installDroneDuckHandler;
+
   // Stop any in-flight crossfade timer.
   const cancelCrossfade = useCallback(() => {
     if (crossfadeTimerRef.current !== null) {
@@ -129,6 +157,57 @@ export function useDrone({ incumbentMidi, a4Hz, voice, volume, semitones }: UseD
       crossfadeTimerRef.current = null;
     }
   }, []);
+
+  // ---------- duck-on-suspicion envelope ----------
+  //
+  // Brief 3-stage volume ramp on the audible slot: fade down → hold at
+  // DUCK_DEPTH → fade back to target. Three setTimeouts get the job done
+  // without re-entering setInterval (a fresh duck overrides a stale one
+  // by clearing the previous timers first).
+  const duckTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const cancelDuckTimers = useCallback(() => {
+    for (const t of duckTimersRef.current) clearTimeout(t);
+    duckTimersRef.current = [];
+  }, []);
+  const requestDuck = useCallback((holdMs: number) => {
+    // Identify the audible slot at the moment of the request — same slot
+    // we'll ramp back up after the hold. If the active slot flips during
+    // the hold (e.g. an in-flight crossfade completes), we still operate
+    // on the original audible slot since that's the one currently emitting
+    // sound. The crossfade's own fade-down on this slot will reach 0
+    // independently — we just keep the duck-down setting in the meantime.
+    if (!enabledRef.current) return;
+    const target = targetVolumeRef.current;
+    const slot = activeIsARef.current ? slotARef.current : slotBRef.current;
+    const p = slot.player;
+    if (!p) return;
+    cancelDuckTimers();
+    try { p.volume = target * DUCK_DEPTH; } catch { /* ignore */ }
+    const restoreAt = DUCK_FADE_IN_MS + Math.max(0, holdMs);
+    const finalAt = restoreAt + DUCK_FADE_OUT_MS;
+    // Hold timer — we re-affirm DUCK_DEPTH halfway through in case a
+    // crossfade tick raced past us. Cheap insurance.
+    duckTimersRef.current.push(setTimeout(() => {
+      try { p.volume = target * DUCK_DEPTH; } catch { /* ignore */ }
+    }, DUCK_FADE_IN_MS));
+    // Restore timer — push the slot back to full target volume.
+    duckTimersRef.current.push(setTimeout(() => {
+      try { p.volume = target; } catch { /* ignore */ }
+    }, restoreAt));
+    // Final cleanup — clears the timers array so the ref doesn't grow.
+    duckTimersRef.current.push(setTimeout(() => {
+      duckTimersRef.current = [];
+    }, finalAt));
+  }, [cancelDuckTimers]);
+
+  // Install / uninstall the duck handler with the engine on mount / unmount.
+  useEffect(() => {
+    installDroneDuckHandlerRef.current?.(requestDuck);
+    return () => {
+      try { installDroneDuckHandlerRef.current?.(null); } catch { /* ignore */ }
+      cancelDuckTimers();
+    };
+  }, [requestDuck, cancelDuckTimers]);
 
   // Stop everything. Caller is responsible for clearing held state if needed.
   const stopAll = useCallback(() => {
@@ -178,6 +257,9 @@ export function useDrone({ incumbentMidi, a4Hz, voice, volume, semitones }: UseD
       try { nxt.player.volume = vol; } catch { /* ignore */ }
       activeIsARef.current = !activeIsARef.current;
       setCurrentMidi(midi);
+      // Publish to engine immediately — the chase guard relies on this ref
+      // being accurate the moment the new pitch becomes audible.
+      try { setDroneCurrentMidiRef.current?.(midi); } catch { /* ignore */ }
       return;
     }
 
@@ -205,6 +287,7 @@ export function useDrone({ incumbentMidi, a4Hz, voice, volume, semitones }: UseD
 
     activeIsARef.current = !activeIsARef.current;
     setCurrentMidi(midi);
+    try { setDroneCurrentMidiRef.current?.(midi); } catch { /* ignore */ }
   }, [cancelCrossfade]);
 
   // When the user toggles ON or OFF.
@@ -212,9 +295,14 @@ export function useDrone({ incumbentMidi, a4Hz, voice, volume, semitones }: UseD
     setEnabledState(v);
     if (!v) {
       stopAll();
+      cancelDuckTimers();
       setCurrentMidi(null);
+      // Engine must stop excluding any MIDI from voting once the drone is
+      // silent — otherwise a stale exclusion could keep the user's pitch
+      // off the incumbent.
+      try { setDroneCurrentMidiRef.current?.(null); } catch { /* ignore */ }
     }
-  }, [stopAll]);
+  }, [stopAll, cancelDuckTimers]);
 
   const toggle = useCallback(() => {
     setEnabled(!enabledRef.current);
@@ -270,10 +358,12 @@ export function useDrone({ incumbentMidi, a4Hz, voice, volume, semitones }: UseD
   useEffect(() => {
     return () => {
       cancelCrossfade();
+      cancelDuckTimers();
       disposeSlot(slotARef.current);
       disposeSlot(slotBRef.current);
+      try { setDroneCurrentMidiRef.current?.(null); } catch { /* ignore */ }
     };
-  }, [cancelCrossfade]);
+  }, [cancelCrossfade, cancelDuckTimers]);
 
   const currentHz = currentMidi !== null ? freqOf(currentMidi, a4Hz) : null;
 

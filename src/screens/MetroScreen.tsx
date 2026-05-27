@@ -22,9 +22,11 @@ const TIME_SIGS: TimeSig[] = ['2/4', '3/4', '4/4', '6/8'];
 export interface MetroScreenProps {
   metro: MetronomeState;
   metroStyle: 'pulse' | 'pendulum' | 'flash';
+  /** Selected output route — drives the BT-latency warning banner. */
+  outputRoute: 'speaker' | 'wired' | 'bluetooth';
 }
 
-export function MetroScreen({ metro, metroStyle }: MetroScreenProps) {
+export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
   void C;
@@ -37,6 +39,20 @@ export function MetroScreen({ metro, metroStyle }: MetroScreenProps) {
         <Text style={styles.screenTitle}>METRO</Text>
         <Text style={styles.screenSubtitle}>Tempo, tap, time signature, start</Text>
       </View>
+
+      {/* Bluetooth A2DP buffering is fundamentally late (~200 ms). The hook
+          compensates by pre-rolling the click, but a 200 ms lead is enough
+          that the visual still feels behind the audio if BPM is fast. Warn
+          the user once so they're not surprised — they can switch to wired
+          or speaker if they need tight sync. */}
+      {outputRoute === 'bluetooth' && (
+        <View style={styles.silenceBanner} accessibilityRole="alert" accessibilityLabel="Bluetooth output is latent. Click may feel slightly behind the visual.">
+          <Text style={styles.silenceBannerText}>
+            <Text style={styles.silenceBannerBold}>Bluetooth output is latent.</Text>
+            {'  '}Wired or speaker keeps the click tight with the visual.
+          </Text>
+        </View>
+      )}
 
       {/* BPM display */}
       <View style={styles.metroBpmRow}>

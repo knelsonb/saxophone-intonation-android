@@ -79,10 +79,12 @@ const SILENT_BUFFER_THRESHOLD = 8;
 //     the drone-MIDI. After SUSPICION_THRESHOLD_FRAMES of agreement, briefly
 //     duck the drone (DUCK_MS at DUCK_DEPTH amplitude). The user only hears
 //     a soft breath, not a chop.
-//   • Post-duck, the next clean YIN frame settles the question. If the user
-//     really is playing the drone pitch, the vote persists and we accept it
-//     into the incumbent. If it was just leakage, the duck cleared the room
-//     and the next frame shows the user's actual pitch (or silence).
+//   • Enter a POST-DUCK confirmation window (DUCK_MS + ~120 ms). During
+//     this window, votes for drone-MIDI ARE counted toward the standard
+//     candidate — if YIN still reports drone-pitch after the duck cleared
+//     the room, the user really is in unison and the incumbent moves
+//     there. If the post-duck frames disagree, the counter resets and we
+//     go back to vote-exclusion.
 // ---------------------------------------------------------------------------
 
 const SUSPICION_THRESHOLD_FRAMES = 3;
@@ -242,6 +244,16 @@ export interface AudioEngineState {
   /** v0.9.0 — picked visual style for the DECK tab. */
   deckStyle: 'reels' | 'vu' | 'waveform';
   setDeckStyle: (s: 'reels' | 'vu' | 'waveform') => void;
+  /**
+   * v0.9.1 metronome calibration — user-tunable click offset in ms. Negative
+   * pulls the click earlier (sound arrives sooner). Stacks on top of the
+   * per-route base latency. Range [-50, +50], default 0.
+   */
+  metroClickOffsetMs: number;
+  setMetroClickOffsetMs: (ms: number) => void;
+  /** v0.9.1 user-declared current audio output route. */
+  metroOutputRoute: 'speaker' | 'wired' | 'bluetooth';
+  setMetroOutputRoute: (r: 'speaker' | 'wired' | 'bluetooth') => void;
   // v0.9.1 — drone-chase guard wiring. Drone hook writes its current MIDI
   // here so the engine's vote loop can exclude it from incumbent voting;
   // engine calls back into the drone's duck function when the suspicion
@@ -608,6 +620,8 @@ export function useAudioEngine(): AudioEngineState {
   const [tunerStyle, setTunerStyleState] = useState<'arc' | 'strobe' | 'led'>('arc');
   const [metroStyle, setMetroStyleState] = useState<'pulse' | 'pendulum' | 'flash'>('pulse');
   const [deckStyle, setDeckStyleState] = useState<'reels' | 'vu' | 'waveform'>('reels');
+  const [metroClickOffsetMs, setMetroClickOffsetMsState] = useState<number>(0);
+  const [metroOutputRoute, setMetroOutputRouteState] = useState<'speaker' | 'wired' | 'bluetooth'>('speaker');
   // v0.7.0 session state.
   const [sessionActive, setSessionActiveState] = useState<boolean>(false);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
@@ -900,6 +914,30 @@ export function useAudioEngine(): AudioEngineState {
     })();
   }, []);
 
+  const setMetroClickOffsetMs = useCallback((ms: number): void => {
+    // Clamp + round-to-step-5 here so the persisted value is always nice
+    // round numbers (avoids ratcheting drift if multiple stepper presses
+    // happen during a load-from-prefs).
+    const clamped = Math.max(-50, Math.min(50, Math.round(ms / 5) * 5));
+    setMetroClickOffsetMsState(clamped);
+    (async () => {
+      try {
+        const current = await loadPrefs();
+        await savePrefs({ ...current, metroClickOffsetMs: clamped });
+      } catch { /* best-effort */ }
+    })();
+  }, []);
+
+  const setMetroOutputRoute = useCallback((r: 'speaker' | 'wired' | 'bluetooth'): void => {
+    setMetroOutputRouteState(r);
+    (async () => {
+      try {
+        const current = await loadPrefs();
+        await savePrefs({ ...current, metroOutputRoute: r });
+      } catch { /* best-effort */ }
+    })();
+  }, []);
+
   // ---------------------------------------------------------------------------
   // Drone-chase wiring entry points. Both reset the suspicion counter when
   // the drone state shifts under us — a fresh transition shouldn't carry an
@@ -1072,6 +1110,8 @@ export function useAudioEngine(): AudioEngineState {
         setTunerStyleState(prefs.tunerStyle);
         setMetroStyleState(prefs.metroStyle);
         setDeckStyleState(prefs.deckStyle);
+        setMetroClickOffsetMsState(prefs.metroClickOffsetMs);
+        setMetroOutputRouteState(prefs.metroOutputRoute);
         a4HzRef.current = prefs.a4Hz;
         setPrefsLoaded(true);
 
@@ -1774,31 +1814,55 @@ export function useAudioEngine(): AudioEngineState {
         // We look at the ABSOLUTE top vote (including drone-MIDI) — if that
         // matches the drone's pitch on consecutive frames, either the user
         // is genuinely playing in unison or the mic is hearing the drone.
-        // The duck disambiguates.
+        //
+        // State machine:
+        //   • Top vote ≠ drone-MIDI → counter reset to 0; vote-exclusion
+        //     keeps the incumbent honest.
+        //   • Top vote = drone-MIDI, counter < threshold → bump counter,
+        //     still vote-exclude. (Could be transient leakage.)
+        //   • Counter hits threshold → fire the duck and enter a brief
+        //     POST-DUCK confirmation window. During that window, votes for
+        //     drone-MIDI ARE counted toward the standard candidate (so a
+        //     genuine unison player gets the incumbent to move). When the
+        //     window expires, we reset to step 1.
+        //   • Duck fires are rate-limited so we don't stack envelopes.
         // -----------------------------------------------------------------
+        const droneNowMs = Date.now();
+        const inPostDuckWindow = droneMidi !== null
+          && droneLastDuckMsRef.current > 0
+          && (droneNowMs - droneLastDuckMsRef.current) < (DUCK_MS + 120);
+
         if (droneMidi !== null && topVotesIncludingDrone > 0 && topMidiIncludingDrone === droneMidi) {
-          droneSuspicionFramesRef.current += 1;
-          if (droneSuspicionFramesRef.current >= SUSPICION_THRESHOLD_FRAMES) {
-            // Trip the duck — but rate-limit so back-to-back trips don't
-            // fire overlapping envelopes. One duck per (DUCK_MS + 50 ms).
-            const nowMs = Date.now();
-            if (nowMs - droneLastDuckMsRef.current >= DUCK_MS + 50) {
-              droneLastDuckMsRef.current = nowMs;
-              const requestDuck = droneRequestDuckRef.current;
-              if (requestDuck) {
-                try { requestDuck(DUCK_MS); } catch { /* ignore */ }
-              }
-            }
-            // After tripping, accept the drone-MIDI vote into the standard
-            // candidate pool — Step 3 will then move the incumbent there if
-            // it beats the current incumbent by NOTE_HYSTERESIS_MARGIN. If
-            // the post-duck frame fails to confirm, the suspicion counter
-            // resets below and we go back to vote-exclusion.
+          if (inPostDuckWindow) {
+            // The duck already ran. If YIN STILL says drone-MIDI, the user
+            // is genuinely playing in unison — accept the vote into the
+            // standard candidate pool. Step 3's hysteresis still gates the
+            // actual incumbent move.
             if (topVotesIncludingDrone > topVotes) {
               topVotes = topVotesIncludingDrone;
               topMidi = topMidiIncludingDrone;
             }
-            droneSuspicionFramesRef.current = 0;
+            // Keep the counter at threshold so subsequent post-duck frames
+            // continue to admit the vote without re-firing the duck.
+            droneSuspicionFramesRef.current = SUSPICION_THRESHOLD_FRAMES;
+          } else {
+            droneSuspicionFramesRef.current += 1;
+            if (droneSuspicionFramesRef.current >= SUSPICION_THRESHOLD_FRAMES) {
+              // Trip the duck. Rate-limit (one duck per DUCK_MS + 120 ms)
+              // so back-to-back trips don't stack envelopes. The post-duck
+              // window above will admit votes if YIN continues to insist.
+              if (droneNowMs - droneLastDuckMsRef.current >= DUCK_MS + 120) {
+                droneLastDuckMsRef.current = droneNowMs;
+                const requestDuck = droneRequestDuckRef.current;
+                if (requestDuck) {
+                  try { requestDuck(DUCK_MS); } catch { /* ignore */ }
+                }
+              }
+              // Hold the counter at threshold — don't reset to 0, since the
+              // next frame's inPostDuckWindow branch will pick up the vote
+              // confirmation flow.
+              droneSuspicionFramesRef.current = SUSPICION_THRESHOLD_FRAMES;
+            }
           }
         } else {
           droneSuspicionFramesRef.current = 0;
@@ -1937,6 +2001,10 @@ export function useAudioEngine(): AudioEngineState {
     setMetroStyle,
     deckStyle,
     setDeckStyle,
+    metroClickOffsetMs,
+    setMetroClickOffsetMs,
+    metroOutputRoute,
+    setMetroOutputRoute,
     setDroneCurrentMidi,
     installDroneDuckHandler,
   };

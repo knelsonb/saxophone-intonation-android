@@ -29,11 +29,17 @@ export function PulseDisplay({ running, beat, pulse, timeSig }: PulseDisplayProp
   const beats = BEATS_OF_SIG[timeSig] ?? 4;
 
   // Throb: one Animated.Value bumped to 1 on each pulse, decays to 0.
+  // v0.9.1 — useNativeDriver: true. We only interpolate `scale` (transform)
+  // and `opacity`, both of which the UI thread can drive without bouncing
+  // back to JS. `backgroundColor` is read separately by React (discrete
+  // per-beat switch between accent / inTune) so it's not on the animation
+  // path. Native-driving the throb removes the JS-frame jitter from the
+  // visual peak — critical for the calibration math to be honest.
   const throbAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (!running || pulse === 0) return;
     throbAnim.setValue(1);
-    Animated.timing(throbAnim, { toValue: 0, duration: 280, useNativeDriver: false }).start();
+    Animated.timing(throbAnim, { toValue: 0, duration: 280, useNativeDriver: true }).start();
   }, [pulse, running, throbAnim]);
 
   return (

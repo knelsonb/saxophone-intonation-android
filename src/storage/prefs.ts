@@ -87,6 +87,21 @@ export interface AppPrefs {
   //   'waveform' — minimalist scope with playhead.
   // (VU-meter visual is deferred for this release — see release notes.)
   deckStyle: 'reels' | 'vu' | 'waveform';
+  // v0.9.1 METRO CALIBRATION — manual fine-tune for visual+audio sync.
+  // Range [-50, +50] ms, step 5, default 0. Negative pulls the click earlier
+  // so it arrives at the user's ear at the same wall-clock moment as the
+  // visual peak. Stacks on top of the per-route latency offset selected via
+  // `metroOutputRoute` below.
+  metroClickOffsetMs: number;
+  // v0.9.1 METRO OUTPUT ROUTE — user-declared current audio output. The
+  // metronome hook uses this to look up a sensible default latency offset:
+  //   'speaker'   → 25 ms (typical Pixel 9 Pro internal speaker)
+  //   'wired'     → 5  ms (3.5 mm / USB-C wired headset)
+  //   'bluetooth' → 200 ms (typical BT A2DP; surface a warning on the screen)
+  // Manual selection rather than auto-detection: expo-audio (SDK 56) does
+  // not expose a stable current-output-route API. A native helper is on the
+  // backlog; for now the user picks once in SETUP and forgets.
+  metroOutputRoute: 'speaker' | 'wired' | 'bluetooth';
   // v0.9.0 DRONE — sustained reference tone that tracks the user's detected
   // pitch ± a semitone offset. Tuner-screen-only.
   // droneVoice: timbre of the drone. 'cello' default — fundamental + 2x/3x/4x
@@ -134,6 +149,8 @@ export const DEFAULT_PREFS: AppPrefs = {
   tunerStyle: 'arc',
   metroStyle: 'pulse',
   deckStyle: 'reels',
+  metroClickOffsetMs: 0,
+  metroOutputRoute: 'speaker',
 };
 
 // ---------------------------------------------------------------------------
@@ -230,6 +247,8 @@ export async function loadPrefs(): Promise<AppPrefs> {
       tunerStyle:          asOneOf(d.tunerStyle, ['arc', 'strobe', 'led'] as const, DEFAULT_PREFS.tunerStyle),
       metroStyle:          asOneOf(d.metroStyle, ['pulse', 'pendulum', 'flash'] as const, DEFAULT_PREFS.metroStyle),
       deckStyle:           asOneOf(d.deckStyle, ['reels', 'vu', 'waveform'] as const, DEFAULT_PREFS.deckStyle),
+      metroClickOffsetMs:  Math.max(-50, Math.min(50, asInt(d.metroClickOffsetMs, DEFAULT_PREFS.metroClickOffsetMs))),
+      metroOutputRoute:    asOneOf(d.metroOutputRoute, ['speaker', 'wired', 'bluetooth'] as const, DEFAULT_PREFS.metroOutputRoute),
     };
   } catch {
     return { ...DEFAULT_PREFS };

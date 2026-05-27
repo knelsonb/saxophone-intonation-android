@@ -402,6 +402,69 @@ export function SetupScreen(props: SetupScreenProps) {
         </View>
       </View>
 
+      {/* METRO CALIBRATION (v0.9.1) */}
+      <View style={styles.settingsGroup}>
+        <Text style={styles.settingsGroupLabel}>METRO CALIBRATION</Text>
+        <View style={styles.settingsRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingsRowLabel}>Output route</Text>
+            <Text style={styles.settingsRowHint}>
+              Used to pre-roll the click against output latency. Bluetooth A2DP is intrinsically late (~200 ms) — wired or speaker stays tight.
+            </Text>
+          </View>
+          <View style={styles.settingsToggle}>
+            {(['speaker', 'wired', 'bluetooth'] as const).map((r) => {
+              const selected = engine.metroOutputRoute === r;
+              const label = r === 'speaker' ? 'SPKR' : r === 'wired' ? 'WIRED' : 'BT';
+              return (
+                <Pressable
+                  key={r}
+                  onPress={() => engine.setMetroOutputRoute(r)}
+                  unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`Metro output route ${label}`}
+                  style={({ pressed }) => [styles.gainPill, selected && styles.gainPillActive, pressed && styles.gainPillPressed]}
+                >
+                  <Text style={[styles.gainPillText, selected && styles.gainPillTextActive]}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+        <View style={styles.settingsRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingsRowLabel}>Click offset</Text>
+            <Text style={styles.settingsRowHint}>
+              Adjust if visual and click feel out of sync. Negative = click earlier. Stacks on top of the route latency.
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Pressable
+              onPress={() => engine.setMetroClickOffsetMs(engine.metroClickOffsetMs - 5)}
+              unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+              accessibilityRole="button"
+              accessibilityLabel="Pull click earlier by 5 ms"
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+            >
+              <Text style={styles.lowCutStepText}>−</Text>
+            </Pressable>
+            <Text style={styles.settingsRowValue}>
+              {engine.metroClickOffsetMs > 0 ? '+' : ''}{engine.metroClickOffsetMs} ms
+            </Text>
+            <Pressable
+              onPress={() => engine.setMetroClickOffsetMs(engine.metroClickOffsetMs + 5)}
+              unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+              accessibilityRole="button"
+              accessibilityLabel="Push click later by 5 ms"
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+            >
+              <Text style={styles.lowCutStepText}>+</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
       {/* DECK STYLE */}
       <View style={styles.settingsGroup}>
         <Text style={styles.settingsGroupLabel}>DECK STYLE</Text>

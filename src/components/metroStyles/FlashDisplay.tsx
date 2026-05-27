@@ -22,11 +22,16 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
   const styles = useMemo(() => makeStyles(C), [C]);
   const halfBeatMs = Math.max(50, Math.min(1000, (60000 / Math.max(1, bpm)) * 0.5));
 
+  // v0.9.1 — useNativeDriver: true. Only `opacity` is interpolated by the
+  // Animated value; `backgroundColor` is set discretely per beat and is
+  // safe to leave on the JS thread. Native-driving the opacity ramp removes
+  // JS-frame jitter from the visual peak, keeping the audio calibration
+  // honest.
   const flashAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (!running || pulse === 0) return;
     flashAnim.setValue(1);
-    Animated.timing(flashAnim, { toValue: 0, duration: halfBeatMs, useNativeDriver: false }).start();
+    Animated.timing(flashAnim, { toValue: 0, duration: halfBeatMs, useNativeDriver: true }).start();
   }, [pulse, running, halfBeatMs, flashAnim]);
 
   const flashBg = beat === 1 ? C.inTune : C.accent;

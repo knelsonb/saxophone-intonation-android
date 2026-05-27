@@ -279,7 +279,10 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
 
   // ----- Sub-hooks: metronome, deck, drone -----
 
-  const metro = useMetronome();
+  const metro = useMetronome({
+    clickOffsetMs: engine.metroClickOffsetMs,
+    outputRoute: engine.metroOutputRoute,
+  });
   const deck = useDeck();
   const drone = useDrone({
     incumbentMidi: engine.incumbentMidi,
@@ -287,6 +290,8 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     voice: droneVoice,
     volume: droneVolume,
     semitones: droneSemitones,
+    setDroneCurrentMidi: engine.setDroneCurrentMidi,
+    installDroneDuckHandler: engine.installDroneDuckHandler,
   });
 
   // Permission gate short-circuits the entire tabbed UI.
@@ -365,7 +370,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
             setDroneSemitones={setDroneSemitones}
           />
         )}
-        {tab === 'metro' && <MetroScreen metro={metro} metroStyle={engine.metroStyle} />}
+        {tab === 'metro' && <MetroScreen metro={metro} metroStyle={engine.metroStyle} outputRoute={engine.metroOutputRoute} />}
         {tab === 'deck'  && <DeckScreen  deck={deck}   deckStyle={engine.deckStyle} />}
         {tab === 'setup' && (
           <SetupScreen

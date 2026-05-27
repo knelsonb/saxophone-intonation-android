@@ -7,9 +7,13 @@
  *      plus `(beatIndex * 60000 / bpm)`. setTimeout fires close to the target
  *      and we apply the click then; if the timer was late we still advance to
  *      the correct beat index.
- *   2. **Visual + audio in sync**. The beat-pulse state and the audio click
- *      are dispatched from the same callback. That keeps them inside the same
- *      microtask, well under the 15 ms tolerance the bar asked for.
+ *   2. **Visual + audio in sync** (v0.9.1 calibration).
+ *      The visible beat indicator runs on the UI thread via Animated with
+ *      `useNativeDriver: true`, so the click no longer waits on a JS render
+ *      to land. To compensate for downstream audio-output latency the click
+ *      is fired EARLIER than the visual peak by a per-route base offset
+ *      (speaker 25 ms / wired 5 ms / Bluetooth 200 ms) PLUS a user-tunable
+ *      `metroClickOffsetMs` step from SETUP. Negative offset = click earlier.
  *   3. **Tap tempo**. Each tap records `Date.now()`. We take the running
  *      average of the last 4 inter-tap intervals. Resets if no tap in 2 s.
  *   4. **Lifecycle**. AppState 'background' stops the click immediately and
@@ -20,6 +24,14 @@
  * written once to the cache directory and replayed via `expo-audio`'s
  * `createAudioPlayer`. Each beat seeks back to 0 and calls `play()` — the
  * cost is small relative to the 500 ms gap between beats at 120 BPM.
+ *
+ * VERIFICATION: hand-tune `metroClickOffsetMs` by recording the device
+ * speaker + screen with another phone's 240fps slow-mo camera. Step through
+ * frame-by-frame, count frames between the visual flash peak and the
+ * loudest sample of the click waveform. ≤2 frames at 240fps = ≤8 ms = pass.
+ * On a Pixel 9 Pro, speaker default of −25 ms typically lands inside that
+ * window; user can nudge ±5 ms from SETUP if the room or output route
+ * changes.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
@@ -43,6 +55,23 @@ export const BPM_DEFAULT = 100;
 
 const TAP_RESET_MS = 2000;
 const TAP_WINDOW = 4;
+
+export type MetroOutputRoute = 'speaker' | 'wired' | 'bluetooth';
+
+// Per-route base latency offsets (ms) — subtracted from the scheduled click
+// time so the audio arrives at the user's ear at the same wall-clock moment
+// as the visual peak. Speaker is the workhorse default; wired is the cleanest
+// path; Bluetooth A2DP buffering is generally awful and we surface a warning
+// on the METRO screen.
+const ROUTE_LATENCY_MS: Record<MetroOutputRoute, number> = {
+  speaker:   25,
+  wired:     5,
+  bluetooth: 200,
+};
+
+export function routeLatencyMs(route: MetroOutputRoute): number {
+  return ROUTE_LATENCY_MS[route] ?? 25;
+}
 
 export interface MetronomeState {
   bpm: number;
@@ -75,7 +104,15 @@ function clampBpm(n: number): number {
   return Math.max(BPM_MIN, Math.min(BPM_MAX, Math.round(n)));
 }
 
-export function useMetronome(): MetronomeState {
+export interface UseMetronomeArgs {
+  /** User-tunable click offset in ms. Stacks on route latency. */
+  clickOffsetMs: number;
+  /** Selected output route — drives the base latency offset. */
+  outputRoute: MetroOutputRoute;
+}
+
+export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, outputRoute: 'speaker' }): MetronomeState {
+  const { clickOffsetMs, outputRoute } = args;
   const [bpm, setBpmState] = useState<number>(BPM_DEFAULT);
   const [timeSig, setTimeSigState] = useState<TimeSig>('4/4');
   const [running, setRunning] = useState<boolean>(false);
@@ -89,6 +126,12 @@ export function useMetronome(): MetronomeState {
   sigRef.current = timeSig;
   const runningRef = useRef(false);
   runningRef.current = running;
+  // Calibration refs — refreshed every render so live changes from SETUP
+  // take effect on the next beat without a restart.
+  const clickOffsetRef = useRef(clickOffsetMs);
+  clickOffsetRef.current = clickOffsetMs;
+  const outputRouteRef = useRef<MetroOutputRoute>(outputRoute);
+  outputRouteRef.current = outputRoute;
 
   // Players (one per click kind), populated on first start.
   const accentPlayerRef = useRef<AudioPlayer | null>(null);
@@ -98,7 +141,13 @@ export function useMetronome(): MetronomeState {
   // each start().
   const nextBeatIndexRef = useRef(0);
   const startedAtMsRef = useRef(0);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Visual timer fires at the wall-clock target; click timer fires earlier
+  // by (routeLatency - clickOffsetMs) so the audio output lands on the
+  // visual peak. Both are tracked so stop()/restart can clear cleanly.
+  const visualTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Back-compat alias — older code paths may reference timeoutRef. */
+  const timeoutRef = visualTimeoutRef;
 
   // ---------- click player provisioning ----------
 
@@ -137,21 +186,51 @@ export function useMetronome(): MetronomeState {
     const intervalMs = 60000 / bpmNow;
     const i = nextBeatIndexRef.current;
     const targetMs = startedAtMsRef.current + i * intervalMs;
-    const delay = Math.max(0, targetMs - Date.now());
+    const now = Date.now();
 
-    timeoutRef.current = setTimeout(() => {
-      if (!runningRef.current) return;
-      const beatInBar = (i % beatsPerBar) + 1;
-      const isAccent = beatInBar === 1;
-      const player = isAccent ? accentPlayerRef.current : normalPlayerRef.current;
-      if (player) {
-        try {
-          player.seekTo(0).catch(() => {});
-          player.play();
-        } catch {
-          // Best-effort. Skipped clicks shouldn't crash the loop.
+    // Click lead time. routeLatency is positive — the click must precede the
+    // visual by that many ms so audio output lands on time. The user-tunable
+    // clickOffsetMs is SIGNED-ADDED to the click target: negative = even
+    // earlier. So clickFireAt = targetMs - routeLatency + clickOffsetMs.
+    //
+    // Edge case: at very fast BPM with Bluetooth + large negative offset, the
+    // click for beat N could need to fire BEFORE beat N-1's visual. The
+    // skip-if-too-late guard below drops the click silently rather than
+    // playing it overlapped. Band-directors at 300 BPM should pick wired or
+    // speaker output anyway.
+    const routeLat = routeLatencyMs(outputRouteRef.current);
+    const clickFireAt = targetMs - routeLat + clickOffsetRef.current;
+
+    const visualDelay = Math.max(0, targetMs - now);
+    const clickDelay = Math.max(0, clickFireAt - now);
+
+    const beatInBar = (i % beatsPerBar) + 1;
+    const isAccent = beatInBar === 1;
+
+    // Audio click — fire at clickFireAt. If clickFireAt has already passed
+    // (e.g. user just bumped offset huge negative, or BPM raced past) we
+    // fire immediately. Skip entirely if it sits in the past by more than
+    // half a beat, which means we're already in the next beat's window.
+    if (now - clickFireAt < intervalMs * 0.5) {
+      clickTimeoutRef.current = setTimeout(() => {
+        if (!runningRef.current) return;
+        const player = isAccent ? accentPlayerRef.current : normalPlayerRef.current;
+        if (player) {
+          try {
+            player.seekTo(0).catch(() => {});
+            player.play();
+          } catch {
+            // Best-effort. Skipped clicks shouldn't crash the loop.
+          }
         }
-      }
+      }, clickDelay);
+    }
+
+    // Visual peak — fires at targetMs. Bumps `beat` + `pulse` together so
+    // the UI's Animated value (driven by `pulse`) flashes in lockstep with
+    // the beat number change. Both setStates land in the same React batch.
+    visualTimeoutRef.current = setTimeout(() => {
+      if (!runningRef.current) return;
       setBeat(beatInBar);
       setPulse((p) => p + 1);
       nextBeatIndexRef.current = i + 1;
@@ -159,7 +238,19 @@ export function useMetronome(): MetronomeState {
       // alignment — drift accumulates only from setTimeout's own latency,
       // not from compounding interval errors.
       schedule();
-    }, delay);
+    }, visualDelay);
+  }, []);
+
+  // Helper used by start/stop/setBpm/setTimeSig to clear both timers.
+  const clearScheduleTimers = useCallback(() => {
+    if (visualTimeoutRef.current !== null) {
+      clearTimeout(visualTimeoutRef.current);
+      visualTimeoutRef.current = null;
+    }
+    if (clickTimeoutRef.current !== null) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
   }, []);
 
   const start = useCallback(() => {
@@ -176,11 +267,8 @@ export function useMetronome(): MetronomeState {
   const stop = useCallback(() => {
     runningRef.current = false;
     setRunning(false);
-    if (timeoutRef.current !== null) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-  }, []);
+    clearScheduleTimers();
+  }, [clearScheduleTimers]);
 
   const toggle = useCallback(() => {
     if (runningRef.current) stop(); else start();
@@ -198,13 +286,10 @@ export function useMetronome(): MetronomeState {
       // Re-anchor.
       startedAtMsRef.current = Date.now();
       nextBeatIndexRef.current = 0;
-      if (timeoutRef.current !== null) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
+      clearScheduleTimers();
       schedule();
     }
-  }, [schedule]);
+  }, [schedule, clearScheduleTimers]);
 
   const bumpBpm = useCallback((delta: number) => {
     setBpm(bpmRef.current + delta);
@@ -218,14 +303,11 @@ export function useMetronome(): MetronomeState {
       // Re-anchor so the new bar starts on the next click.
       startedAtMsRef.current = Date.now();
       nextBeatIndexRef.current = 0;
-      if (timeoutRef.current !== null) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
+      clearScheduleTimers();
       schedule();
     }
     setBeat(1);
-  }, [schedule]);
+  }, [schedule, clearScheduleTimers]);
 
   // ---------- tap tempo ----------
 
@@ -275,15 +357,14 @@ export function useMetronome(): MetronomeState {
   useEffect(() => {
     return () => {
       runningRef.current = false;
-      if (timeoutRef.current !== null) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
+      clearScheduleTimers();
       try { accentPlayerRef.current?.remove(); } catch { /* ignore */ }
       try { normalPlayerRef.current?.remove(); } catch { /* ignore */ }
       accentPlayerRef.current = null;
       normalPlayerRef.current = null;
     };
+  // clearScheduleTimers is stable (useCallback []).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {
