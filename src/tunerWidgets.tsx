@@ -1097,12 +1097,17 @@ export function PermissionGate({
   reason,
   onOpenSettings,
   onRetry,
+  badgeText,
+  displayMode,
 }: {
   refHz: number;
   status: 'mic-denied' | 'stream-failed';
   reason: string | null;
   onOpenSettings: () => void;
   onRetry: () => void;
+  // v1.0 BUG-3 — real instrument + display mode instead of hardcoded string
+  badgeText?: string;
+  displayMode?: DisplayMode;
 }) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
@@ -1123,7 +1128,11 @@ export function PermissionGate({
         <View style={styles.topBar}>
           <View style={styles.topLeft}>
             <Text style={styles.brand}>{APP_NAME}</Text>
-            <Text style={styles.instrumentBadge}>Bb TENOR · PAGE</Text>
+            <Text style={styles.instrumentBadge}>
+              {/* v1.0 BUG-3 — real instrument / display mode */}
+              {badgeText ?? 'BELLCURVE'}
+              {displayMode ? ` · ${displayMode === 'griff' ? 'PAGE' : 'CONCERT'}` : ''}
+            </Text>
           </View>
           <View style={styles.topRight}>
             <Text style={styles.refLabel}>REF</Text>

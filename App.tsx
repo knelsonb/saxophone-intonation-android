@@ -231,16 +231,44 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     loadRangeOverrides().then((overrides) => setRangeOverrides(overrides)).catch(() => {});
   }, []);
 
+  // v1.0 BUG-2 — debounce A4/refHz writes so rapid ± taps don't flood
+  // AsyncStorage. The timer fires 250 ms after the last edit. Background
+  // AppState flushes any pending write immediately.
+  const refHzSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRefHzRef = useRef<number>(refHz);
+  pendingRefHzRef.current = refHz; // always fresh for the background flush
+  const queueRefHzSave = useCallback((nextHz: number) => {
+    if (refHzSaveTimer.current) clearTimeout(refHzSaveTimer.current);
+    refHzSaveTimer.current = setTimeout(() => {
+      engine.savePrefsNow({ refHz: nextHz }).catch(() => {});
+      refHzSaveTimer.current = null;
+    }, 250);
+  }, [engine]);
+
+  // v1.0 CRITICAL-1 — cancel any pending debounce on unmount (permission-
+  // denied path, hot-reload, test remount) to avoid firing into a stale closure.
+  useEffect(() => () => {
+    if (refHzSaveTimer.current) {
+      clearTimeout(refHzSaveTimer.current);
+      refHzSaveTimer.current = null;
+    }
+  }, []);
+
   // Persist refHz + minN on background.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background') {
-        engine.savePrefsNow({ refHz, minNVisible: minN }).catch(() => {});
+        // Flush any pending debounced refHz save before the write below.
+        if (refHzSaveTimer.current) {
+          clearTimeout(refHzSaveTimer.current);
+          refHzSaveTimer.current = null;
+        }
+        engine.savePrefsNow({ refHz: pendingRefHzRef.current, minNVisible: minN }).catch(() => {});
       }
     });
     return () => sub.remove();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refHz, minN]);
+  }, [minN]);
 
   const handleMinNChange = useCallback((n: number) => {
     setMinN(n);
@@ -281,25 +309,48 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // making the indicator useless for transients.
   const peakHoldUntilRef = useRef(0);
 
-  const nowMs = Date.now();
-  const mf = Math.max(IDLE_GLOW, engine.meterFill);
-  let newPeak: number;
-  if (mf >= peakVal.current) {
-    // New peak — latch and refresh the hold window.
-    newPeak = mf;
-    peakHoldUntilRef.current = nowMs + 2000;
-  } else if (nowMs < peakHoldUntilRef.current) {
-    // Still inside the hold window — freeze.
-    newPeak = peakVal.current;
-  } else {
-    // Decay phase — same rate as before but only after the hold expires.
-    const elapsed = (nowMs - peakTs.current) / 1000;
-    newPeak = Math.max(IDLE_GLOW, peakVal.current - PEAK_DECAY_PER_SEC * elapsed);
-  }
-  peakVal.current = newPeak;
-  peakTs.current = nowMs;
-  Animated.spring(fillAnim, { toValue: mf, useNativeDriver: false, damping: 10, stiffness: 260, mass: 0.2 }).start();
-  Animated.timing(peakAnim, { toValue: newPeak, duration: 60, useNativeDriver: false }).start();
+  // v1.0 BUG-1 — peak math moved out of the render body into an effect so
+  // unrelated re-renders (modal open, tab switch, etc.) can't restart
+  // animations with stale intermediate state.
+  useEffect(() => {
+    const mf = Math.max(IDLE_GLOW, engine.meterFill);
+    const nowMs = Date.now();
+    let newPeak: number;
+    if (mf >= peakVal.current) {
+      // New peak — latch and refresh the hold window.
+      newPeak = mf;
+      peakHoldUntilRef.current = nowMs + 2000;
+    } else if (nowMs < peakHoldUntilRef.current) {
+      // Still inside the hold window — freeze.
+      newPeak = peakVal.current;
+    } else {
+      // Decay phase — only after hold expires.
+      const elapsed = (nowMs - peakTs.current) / 1000;
+      newPeak = Math.max(IDLE_GLOW, peakVal.current - PEAK_DECAY_PER_SEC * elapsed);
+    }
+    peakVal.current = newPeak;
+    peakTs.current = nowMs;
+    const springAnim = Animated.spring(fillAnim, {
+      toValue: mf,
+      useNativeDriver: false,
+      damping: 10,
+      stiffness: 260,
+      mass: 0.2,
+    });
+    const timingAnim = Animated.timing(peakAnim, {
+      toValue: newPeak,
+      duration: 60,
+      useNativeDriver: false,
+    });
+    springAnim.start();
+    timingAnim.start();
+    return () => {
+      springAnim.stop();
+      timingAnim.stop();
+    };
+  // fillAnim/peakAnim are stable Animated.Value refs — no need to list them.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine.meterFill]);
 
   // Instrument-derived data.
   const instrumentKey: string = engine.instrumentKey ?? 'bb_tenor';
@@ -357,13 +408,21 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     installDroneDuckHandler: engine.installDroneDuckHandler,
   });
 
+  // v1.0 BUG-4 — mute drone while recording so the mic doesn't pick it up.
+  useEffect(() => {
+    drone.setMuted(deck.mode === 'recording');
+  }, [deck.mode, drone]);
+
   // Permission gate short-circuits the entire tabbed UI.
   if (engine.status === 'mic-denied' || engine.status === 'stream-failed') {
     return (
+      // v1.0 BUG-3 — forward real badgeText + displayMode
       <PermissionGate
         refHz={refHz}
         status={engine.status}
         reason={engine.streamErrorReason}
+        badgeText={badgeText}
+        displayMode={displayMode}
         onOpenSettings={() => { Linking.openSettings().catch(() => {}); }}
         onRetry={() => {
           if (engine.status === 'mic-denied') {
@@ -425,7 +484,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       refHz={refHz}
       setRefHz={(v) => {
         setRefHz(v);
-        engine.savePrefsNow({ refHz: v }).catch(() => {});
+        queueRefHzSave(v); // v1.0 BUG-2 — debounced
       }}
       showDebugOverlay={showDebugOverlay}
       setShowDebugOverlay={handleSetShowDebugOverlay}
@@ -448,7 +507,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           refHz={refHz}
           setRefHz={(v) => {
             setRefHz(v);
-            engine.savePrefsNow({ refHz: v }).catch(() => {});
+            queueRefHzSave(v); // v1.0 BUG-2 — debounced
           }}
           compact={!isLandscape}
           badgeText={badgeText}
@@ -481,7 +540,14 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
             headerShown: false,
             sceneStyle: { backgroundColor: C.face, paddingHorizontal: 24 },
           }}
-          tabBar={(p) => <NavTabBar {...p} />}
+          tabBar={(p) => (
+            // v1.0 BUG-5 — thread running indicators from closed-over hooks
+            <NavTabBar
+              {...p}
+              metroRunning={metro.running}
+              deckRecording={deck.mode === 'recording'}
+            />
+          )}
         >
           <Tab.Screen name="tuner">{renderTunerScreen}</Tab.Screen>
           <Tab.Screen name="metro">{renderMetroScreen}</Tab.Screen>
@@ -559,8 +625,11 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
  * `navigation.navigate(route)` is the standard way to switch tabs; it also
  * lets Android's back button restore the previous tab (the navigator owns
  * a history stack for tab switches when you opt in via `backBehavior`).
+ *
+ * v1.0 BUG-5 — metroRunning / deckRecording are passed from AppInner via
+ * the closure captured in the inline arrow passed to `tabBar`.
  */
-function NavTabBar(props: BottomTabBarProps) {
+function NavTabBar(props: BottomTabBarProps & { metroRunning?: boolean; deckRecording?: boolean }) {
   const active = props.state.routes[props.state.index].name as TabKey;
   return (
     <TabBar
@@ -568,6 +637,8 @@ function NavTabBar(props: BottomTabBarProps) {
       onChange={(next) => {
         props.navigation.navigate(next as never);
       }}
+      metroRunning={props.metroRunning}
+      deckRecording={props.deckRecording}
     />
   );
 }

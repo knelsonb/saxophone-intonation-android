@@ -8,9 +8,13 @@
  * Switching tabs is just a React re-render — no animation. The cost of a
  * transition crossfade on a 60 fps display would compete with the live audio
  * tick; keep this loop tight.
+ *
+ * v1.0 BUG-5 — metroRunning / deckRecording props add 8dp status dots:
+ *   - METRO: solid green dot (running)
+ *   - DECK:  pulsing red dot (recording, 1 Hz fade loop)
  */
-import React, { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, H } from '../theme';
 import type { ThemePalette } from '../theme';
@@ -27,9 +31,35 @@ const TABS: { key: TabKey; label: string; a11y: string }[] = [
 export interface TabBarProps {
   active: TabKey;
   onChange: (next: TabKey) => void;
+  metroRunning?: boolean;
+  deckRecording?: boolean;
 }
 
-export function TabBar({ active, onChange }: TabBarProps) {
+// Pulsing red dot for the DECK recording indicator.
+function RecordingDot({ color }: { color: string }) {
+  const anim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(anim, { toValue: 0.2, duration: 500, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 1,   duration: 500, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  // anim is a stable ref value — intentionally not in deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <Animated.View
+      style={[dot.base, { backgroundColor: color, opacity: anim }]}
+      accessibilityElementsHidden
+      importantForAccessibility="no"
+    />
+  );
+}
+
+export function TabBar({ active, onChange, metroRunning, deckRecording }: TabBarProps) {
   const C = useTheme();
   const insets = useSafeAreaInsets();
   // Safe-area inset for the bottom gesture pill / nav bar, plus a small visual
@@ -52,12 +82,35 @@ export function TabBar({ active, onChange }: TabBarProps) {
           >
             <Text style={[styles.label, isActive && styles.labelActive]}>{t.label}</Text>
             <View style={[styles.underline, isActive && styles.underlineActive]} />
+            {/* v1.0 BUG-5 — status dots */}
+            {t.key === 'metro' && metroRunning && (
+              <View
+                style={[dot.base, { backgroundColor: C.inTune }]}
+                accessibilityElementsHidden
+                importantForAccessibility="no"
+              />
+            )}
+            {t.key === 'deck' && deckRecording && (
+              <RecordingDot color={C.sharp} />
+            )}
           </Pressable>
         );
       })}
     </View>
   );
 }
+
+// Dot shared geometry — positioned at top-right of the pill.
+const dot = StyleSheet.create({
+  base: {
+    position: 'absolute',
+    top: 4,
+    right: '12%',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+});
 
 function makeStyles(C: ThemePalette, bottomPad: number) {
   return StyleSheet.create({

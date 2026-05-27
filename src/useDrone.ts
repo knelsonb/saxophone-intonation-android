@@ -21,7 +21,7 @@
  * Lifecycle: AppState 'background' silences both players (sets volume=0) but
  * remembers the toggle state; the next foreground re-applies the volume.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 import { createAudioPlayer } from 'expo-audio';
@@ -47,6 +47,13 @@ export interface DroneState {
   currentMidi: number | null;
   /** Effective Hz the drone is currently sounding. Null while idle. */
   currentHz: number | null;
+  /**
+   * v1.0 BUG-4 — recording-mute coordination. When muted=true, both player
+   * slots are silenced (volume=0) but kept playing so unmute is instant.
+   * The previous target volume is restored on unmute. Does not affect
+   * `enabled` — the user's toggle is preserved across mute/unmute.
+   */
+  setMuted: (muted: boolean) => void;
 }
 
 export interface UseDroneArgs {
@@ -334,6 +341,12 @@ export function useDrone({
     } catch { /* ignore */ }
   }, [volume, enabled]);
 
+  // v1.0 BUG-4 — recording-mute. Separate from `enabled` so the user's
+  // drone toggle is not disturbed by a record start/stop cycle.
+  // Declared before the AppState effect so the foreground-restore branch
+  // can gate on it (NOTE 3).
+  const mutedRef = useRef(false);
+
   // Lifecycle: silence on background, restore on foreground.
   const wasEnabledRef = useRef(false);
   useEffect(() => {
@@ -346,8 +359,11 @@ export function useDrone({
           try { if (slotBRef.current.player) slotBRef.current.player.volume = 0; } catch { /* ignore */ }
         }
       } else if (next === 'active' && wasEnabledRef.current) {
-        const cur = activeIsARef.current ? slotARef.current : slotBRef.current;
-        try { if (cur.player) cur.player.volume = targetVolumeRef.current; } catch { /* ignore */ }
+        // v1.0 NOTE-3 — don't restore volume if still muted (deck recording).
+        if (!mutedRef.current) {
+          const cur = activeIsARef.current ? slotARef.current : slotBRef.current;
+          try { if (cur.player) cur.player.volume = targetVolumeRef.current; } catch { /* ignore */ }
+        }
         wasEnabledRef.current = false;
       }
     });
@@ -365,13 +381,30 @@ export function useDrone({
     };
   }, [cancelCrossfade, cancelDuckTimers]);
 
-  const currentHz = currentMidi !== null ? freqOf(currentMidi, a4Hz) : null;
+  const setMuted = useCallback((muted: boolean) => {
+    if (mutedRef.current === muted) return;
+    mutedRef.current = muted;
+    if (muted) {
+      // Silence both slots; keep them playing for instant resume.
+      try { if (slotARef.current.player) slotARef.current.player.volume = 0; } catch { /* ignore */ }
+      try { if (slotBRef.current.player) slotBRef.current.player.volume = 0; } catch { /* ignore */ }
+    } else {
+      // Restore only the active (audible) slot to the current target.
+      if (!enabledRef.current) return;
+      const cur = activeIsARef.current ? slotARef.current : slotBRef.current;
+      try { if (cur.player) cur.player.volume = targetVolumeRef.current; } catch { /* ignore */ }
+    }
+  }, []);
 
-  return {
+  // v1.0 CRITICAL-2 — stable object identity so callers' useEffect dep arrays
+  // don't fire at audio rate. Primitives / null are cheap to compare; the
+  // callbacks are already useCallback-wrapped with their own stable deps.
+  return useMemo(() => ({
     enabled,
     setEnabled,
     toggle,
     currentMidi,
-    currentHz,
-  };
+    currentHz: currentMidi !== null ? freqOf(currentMidi, a4Hz) : null,
+    setMuted,
+  }), [enabled, setEnabled, toggle, currentMidi, a4Hz, setMuted]);
 }
