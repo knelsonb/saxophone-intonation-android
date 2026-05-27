@@ -33,6 +33,11 @@ interface FftCache {
 
 const _cache = new Map<number, FftCache>();
 
+// v1.0.1 — module-level scratch for autocorrelation output; eliminates the
+// ~560 KB/sec of Float64Array allocations at 40 Hz audio rate.
+const MAX_TMAX_SLOTS = 4096; // covers sampleRate up to ~96 kHz / ~24 Hz lowest pitch (headroom)
+const _acorScratch = new Float64Array(MAX_TMAX_SLOTS);
+
 function getCache(M: number): FftCache {
   let c = _cache.get(M);
   if (c) return c;
@@ -129,11 +134,15 @@ function fftInPlace(re: Float64Array, im: Float64Array, cache: FftCache, inverse
  * @param N Number of samples to consume from `signal`.
  * @param tmax Maximum lag to compute (inclusive). The returned array has
  *             length tmax + 1; index 0 is the energy of the signal.
- * @returns Float64Array of length tmax + 1. Reused across calls only via
- *          the caller — we allocate fresh here because tmax can vary per
- *          call (sample rate dependent).
+ * @returns Float64Array view of length tmax + 1 into a module-level scratch
+ *          buffer. Valid only until the next call to autocorrelation — callers
+ *          must not retain the reference across calls.
  */
 export function autocorrelation(signal: ArrayLike<number>, N: number, tmax: number): Float64Array {
+  // v1.0.1 — guard: tmax must fit in the module-level scratch.
+  if (tmax + 1 > MAX_TMAX_SLOTS) {
+    throw new RangeError(`autocorrelation: tmax=${tmax} exceeds MAX_TMAX_SLOTS=${MAX_TMAX_SLOTS}; raise the constant`);
+  }
   // Linear autocorrelation requires zero-padding to M ≥ 2N − 1; rounded to
   // the next power of two so the FFT stays radix-2.
   const need = 2 * N - 1;
@@ -162,7 +171,8 @@ export function autocorrelation(signal: ArrayLike<number>, N: number, tmax: numb
 
   fftInPlace(re, im, cache, true);
 
-  const out = new Float64Array(tmax + 1);
-  for (let t = 0; t <= tmax; t++) out[t] = re[t];
-  return out;
+  // v1.0.1 — write into scratch, return subarray view; no heap allocation.
+  _acorScratch.fill(0, 0, tmax + 1);
+  for (let t = 0; t <= tmax; t++) _acorScratch[t] = re[t];
+  return _acorScratch.subarray(0, tmax + 1);
 }

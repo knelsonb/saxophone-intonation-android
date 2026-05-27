@@ -113,6 +113,9 @@ const DISPLAY_WINDOW_MS_BY_MODE: Record<FilterMode, number> = {
   slow:   200,
 };
 
+// v1.0.1 — module-level sort comparator; avoids a fresh closure object each RAF tick.
+const _compareAsc = (a: number, b: number) => a - b;
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
@@ -788,6 +791,10 @@ export function useAudioEngine(): AudioEngineState {
   // is the median of the freqs that voted for the incumbent within the
   // RESPONSE-sized window.
   const incumbentMidiRef = useRef<number | null>(null);
+
+  // v1.0.1 — reusable per-tick scratch; eliminates Map + Array allocations at 60–120 Hz.
+  const voteCountRef = useRef<Map<number, number>>(new Map());
+  const winnerFreqsRef = useRef<number[]>([]);
 
   // COLLECT bucket accumulator. Each rounded fingered MIDI gets its own
   // BucketAccum (capped at BUCKET_SAMPLE_CAP samples). Switching notes
@@ -1763,7 +1770,9 @@ export function useAudioEngine(): AudioEngineState {
         // -----------------------------------------------------------------
         const NOTE_VOTE_WINDOW = displayRingCount.current; // up to ring size
         const NOTE_HYSTERESIS_MARGIN = 2;
-        const voteCount = new Map<number, number>();
+        // v1.0.1 — reuse hoisted Map ref; clear instead of allocate.
+        const voteCount = voteCountRef.current;
+        voteCount.clear();
         let rmsSum = 0;
         let rmsN = 0;
 
@@ -1887,7 +1896,9 @@ export function useAudioEngine(): AudioEngineState {
         const winnerMidi = incumbentMidiRef.current;
         let displayFreq: number | null = null;
         if (winnerMidi !== null) {
-          const winnerFreqs: number[] = [];
+          // v1.0.1 — reuse hoisted array ref; reset length instead of allocate.
+          const winnerFreqs = winnerFreqsRef.current;
+          winnerFreqs.length = 0;
           for (let i = 0; i < available; i++) {
             const idx = (head - 1 - i + DISPLAY_RING_SIZE) % DISPLAY_RING_SIZE;
             const f = displayFreqRing.current[idx];
@@ -1897,7 +1908,7 @@ export function useAudioEngine(): AudioEngineState {
             }
           }
           if (winnerFreqs.length > 0) {
-            winnerFreqs.sort((a, b) => a - b);
+            winnerFreqs.sort(_compareAsc);
             displayFreq = winnerFreqs[Math.floor(winnerFreqs.length / 2)];
           }
         }
