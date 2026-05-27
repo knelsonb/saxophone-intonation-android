@@ -3,11 +3,19 @@
  * flashes a colour on each beat. Downbeat = full `C.inTune`, off-beats =
  * `C.accent`. Each flash decays linearly over half a beat. Designed for the
  * band director standing at the back of the rehearsal room.
+ *
+ * v1.0 PSE (photosensitive-epilepsy) safety: 300 BPM full-screen flash = 5 Hz,
+ * inside the 3–30 Hz PSE trigger band. Above 150 BPM (= 2.5 Hz, below the
+ * band) we demote to a 24dp corner dot. Also honors the system reduce-motion
+ * preference — corner dot regardless of BPM.
  */
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
+
+// v1.0 — hard cap. 150 BPM = 2.5 Hz; one step above and we enter the PSE band.
+const PSE_BPM_CAP = 150;
 
 export interface FlashDisplayProps {
   running: boolean;
@@ -22,6 +30,27 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
   const styles = useMemo(() => makeStyles(C), [C]);
   const halfBeatMs = Math.max(50, Math.min(1000, (60000 / Math.max(1, bpm)) * 0.5));
 
+  // v1.0 — read system reduce-motion preference. Re-read on mount and on
+  // subscription change. If RN's listener isn't available we fall back to
+  // the initial read.
+  const [reduceMotion, setReduceMotion] = React.useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    AccessibilityInfo.isReduceMotionEnabled().then((v) => {
+      if (!cancelled) setReduceMotion(v);
+    }).catch(() => { /* ignore */ });
+    const sub = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (v: boolean) => {
+      setReduceMotion(v);
+    });
+    return () => {
+      cancelled = true;
+      sub?.remove?.();
+    };
+  }, []);
+
+  // Demote to corner dot when reduce-motion is on OR BPM > 150 (PSE band).
+  const safeMode = reduceMotion || bpm > PSE_BPM_CAP;
+
   // v0.9.8 flash rebuild:
   //   • Peak opacity goes to 1.0 (was 0.85 — the background bled through
   //     and the flash never read as ON across the room).
@@ -32,21 +61,29 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
   //   • Easing.out(Easing.quad) front-loads brightness — bright snap, sharp
   //     cut — replacing the gentle linear dissolve that read as a pulse.
   // useNativeDriver: true (opacity transform only).
+  // v1.0 — stop previous animation before starting next; at fast BPM the
+  // prior tween overlaps. Snapshot setState too, even though it's idempotent
+  // for the same color, to avoid lingering tween state on mid-fade swap.
   const flashAnim = useRef(new Animated.Value(0)).current;
   const flashColorRef = useRef(C.accent);
   const [flashBg, setFlashBg] = React.useState(C.accent);
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
   useEffect(() => {
     if (!running || pulse === 0) return;
+    animRef.current?.stop();
     const color = beat === 1 ? C.inTune : C.accent;
     flashColorRef.current = color;
     setFlashBg(color);
     flashAnim.setValue(1);
-    Animated.timing(flashAnim, {
+    const a = Animated.timing(flashAnim, {
       toValue: 0,
       duration: halfBeatMs,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
-    }).start();
+    });
+    animRef.current = a;
+    a.start();
+    return () => { animRef.current?.stop(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pulse, running, halfBeatMs, flashAnim]);
 
@@ -54,15 +91,26 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
 
   return (
     <View style={styles.root}>
-      <Animated.View
-        style={[
-          StyleSheet.absoluteFill,
-          styles.flashPanel,
-          { backgroundColor: flashBg, opacity: opacityInterp },
-        ]}
-        accessibilityRole="image"
-        accessibilityLabel={running ? `Beat ${beat} flash` : 'Stopped'}
-      />
+      {safeMode ? (
+        // v1.0 — corner dot mode. Single 24dp circle pulsing in the top-right.
+        // No full-area flash; safe for reduce-motion users and outside PSE band.
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.cornerDot, { backgroundColor: flashBg, opacity: opacityInterp }]}
+          accessibilityRole="image"
+          accessibilityLabel={running ? `Beat ${beat} (reduced motion)` : 'Stopped'}
+        />
+      ) : (
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFill,
+            styles.flashPanel,
+            { backgroundColor: flashBg, opacity: opacityInterp },
+          ]}
+          accessibilityRole="image"
+          accessibilityLabel={running ? `Beat ${beat} flash` : 'Stopped'}
+        />
+      )}
       <View style={styles.center}>
         <Text style={styles.beatLabel}>{running ? beat : '·'}</Text>
         <Text style={styles.sigLabel}>{timeSig}</Text>
@@ -85,6 +133,15 @@ function makeStyles(C: ThemePalette) {
     },
     flashPanel: {
       borderRadius: 6,
+    },
+    // v1.0 — PSE-safe corner indicator. 24dp circle, top-right with padding.
+    cornerDot: {
+      position: 'absolute',
+      top: 12,
+      right: 12,
+      width: 24,
+      height: 24,
+      borderRadius: 12,
     },
     center: {
       position: 'absolute',

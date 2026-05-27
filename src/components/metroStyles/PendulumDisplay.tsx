@@ -63,30 +63,44 @@ export function PendulumDisplay({ running, beat, pulse, bpm }: PendulumDisplayPr
   const styles = useMemo(() => makeStyles(C), [C]);
 
   // -1 = left extreme, +1 = right extreme.
+  // v1.0 — derive side from `pulse` parity instead of a local toggle ref.
+  // `pulse` is monotonically increasing and never resets — survives stop/
+  // resume cleanly, robust across odd time sigs (unlike `beat` which resets
+  // each bar). Convention: first pulse (1) = RIGHT (+1), then alternate.
   const armAnim = useRef(new Animated.Value(1)).current;
-  const sideRef = useRef<1 | -1>(1);
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
+  const restAnimRef = useRef<Animated.CompositeAnimation | null>(null);
 
   useEffect(() => {
     if (!running || pulse === 0) return;
-    sideRef.current = sideRef.current === 1 ? -1 : 1;
+    animRef.current?.stop();
+    restAnimRef.current?.stop();
+    const side: 1 | -1 = pulse % 2 === 1 ? 1 : -1;
     const dur = Math.max(60, 60000 / Math.max(1, bpm));
-    Animated.timing(armAnim, {
-      toValue: sideRef.current,
+    const a = Animated.timing(armAnim, {
+      toValue: side,
       duration: dur,
       easing: Easing.inOut(Easing.sin),
       useNativeDriver: true,
-    }).start();
+    });
+    animRef.current = a;
+    a.start();
+    return () => { animRef.current?.stop(); };
   }, [pulse, running, bpm, armAnim]);
 
   useEffect(() => {
     if (!running) {
-      sideRef.current = 1;
-      Animated.timing(armAnim, {
+      // Stop any in-flight swing, then ease the arm back to centre.
+      animRef.current?.stop();
+      restAnimRef.current?.stop();
+      const a = Animated.timing(armAnim, {
         toValue: 0,
         duration: 400,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
-      }).start();
+      });
+      restAnimRef.current = a;
+      a.start();
     }
   }, [running, armAnim]);
 

@@ -39,11 +39,18 @@ export function PulseDisplay({ running, beat, pulse, timeSig }: PulseDisplayProp
 
   // The lit dot pulses briefly (scale 1.0 → 1.6 → 1.0) on each beat.
   // useNativeDriver: true — scale is transform-only.
+  // v1.0 — stop previous animation before starting next; at BPM ≥ 270 (4-bar
+  // period ≤ 222ms) the prior 220ms tween isn't done when the next fires.
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
   useEffect(() => {
     if (!running || pulse === 0) return;
+    animRef.current?.stop();
     pulseAnim.setValue(1.6);
-    Animated.timing(pulseAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+    const a = Animated.timing(pulseAnim, { toValue: 1, duration: 220, useNativeDriver: true });
+    animRef.current = a;
+    a.start();
+    return () => { animRef.current?.stop(); };
   }, [pulse, running, pulseAnim]);
 
   return (

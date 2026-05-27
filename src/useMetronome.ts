@@ -274,18 +274,30 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
     if (runningRef.current) stop(); else start();
   }, [start, stop]);
 
-  // BPM setter — clamp + re-anchor wall-clock so the new tempo takes effect
-  // on the NEXT beat rather than the current scheduled one. Done by resetting
-  // startedAtMs to "now - (i * old interval was fired)". Easier: just reset
-  // startedAtMs to now and beat-index to 0. The audible result: the next
-  // beat lands one beat into the new tempo, which is what the player expects.
+  // v1.0 — smooth BPM re-anchor preserves beat phase.
+  // Formula: phase = 1 - remainingOld/T0  (fraction of current beat elapsed)
+  //          nextBeatAtMs = now + (1 - phase) * T1
+  //          startedAtMs_new = nextBeatAtMs - i * T1
+  // so schedule()'s target (startedAtMs + i*T1) lands on nextBeatAtMs.
+  // Keeps tap-tempo (which goes through this setter) from stuttering.
   const setBpm = useCallback((n: number) => {
     const next = clampBpm(n);
+    const oldBpm = bpmRef.current;
     setBpmState(next);
-    if (runningRef.current) {
-      // Re-anchor.
-      startedAtMsRef.current = Date.now();
-      nextBeatIndexRef.current = 0;
+    if (runningRef.current && next !== oldBpm) {
+      const now = Date.now();
+      const T0 = 60000 / oldBpm;
+      const T1 = 60000 / next;
+      const i = nextBeatIndexRef.current;
+      const oldTargetMs = startedAtMsRef.current + i * T0;
+      const remainingOld = oldTargetMs - now;
+      // Clamp phase to [0,1]. If timer already overdue (remainingOld < 0),
+      // treat as end-of-beat — fire ASAP under the new tempo.
+      let phase = 1 - remainingOld / T0;
+      if (!Number.isFinite(phase)) phase = 0;
+      phase = Math.max(0, Math.min(1, phase));
+      const nextBeatAtMs = now + (1 - phase) * T1;
+      startedAtMsRef.current = nextBeatAtMs - i * T1;
       clearScheduleTimers();
       schedule();
     }
@@ -295,14 +307,26 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
     setBpm(bpmRef.current + delta);
   }, [setBpm]);
 
+  // v1.0 — preserve in-beat phase across time-sig change; bar index resets
+  // because the bar definition itself changed (next fired beat becomes the
+  // new downbeat "1"). Keeps click cadence smooth — only the accent pattern
+  // shifts.
   const setTimeSig = useCallback((s: TimeSig) => {
     setTimeSigState(s);
-    // Resetting the in-bar beat counter immediately gives the visual feedback
-    // a clean state — the next downbeat will land on the new "1".
     if (runningRef.current) {
-      // Re-anchor so the new bar starts on the next click.
-      startedAtMsRef.current = Date.now();
+      const now = Date.now();
+      const bpmNow = bpmRef.current;
+      const T = 60000 / bpmNow;
+      const i = nextBeatIndexRef.current;
+      const oldTargetMs = startedAtMsRef.current + i * T;
+      const remainingOld = oldTargetMs - now;
+      let phase = 1 - remainingOld / T;
+      if (!Number.isFinite(phase)) phase = 0;
+      phase = Math.max(0, Math.min(1, phase));
+      const nextBeatAtMs = now + (1 - phase) * T;
+      // Reset bar position: next fired beat = index 0 (downbeat "1").
       nextBeatIndexRef.current = 0;
+      startedAtMsRef.current = nextBeatAtMs;
       clearScheduleTimers();
       schedule();
     }
