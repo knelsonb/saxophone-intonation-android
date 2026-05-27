@@ -8,15 +8,16 @@
  * lifted out of the slide-up modal and into a permanent tab. Settings live
  * here now; tapping SETUP at the bottom IS how a user reaches them.
  */
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useAudioEngine } from '../useAudioEngine';
 import type { FilterMode } from '../filterModes';
 import type { ThemeName } from '../theme';
 import { useTheme, THEME_NAMES } from '../theme';
 import { makeStyles, DRAG_FRIENDLY_PRESS_DELAY_MS, REF_HZ_MIN, REF_HZ_MAX } from '../uiShared';
-import { DRONE_VOICES, droneVoiceLabel } from '../audioGen';
-import type { DroneVoice } from '../audioGen';
+// v1.1 — TSF synth voice picker; droneVoices.ts created by Sauron in parallel
+import { DRONE_PRESETS, DRONE_FULL_GM, resolveDroneVoice } from '../droneVoices';
+import type { MetronomeState } from '../useMetronome';
 
 const GAIN_OPTIONS = [
   { value: 'low'  as const, label: 'LOW'  },
@@ -29,6 +30,121 @@ const FILTER_OPTIONS: { value: FilterMode; label: string; hint: string }[] = [
   { value: 'slow',   label: 'SLOW',   hint: 'Setup, instrument repair (~460 ms)' },
 ];
 
+// ---------------------------------------------------------------------------
+// DroneVoicePicker — v1.1
+// Layout: 5 preset pills (row, wrap) → "More voices" toggle → 128-entry GM
+// list in a height-capped inner ScrollView. Inner scroll is necessary because
+// the parent SetupScreen is already a ScrollView; nesting 128 rows inside it
+// without a height cap would make the outer page impossibly tall and prevent
+// users from flicking through voices without also scrolling past the SETUP
+// groups above and below.
+// ---------------------------------------------------------------------------
+
+interface DroneVoicePickerProps {
+  droneVoice: string;
+  setDroneVoice: (id: string) => void;
+  styles: ReturnType<typeof import('../uiShared').makeStyles>;
+  C: import('../theme').ThemePalette;
+}
+
+function DroneVoicePicker({ droneVoice, setDroneVoice, styles, C }: DroneVoicePickerProps) {
+  const [expanded, setExpanded] = useState(false);
+
+  const presetIds = useMemo(() => DRONE_PRESETS.map((v) => v.id), []);
+  const isPresetSelected = presetIds.includes(droneVoice);
+  const resolved = resolveDroneVoice(droneVoice);
+
+  return (
+    <View style={styles.settingsGroup}>
+      <Text style={styles.settingsGroupLabel}>DRONE</Text>
+
+      {/* Preset pills row */}
+      <View style={styles.setupVoicePresetRow}>
+        {DRONE_PRESETS.map((voice) => {
+          const selected = droneVoice === voice.id;
+          return (
+            <Pressable
+              key={voice.id}
+              onPress={() => setDroneVoice(voice.id)}
+              unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              accessibilityLabel={`Select ${voice.label} drone voice, General MIDI patch ${String(voice.program).padStart(3, '0')}`}
+              style={({ pressed }) => [
+                styles.metroSigPill,
+                selected && styles.metroSigPillActive,
+                pressed && styles.gainPillPressed,
+              ]}
+            >
+              <Text style={[styles.metroSigPillText, selected && styles.metroSigPillTextActive]}>
+                {voice.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {/* Non-preset selection indicator */}
+      {!isPresetSelected && (
+        <Text style={styles.setupVoiceSelectedHint}>
+          Selected: {resolved.label} (GM {String(resolved.program).padStart(3, '0')})
+        </Text>
+      )}
+
+      {/* Expand toggle */}
+      <Pressable
+        onPress={() => setExpanded((e) => !e)}
+        unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? 'Collapse full voice list' : 'Browse all 128 General MIDI voices'}
+        style={({ pressed }) => [styles.setupVoiceMoreBtn, pressed && styles.gainPillPressed]}
+      >
+        <Text style={styles.setupVoiceMoreText}>
+          {expanded ? 'Hide voices ▲' : 'More voices · 128 GM patches ▼'}
+        </Text>
+      </Pressable>
+
+      {/* Full GM list — inner scroll cap so outer SETUP page stays navigable */}
+      {expanded && (
+        <View style={styles.setupVoiceListWrap}>
+          <ScrollView
+            style={styles.setupVoiceListScroll}
+            showsVerticalScrollIndicator
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+          >
+            {DRONE_FULL_GM.map((voice) => {
+              const selected = droneVoice === voice.id;
+              return (
+                <Pressable
+                  key={voice.id}
+                  onPress={() => setDroneVoice(voice.id)}
+                  unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`Select ${voice.label} drone voice, General MIDI patch ${String(voice.program).padStart(3, '0')}`}
+                  style={({ pressed }) => [
+                    styles.setupVoiceGmRow,
+                    selected && styles.setupVoiceGmRowSelected,
+                    pressed && styles.setupVoiceGmRowPressed,
+                  ]}
+                >
+                  <Text style={[styles.setupVoiceGmProgram, selected && { color: C.accent }]}>
+                    {String(voice.program).padStart(3, '0')}
+                  </Text>
+                  <Text style={[styles.setupVoiceGmLabel, selected && { color: C.accent, fontWeight: '700' }]}>
+                    {voice.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+}
+
 export interface SetupScreenProps {
   engine: ReturnType<typeof useAudioEngine>;
   refHz: number;
@@ -38,8 +154,12 @@ export interface SetupScreenProps {
   onOpenPipes: () => void;
   onOpenRangeEditor: () => void;
   onEditHornName: () => void;
-  droneVoice: DroneVoice;
-  setDroneVoice: (v: DroneVoice) => void;
+  // v1.1 — string id; resolved to DroneVoice via resolveDroneVoice() at display sites
+  droneVoice: string;
+  setDroneVoice: (v: string) => void;
+  // v1.1 — optional so App.tsx can pass it without a breaking schema change.
+  // When present, the METRO CALIBRATION group gains a CLICK VOLUME stepper.
+  metro?: MetronomeState;
 }
 
 export function SetupScreen(props: SetupScreenProps) {
@@ -51,6 +171,7 @@ export function SetupScreen(props: SetupScreenProps) {
     showDebugOverlay, setShowDebugOverlay,
     onOpenPipes, onOpenRangeEditor, onEditHornName,
     droneVoice, setDroneVoice,
+    metro,
   } = props;
 
   const hiFiSelected = engine.hiFiActive;
@@ -463,6 +584,38 @@ export function SetupScreen(props: SetupScreenProps) {
             </Pressable>
           </View>
         </View>
+        {/* v1.1 — CLICK VOLUME. Shown only when the metro hook is wired in. */}
+        {metro !== undefined && (
+          <View style={styles.settingsRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingsRowLabel}>Click volume</Text>
+              <Text style={styles.settingsRowHint}>
+                Accent and normal clicks share this level. 0.0 = mute, 1.0 = full.
+              </Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <Pressable
+                onPress={() => metro.setClickVolume(metro.clickVolume - 0.1)}
+                unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+                accessibilityRole="button"
+                accessibilityLabel="Decrease click volume by 10%"
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              >
+                <Text style={styles.lowCutStepText}>−</Text>
+              </Pressable>
+              <Text style={styles.settingsRowValue}>{metro.clickVolume.toFixed(1)}</Text>
+              <Pressable
+                onPress={() => metro.setClickVolume(metro.clickVolume + 0.1)}
+                unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
+                accessibilityRole="button"
+                accessibilityLabel="Increase click volume by 10%"
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              >
+                <Text style={styles.lowCutStepText}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
       </View>
 
       {/* DECK STYLE */}
@@ -497,36 +650,13 @@ export function SetupScreen(props: SetupScreenProps) {
         </View>
       </View>
 
-      {/* DRONE VOICE */}
-      <View style={styles.settingsGroup}>
-        <Text style={styles.settingsGroupLabel}>DRONE</Text>
-        <View style={styles.settingsRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.settingsRowLabel}>Voice</Text>
-            <Text style={styles.settingsRowHint}>
-              CELLO is the warm default (fundamental + harmonics, slight vibrato). SINE is pure tone. SAW is brighter for noisy rooms.
-            </Text>
-          </View>
-          <View style={styles.settingsToggle}>
-            {DRONE_VOICES.map((v) => {
-              const selected = droneVoice === v;
-              return (
-                <Pressable
-                  key={v}
-                  onPress={() => setDroneVoice(v)}
-                  unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`Drone voice ${droneVoiceLabel(v)}`}
-                  style={({ pressed }) => [styles.gainPill, selected && styles.gainPillActive, pressed && styles.gainPillPressed]}
-                >
-                  <Text style={[styles.gainPillText, selected && styles.gainPillTextActive]}>{droneVoiceLabel(v)}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-      </View>
+      {/* DRONE VOICE — v1.1 TSF GM picker */}
+      <DroneVoicePicker
+        droneVoice={droneVoice}
+        setDroneVoice={setDroneVoice}
+        styles={styles}
+        C={C}
+      />
 
       {/* MORE */}
       <View style={styles.settingsGroup}>

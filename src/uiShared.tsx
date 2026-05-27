@@ -846,5 +846,33 @@ export function makeStyles(C: ThemePalette) {
   droneControl: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   droneControlLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 2, fontWeight: '700' },
   droneControlValue: { color: C.ink, fontSize: 13, letterSpacing: 1, fontVariant: ['tabular-nums'], fontWeight: '700', minWidth: 44, textAlign: 'center' },
+
+  // ---------------------------------------------------------------------------
+  // setupVoice* — v1.1 DRONE voice picker (SetupScreen only)
+  // ---------------------------------------------------------------------------
+
+  // Horizontal pill row; wrap handles >5 presets or small phones.
+  setupVoicePresetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingVertical: 8, paddingHorizontal: 4 },
+
+  // Small italic line shown when a non-preset GM voice is active.
+  setupVoiceSelectedHint: { color: C.inkDim, fontSize: 11, letterSpacing: 1, fontStyle: 'italic', paddingHorizontal: 4, marginBottom: 4 },
+
+  // "More voices" expand toggle — text-link feel, no border, left-aligned.
+  setupVoiceMoreBtn: { paddingVertical: 8, paddingHorizontal: 4 },
+  setupVoiceMoreText: { color: C.accent, fontSize: 12, letterSpacing: 2, fontWeight: '600' },
+
+  // Outer wrapper caps the GM list height so the user can flick through 128
+  // entries without the outer SETUP ScrollView growing to fill all of them.
+  setupVoiceListWrap: { maxHeight: 360, marginTop: 4, borderColor: C.edgeSoft, borderWidth: 1, borderRadius: 4, overflow: 'hidden' },
+  setupVoiceListScroll: { flex: 1 },
+
+  // Individual GM list row.
+  setupVoiceGmRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, paddingHorizontal: 10, minHeight: 40 },
+  setupVoiceGmRowSelected: { backgroundColor: C.accentTint },
+  setupVoiceGmRowPressed: { backgroundColor: C.edgeSoft },
+
+  // Program number — fixed-width tabular so labels align cleanly.
+  setupVoiceGmProgram: { color: C.inkDim, fontSize: 11, fontVariant: ['tabular-nums'], letterSpacing: 1, minWidth: 28 },
+  setupVoiceGmLabel: { color: C.inkMid, fontSize: 13, letterSpacing: 0.5, flex: 1 },
   });
 }

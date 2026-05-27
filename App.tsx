@@ -80,7 +80,7 @@ import { SetupScreen } from './src/screens/SetupScreen';
 import { useMetronome } from './src/useMetronome';
 import { useDeck } from './src/useDeck';
 import { useDrone } from './src/useDrone';
-import type { DroneVoice } from './src/audioGen';
+// v1.1 — droneVoice is now a stable string id; the catalog lives in droneVoices.ts.
 
 // ---------------------------------------------------------------------------
 // Outer App: provides theme + delegates to AppInner.
@@ -168,7 +168,8 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   const [minN, setMinN] = useState(5);
 
   // Drone prefs — owned here so they can be persisted + shared across hooks.
-  const [droneVoice, setDroneVoiceState] = useState<DroneVoice>(DEFAULT_PREFS.droneVoice);
+  // v1.1 — droneVoice is the DroneVoice.id string (e.g. 'organ', 'gm-19').
+  const [droneVoice, setDroneVoiceState] = useState<string>(DEFAULT_PREFS.droneVoice);
   const [droneVolume, setDroneVolumeState] = useState<number>(DEFAULT_PREFS.droneVolume);
   const [droneSemitones, setDroneSemitonesState] = useState<number>(DEFAULT_PREFS.droneSemitones);
 
@@ -277,14 +278,14 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
 
   // Drone-pref setters.
   const persistDronePref = useCallback(async (
-    patch: Partial<{ droneVoice: DroneVoice; droneVolume: number; droneSemitones: number; }>,
+    patch: Partial<{ droneVoice: string; droneVolume: number; droneSemitones: number; }>,
   ) => {
     try {
       const current = await loadPrefs();
       await savePrefs({ ...current, ...patch });
     } catch { /* best-effort */ }
   }, []);
-  const setDroneVoice = useCallback((v: DroneVoice) => {
+  const setDroneVoice = useCallback((v: string) => {
     setDroneVoiceState(v);
     persistDronePref({ droneVoice: v });
   }, [persistDronePref]);
@@ -493,6 +494,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       onEditHornName={() => { setHornNameDraft(engine.nickname); setHornNameEdit(true); }}
       droneVoice={droneVoice}
       setDroneVoice={setDroneVoice}
+      metro={metro}
     />
   );
 

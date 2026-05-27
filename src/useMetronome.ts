@@ -39,6 +39,7 @@ import { File, Paths } from 'expo-file-system';
 import { createAudioPlayer } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
 import { buildClickWavBase64 } from './audioGen';
+import { loadPrefs, savePrefs } from './storage/prefs';
 
 export type TimeSig = '2/4' | '3/4' | '4/4' | '6/8';
 
@@ -97,6 +98,10 @@ export interface MetronomeState {
    * off it without relying on object-equality checks.
    */
   pulse: number;
+  // v1.1 — click volume 0..1; 0 = mute, 1 = full. Both accent + normal
+  // players are updated immediately so the change takes effect next beat.
+  clickVolume: number;
+  setClickVolume: (v: number) => void;
 }
 
 function clampBpm(n: number): number {
@@ -118,6 +123,9 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
   const [running, setRunning] = useState<boolean>(false);
   const [beat, setBeat] = useState<number>(1);
   const [pulse, setPulse] = useState<number>(0);
+  // v1.1 — click volume. Loaded from prefs on mount.
+  const [clickVolume, setClickVolumeState] = useState<number>(0.8);
+  const clickVolumeRef = useRef<number>(0.8);
 
   // Refs that the scheduler reads without rebinding the callback.
   const bpmRef = useRef(BPM_DEFAULT);
@@ -132,6 +140,7 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
   clickOffsetRef.current = clickOffsetMs;
   const outputRouteRef = useRef<MetroOutputRoute>(outputRoute);
   outputRouteRef.current = outputRoute;
+  clickVolumeRef.current = clickVolume;
 
   // Players (one per click kind), populated on first start.
   const accentPlayerRef = useRef<AudioPlayer | null>(null);
@@ -161,6 +170,7 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
         f.write(b64, { encoding: 'base64' });
         accentPlayerRef.current = createAudioPlayer({ uri: f.uri });
         accentPlayerRef.current.loop = false;
+        accentPlayerRef.current.volume = clickVolumeRef.current; // v1.1
       }
       if (!normalPlayerRef.current) {
         const b64 = buildClickWavBase64('normal');
@@ -170,6 +180,7 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
         f.write(b64, { encoding: 'base64' });
         normalPlayerRef.current = createAudioPlayer({ uri: f.uri });
         normalPlayerRef.current.loop = false;
+        normalPlayerRef.current.volume = clickVolumeRef.current; // v1.1
       }
     } catch {
       // Provisioning audio failed — the metronome still works visually. The
@@ -358,6 +369,35 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
     return bpmNew;
   }, [setBpm]);
 
+  // ---------- click volume ----------
+
+  // v1.1 — update both players immediately when the slider moves.
+  useEffect(() => {
+    if (accentPlayerRef.current) accentPlayerRef.current.volume = clickVolume;
+    if (normalPlayerRef.current) normalPlayerRef.current.volume = clickVolume;
+  }, [clickVolume]);
+
+  const setClickVolume = useCallback((v: number): void => {
+    const clamped = Math.max(0, Math.min(1, Math.round(v * 10) / 10));
+    setClickVolumeState(clamped);
+    (async () => {
+      try {
+        const current = await loadPrefs();
+        await savePrefs({ ...current, metroClickVolume: clamped });
+      } catch { /* best-effort */ }
+    })();
+  }, []);
+
+  // Load persisted click volume on mount.
+  useEffect(() => {
+    (async () => {
+      try {
+        const prefs = await loadPrefs();
+        setClickVolumeState(prefs.metroClickVolume);
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
   // ---------- lifecycle ----------
 
   // Pause when the app goes to background, resume on return.
@@ -404,5 +444,7 @@ export function useMetronome(args: UseMetronomeArgs = { clickOffsetMs: 0, output
     registerTap,
     beat,
     pulse,
+    clickVolume,
+    setClickVolume,
   };
 }

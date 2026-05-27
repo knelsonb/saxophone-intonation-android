@@ -1,6 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ThemeName } from '../theme';
-import type { DroneVoice } from '../audioGen';
+// v1.1 — droneVoice is now a stable string id (DroneVoice.id from droneVoices.ts).
+// The old union type 'cello' | 'sine' | 'saw' is gone. Resolution lives at the
+// consumer site via resolveDroneVoice(id).
+import { DRONE_DEFAULT_VOICE } from '../droneVoices';
 
 const PREFS_KEY = '@intonation/prefs';
 
@@ -102,12 +105,16 @@ export interface AppPrefs {
   // not expose a stable current-output-route API. A native helper is on the
   // backlog; for now the user picks once in SETUP and forgets.
   metroOutputRoute: 'speaker' | 'wired' | 'bluetooth';
+  // v1.1 METRO CLICK VOLUME — 0..1 playback gain applied to both the accent
+  // and normal click WAVs. 0 = mute, 1 = full amplitude. Default 0.8.
+  metroClickVolume: number;
   // v0.9.0 DRONE — sustained reference tone that tracks the user's detected
   // pitch ± a semitone offset. Tuner-screen-only.
-  // droneVoice: timbre of the drone. 'cello' default — fundamental + 2x/3x/4x
-  //             harmonics + 5 Hz vibrato. 'sine' is the pure fundamental.
-  //             'saw' is a brighter band-limited sawtooth.
-  droneVoice: DroneVoice;
+  // v1.1 — droneVoice is the stable DroneVoice.id string (e.g. 'organ',
+  // 'sax-tenor', 'gm-19'). Default 'organ'. Unknown ids fall back to default
+  // at the consumer side via resolveDroneVoice(). Legacy union values
+  // ('cello'|'sine'|'saw') are remapped in loadPrefs below.
+  droneVoice: string;
   // droneVolume: 0..1 playback gain for the drone audio. Default 0.5.
   droneVolume: number;
   // droneSemitones: signed semitone offset added to the detected MIDI before
@@ -143,7 +150,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   theme: 'dark',
   nightDarken: 1.0,
   nightWarmth: 0,
-  droneVoice: 'cello',
+  droneVoice: DRONE_DEFAULT_VOICE.id, // v1.1 — 'organ' (TSF Church Organ patch 19)
   droneVolume: 0.5,
   droneSemitones: 0,
   tunerStyle: 'arc',
@@ -151,6 +158,7 @@ export const DEFAULT_PREFS: AppPrefs = {
   deckStyle: 'reels',
   metroClickOffsetMs: 0,
   metroOutputRoute: 'speaker',
+  metroClickVolume: 0.8,
 };
 
 // ---------------------------------------------------------------------------
@@ -200,6 +208,17 @@ function asOneOf<T extends string>(v: unknown, allowed: readonly T[], def: T): T
   return (allowed as readonly string[]).includes(s) ? (s as T) : def;
 }
 
+// v1.1 — drone voice id migration. Pre-v1.1 prefs stored a closed union
+// ('cello' | 'sine' | 'saw') for the WAV-synth drone. v1.1's TSF-backed drone
+// keys voices by stable DroneVoice.id (open-ended string). Map legacy values
+// to the closest TSF preset; pass through everything else (the consumer's
+// resolveDroneVoice falls back to default for unknown ids).
+function migrateDroneVoiceId(v: unknown, def: string): string {
+  const s = asStr(v, def);
+  if (s === 'sine' || s === 'saw') return 'organ'; // closest sustained tone
+  return s; // 'cello' is a v1.1 preset id; gm-N + new preset ids pass through
+}
+
 // ---------------------------------------------------------------------------
 // Load / save
 // ---------------------------------------------------------------------------
@@ -241,7 +260,13 @@ export async function loadPrefs(): Promise<AppPrefs> {
       theme:               asOneOf(d.theme, ['dark', 'night', 'light'] as const, DEFAULT_PREFS.theme),
       nightDarken:         asFloat(d.nightDarken, DEFAULT_PREFS.nightDarken, 0.4, 1.0),
       nightWarmth:         asFloat(d.nightWarmth, DEFAULT_PREFS.nightWarmth, -1.0, 1.0),
-      droneVoice:          asOneOf(d.droneVoice, ['cello', 'sine', 'saw'] as const, DEFAULT_PREFS.droneVoice),
+      // v1.1 — droneVoice migration. Accept any persisted string id; resolution
+      // (id → DroneVoice record) happens at the consumer via resolveDroneVoice.
+      // Legacy union values ('cello'|'sine'|'saw') get a one-shot remap:
+      //   cello → 'cello' (preset, same display label)
+      //   sine  → 'organ' (closest available — clean sustained tone)
+      //   saw   → 'organ' (clean fallback — old saw was a band-limited synth)
+      droneVoice:          migrateDroneVoiceId(d.droneVoice, DEFAULT_PREFS.droneVoice),
       droneVolume:         asFloat(d.droneVolume, DEFAULT_PREFS.droneVolume, 0.0, 1.0),
       droneSemitones:      Math.max(-12, Math.min(12, asInt(d.droneSemitones, DEFAULT_PREFS.droneSemitones))),
       tunerStyle:          asOneOf(d.tunerStyle, ['arc', 'strobe', 'led'] as const, DEFAULT_PREFS.tunerStyle),
@@ -249,6 +274,7 @@ export async function loadPrefs(): Promise<AppPrefs> {
       deckStyle:           asOneOf(d.deckStyle, ['reels', 'vu', 'waveform'] as const, DEFAULT_PREFS.deckStyle),
       metroClickOffsetMs:  Math.max(-50, Math.min(50, asInt(d.metroClickOffsetMs, DEFAULT_PREFS.metroClickOffsetMs))),
       metroOutputRoute:    asOneOf(d.metroOutputRoute, ['speaker', 'wired', 'bluetooth'] as const, DEFAULT_PREFS.metroOutputRoute),
+      metroClickVolume:    asFloat(d.metroClickVolume, DEFAULT_PREFS.metroClickVolume, 0.0, 1.0),
     };
   } catch {
     return { ...DEFAULT_PREFS };

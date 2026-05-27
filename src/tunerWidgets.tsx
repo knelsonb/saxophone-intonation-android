@@ -381,8 +381,13 @@ export function NoteReadout({
     Math.abs(cents) <= 15 ? C.accent :
                             C.sharp;
 
+  // v1.1 — reserve fixed vertical space so the layout below never reflows
+  // when the note letter appears or disappears. minHeight covers the tallest
+  // possible rendering: note line-height + centsBig + hzRow + spacing.
+  const noteBlockMinHeight = noteFontSize + 60;
+
   return (
-    <View style={styles.noteBlock}>
+    <View style={[styles.noteBlock, { minHeight: noteBlockMinHeight }]}>
       <View style={styles.noteRow}>
         <View style={styles.noteSlot}>
           <Text
