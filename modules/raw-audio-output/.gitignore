@@ -1,0 +1,6 @@
+# Build artifacts — never tracked.
+android/.cxx/
+android/build/
+android/.gradle/
+node_modules/
+.expo/
