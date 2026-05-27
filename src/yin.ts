@@ -159,7 +159,7 @@ export function yinPitch(
   if (tau === -1) {
     let minVal = cmnd[tmin];
     let minIdx = tmin;
-    for (let i = tmin + 1; i < tmax; i++) {
+    for (let i = tmin + 1; i <= tmax; i++) { // v1.0.1 — include cmnd[tmax]; tmax lag is a valid lowest-freq candidate
       if (cmnd[i] < minVal) {
         minVal = cmnd[i];
         minIdx = i;
