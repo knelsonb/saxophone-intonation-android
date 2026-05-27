@@ -148,6 +148,11 @@ export function useDrone({
   // so a brief silence between notes doesn't kill the drone.
   const heldMidiRef = useRef<number | null>(null);
 
+  // v1.0.1 — moved up from below AppState so transitionTo + volume-prop effect
+  // can gate on it without temporal-dead-zone hand-wringing. mutedRef=true
+  // means "deck is recording; force every player.volume write to 0".
+  const mutedRef = useRef(false);
+
   // Stable refs for the engine wiring callbacks — keeps `transitionTo`
   // dependency list short and avoids unnecessary callback recreation when
   // the parent re-renders (engine's useCallback identity is stable, but the
@@ -184,6 +189,9 @@ export function useDrone({
     // sound. The crossfade's own fade-down on this slot will reach 0
     // independently — we just keep the duck-down setting in the meantime.
     if (!enabledRef.current) return;
+    // v1.0.1 — muted (recording) implies no audible drone; a duck event would
+    // raise volume above 0. Bail; chase-guard is irrelevant while we're silent.
+    if (mutedRef.current) return;
     const target = targetVolumeRef.current;
     const slot = activeIsARef.current ? slotARef.current : slotBRef.current;
     const p = slot.player;
@@ -194,11 +202,15 @@ export function useDrone({
     const finalAt = restoreAt + DUCK_FADE_OUT_MS;
     // Hold timer — we re-affirm DUCK_DEPTH halfway through in case a
     // crossfade tick raced past us. Cheap insurance.
+    // v1.0.1 — re-check muted at firing time: setMuted(true) mid-duck must
+    // not be undone by a stale timer.
     duckTimersRef.current.push(setTimeout(() => {
+      if (mutedRef.current) { try { p.volume = 0; } catch { /* ignore */ } return; }
       try { p.volume = target * DUCK_DEPTH; } catch { /* ignore */ }
     }, DUCK_FADE_IN_MS));
     // Restore timer — push the slot back to full target volume.
     duckTimersRef.current.push(setTimeout(() => {
+      if (mutedRef.current) { try { p.volume = 0; } catch { /* ignore */ } return; }
       try { p.volume = target; } catch { /* ignore */ }
     }, restoreAt));
     // Final cleanup — clears the timers array so the ref doesn't grow.
@@ -228,6 +240,11 @@ export function useDrone({
   // slot. If no active slot yet, just start the new player at target volume
   // (cold start, no fade — first audible note shouldn't have a 50 ms ramp-in
   // since we'd be ramping from -inf to volume anyway).
+  //
+  // v1.0.1 — INVARIANT: while `mutedRef.current` is true (deck recording),
+  // every `player.volume` write here resolves to 0. The state-machine
+  // bookkeeping (key swap, slot flip, currentMidi publish, crossfade timer)
+  // still advances so unmute lands in a consistent state.
   const transitionTo = useCallback((midi: number) => {
     const v = voiceRef.current;
     const vol = targetVolumeRef.current;
@@ -240,6 +257,9 @@ export function useDrone({
 
     // No-op if active is already on this key.
     if (cur.player && cur.key === cacheKey) return;
+
+    // v1.0.1 — mute-aware volume scaler. 1.0 normally, 0 while recording.
+    const muteGain = mutedRef.current ? 0 : 1;
 
     // Build the next player (or reuse if already on the same key).
     if (!nxt.player || nxt.key !== cacheKey) {
@@ -261,7 +281,7 @@ export function useDrone({
 
     // First-ever transition: skip the fade. Just set volume to target.
     if (!cur.player) {
-      try { nxt.player.volume = vol; } catch { /* ignore */ }
+      try { nxt.player.volume = vol * muteGain; } catch { /* ignore */ }
       activeIsARef.current = !activeIsARef.current;
       setCurrentMidi(midi);
       // Publish to engine immediately — the chase guard relies on this ref
@@ -279,11 +299,14 @@ export function useDrone({
     crossfadeTimerRef.current = setInterval(() => {
       i += 1;
       const t = i / STEPS;
+      // v1.0.1 — re-check muted on every tick: setMuted(true) mid-crossfade
+      // must also silence the in-flight ramp.
+      const g = mutedRef.current ? 0 : 1;
       try {
-        if (cur.player) cur.player.volume = Math.max(0, startVol * (1 - t));
+        if (cur.player) cur.player.volume = Math.max(0, startVol * (1 - t)) * g;
       } catch { /* ignore */ }
       try {
-        if (nxt.player) nxt.player.volume = Math.max(0, Math.min(1, startVol * t));
+        if (nxt.player) nxt.player.volume = Math.max(0, Math.min(1, startVol * t)) * g;
       } catch { /* ignore */ }
       if (i >= STEPS) {
         cancelCrossfade();
@@ -333,19 +356,16 @@ export function useDrone({
   // rebuilding (the WAV's headroom can absorb the change up to ±20%).
   // For larger swings we let the next transition pick a freshly-built file
   // since the cache is keyed by quantized volume.
+  // v1.0.1 — skip the player write while muted (targetVolumeRef is already
+  // kept current at the top of the hook, so unmute restores the slider value).
   useEffect(() => {
     if (!enabled) return;
+    if (mutedRef.current) return;
     const cur = activeIsARef.current ? slotARef.current : slotBRef.current;
     try {
       if (cur.player) cur.player.volume = volume;
     } catch { /* ignore */ }
   }, [volume, enabled]);
-
-  // v1.0 BUG-4 — recording-mute. Separate from `enabled` so the user's
-  // drone toggle is not disturbed by a record start/stop cycle.
-  // Declared before the AppState effect so the foreground-restore branch
-  // can gate on it (NOTE 3).
-  const mutedRef = useRef(false);
 
   // Lifecycle: silence on background, restore on foreground.
   const wasEnabledRef = useRef(false);

@@ -92,6 +92,10 @@ export function useDeck(): DeckState {
 
   const [take, setTake] = useState<DeckTake | null>(null);
   const playerRef = useRef<AudioPlayer | null>(null);
+  // v1.0.1 BUG-5 — single-shot guard across the three recording-close paths
+  // (manual stopRecord, 5-min cap auto-stop, AppState background). Whichever
+  // path fires first wins; the others bail. Always cleared in a `finally`.
+  const recordingClosingRef = useRef(false);
   const [playPos, setPlayPos] = useState(0);
   const [playDur, setPlayDur] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -159,19 +163,29 @@ export function useDeck(): DeckState {
       // Trigger a normal stop; the take will land in `take` via the handler.
       // Inline to avoid a stale closure.
       (async () => {
-        try { await recorder.stop(); } catch { /* ignore */ }
-        const uri = recorder.uri;
-        if (uri) {
-          setTake({
-            uri,
-            durationSec: MAX_RECORDING_SECONDS,
-            capturedAtMs: Date.now(),
-          });
-          flashToast('Reached 5 min cap — recording stopped', 'ok');
+        if (recordingClosingRef.current) return;
+        recordingClosingRef.current = true;
+        try {
+          try { await recorder.stop(); } catch { /* ignore */ }
+          const uri = recorder.uri;
+          if (uri) {
+            // v1.0.1 BUG-4 — mirror manual stopRecord ordering: dispose any
+            // stale player from the previous take BEFORE installing the new
+            // take, otherwise the orphan AudioPlayer leaks.
+            disposePlayer();
+            setTake({
+              uri,
+              durationSec: MAX_RECORDING_SECONDS,
+              capturedAtMs: Date.now(),
+            });
+            flashToast('Reached 5 min cap — recording stopped', 'ok');
+          }
+        } finally {
+          recordingClosingRef.current = false;
         }
       })();
     }
-  }, [recState.isRecording, recState.durationMillis, recorder, flashToast]);
+  }, [recState.isRecording, recState.durationMillis, recorder, disposePlayer, flashToast]);
 
   // ---------- actions ----------
 
@@ -192,23 +206,31 @@ export function useDeck(): DeckState {
   }, [recorder, take, flashToast]);
 
   const stopRecord = useCallback(async () => {
+    // v1.0.1 BUG-5 — race-guard against AppState background / 5-min cap that
+    // may already be closing the recording. Whichever path fires first wins.
+    if (recordingClosingRef.current) return;
+    recordingClosingRef.current = true;
     try {
-      await recorder.stop();
-    } catch {
-      flashToast('Stop failed — recording may be incomplete', 'error');
+      try {
+        await recorder.stop();
+      } catch {
+        flashToast('Stop failed — recording may be incomplete', 'error');
+      }
+      const uri = recorder.uri;
+      if (!uri) {
+        flashToast('No audio captured', 'error');
+        return;
+      }
+      const durSec = (recState.durationMillis ?? 0) / 1000;
+      disposePlayer();
+      setTake({
+        uri,
+        durationSec: durSec,
+        capturedAtMs: Date.now(),
+      });
+    } finally {
+      recordingClosingRef.current = false;
     }
-    const uri = recorder.uri;
-    if (!uri) {
-      flashToast('No audio captured', 'error');
-      return;
-    }
-    const durSec = (recState.durationMillis ?? 0) / 1000;
-    disposePlayer();
-    setTake({
-      uri,
-      durationSec: durSec,
-      capturedAtMs: Date.now(),
-    });
   }, [recorder, recState.durationMillis, disposePlayer, flashToast]);
 
   const confirmDiscardAndRecord = useCallback(() => {
@@ -291,6 +313,9 @@ export function useDeck(): DeckState {
   const saveTake = useCallback(async () => {
     if (!take) return;
     try {
+      // v1.0.1 — `Directory.create()` requires the new top-level expo-file-system
+      // API (v56+); do NOT swap this import for `expo-file-system/legacy` — the
+      // legacy module has no Directory class and this would silently break save.
       const dir = new Directory(Paths.document, SAVED_DIRNAME);
       if (!dir.exists) dir.create();
       const ts = take.capturedAtMs;
@@ -306,7 +331,7 @@ export function useDeck(): DeckState {
       // expo-file-system copy: source file → destination file. async variant
       // so errors surface cleanly.
       await src.copy(dest);
-      flashToast(`Saved as recording-${ts}${ext}`, 'ok');
+      flashToast(`Saved to BellCurve Recordings. Tap SHARE to send it elsewhere.`, 'ok');
     } catch {
       flashToast('Save failed', 'error');
     }
@@ -323,25 +348,35 @@ export function useDeck(): DeckState {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background' || nextState === 'inactive') {
         if (recState.isRecording) {
-          // Snapshot duration before stop — recState updates may not propagate
-          // before we read the URI.
-          const durSec = (recState.durationMillis ?? 0) / 1000;
           (async () => {
+            // v1.0.1 BUG-5 — race-guard. If a foreground stopRecord (or the
+            // 5-min cap) was already mid-flight, bail; whichever finishes
+            // first owns the take, no clobber.
+            if (recordingClosingRef.current) return;
+            recordingClosingRef.current = true;
             try {
-              await recorder.stop();
-            } catch {
-              // If stop itself blew up there's nothing to salvage.
-              return;
+              try {
+                await recorder.stop();
+              } catch {
+                // If stop itself blew up there's nothing to salvage.
+                return;
+              }
+              // v1.0.1 BUG-5 — capture URI + duration AFTER stop resolves
+              // (mirrors stopRecord). Old code snapshotted durSec pre-stop
+              // which could be stale by tens of ms.
+              const uri = recorder.uri;
+              if (!uri) return;
+              const durSec = (recState.durationMillis ?? 0) / 1000;
+              if (durSec < MIN_VALID_TAKE_SEC) return; // drop orphan silently
+              disposePlayer();
+              setTake({
+                uri,
+                durationSec: durSec,
+                capturedAtMs: Date.now(),
+              });
+            } finally {
+              recordingClosingRef.current = false;
             }
-            const uri = recorder.uri;
-            if (!uri) return;
-            if (durSec < MIN_VALID_TAKE_SEC) return; // drop orphan silently
-            disposePlayer();
-            setTake({
-              uri,
-              durationSec: durSec,
-              capturedAtMs: Date.now(),
-            });
           })();
         }
         const p = playerRef.current;
