@@ -74,6 +74,15 @@ export function makeStyles(C: ThemePalette) {
     paddingHorizontal: 24,
     paddingVertical: 14,
   },
+  // Header zone used in the navigator-based layout (v0.9.3+). Sits ABOVE
+  // the bottom-tab navigator and persists across tabs. Matches the
+  // horizontal padding of `faceplateTabbed`, no flex (size hugs content), no
+  // bottom padding because the navigator's scene padding picks up there.
+  faceplateHeader: {
+    backgroundColor: C.face,
+    paddingHorizontal: 24,
+    paddingTop: 14,
+  },
 
   // Top bar — column flex so row1 and row2 stack vertically. Tight padding
   // per the spec ("tiny pad").

@@ -26,6 +26,10 @@ import {
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { NavigationContainer } from '@react-navigation/native';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 
 import { useAudioEngine } from './src/useAudioEngine';
 import type { DisplayMode } from './src/useAudioEngine';
@@ -62,6 +66,12 @@ import {
 import type { NoteDisplay } from './src/tunerWidgets';
 import { TabBar } from './src/components/TabBar';
 import type { TabKey } from './src/components/TabBar';
+
+// Tab navigator — created at module scope, react-navigation pattern. Routes
+// are named with the same lower-case keys our TabBar interface uses, so the
+// adapter at the bottom of this file can map both directions without a
+// translation table.
+const Tab = createBottomTabNavigator();
 import { TunerScreen } from './src/screens/TunerScreen';
 import { MetroScreen } from './src/screens/MetroScreen';
 import { DeckScreen } from './src/screens/DeckScreen';
@@ -106,13 +116,19 @@ export default function App() {
     // transition doesn't flash white on a dark theme.
     return <View style={{ flex: 1, backgroundColor: palette.bg }} />;
   }
+  // GestureHandlerRootView must be at the absolute root so any descendant
+  // gesture-handler primitives (used by react-navigation's tab gestures and,
+  // later, by @gorhom/bottom-sheet for the drag-to-dismiss modals) can claim
+  // touches. Required even though we don't currently use GH directly.
   return (
-    <SafeAreaProvider>
-      <ThemeProvider value={palette}>
-        <StatusBar style={statusBarStyle} />
-        <AppInner engine={engine} />
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider value={palette}>
+          <StatusBar style={statusBarStyle} />
+          <AppInner engine={engine} />
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -124,7 +140,11 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
 
   // ----- top-level state -----
 
-  const [tab, setTab] = useState<TabKey>('tuner');
+  // Tab state is owned by react-navigation now — we don't keep a local copy.
+  // The TabBar at the bottom of the navigator reads its active route from
+  // the navigator's state via the BottomTabBarProps adapter at the foot of
+  // this file.
+
   const [refHz, setRefHz] = useState(REF_HZ_DEFAULT);
 
   // Modals owned by App (transient overlays, not screens).
@@ -343,9 +363,59 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
 
   // ----- Render -----
 
+  // Inline TunerScreen wrapper — pulls all its props from the closure so we
+  // don't have to add a context layer. The four wrappers below do the same.
+  // react-navigation re-renders each on focus change (and on each parent
+  // re-render while focused), so closure-fresh props arrive every frame.
+  const renderTunerScreen = () => (
+    <TunerScreen
+      engine={engine}
+      refHz={refHz}
+      noteDisplay={noteDisplay}
+      isLandscape={isLandscape}
+      noteFontSize={noteFontSize}
+      isOutOfRange={isOutOfRange}
+      displayMode={displayMode}
+      transp={transp}
+      fillAnim={fillAnim}
+      peakAnim={peakAnim}
+      showDebugOverlay={showDebugOverlay}
+      drone={drone}
+      droneVolume={droneVolume}
+      droneSemitones={droneSemitones}
+      setDroneVolume={setDroneVolume}
+      setDroneSemitones={setDroneSemitones}
+    />
+  );
+  const renderMetroScreen = () => (
+    <MetroScreen metro={metro} metroStyle={engine.metroStyle} outputRoute={engine.metroOutputRoute} />
+  );
+  const renderDeckScreen = () => (
+    <DeckScreen deck={deck} deckStyle={engine.deckStyle} />
+  );
+  const renderSetupScreen = () => (
+    <SetupScreen
+      engine={engine}
+      refHz={refHz}
+      setRefHz={(v) => {
+        setRefHz(v);
+        engine.savePrefsNow({ refHz: v }).catch(() => {});
+      }}
+      showDebugOverlay={showDebugOverlay}
+      setShowDebugOverlay={handleSetShowDebugOverlay}
+      onOpenPipes={() => setPipesOpen(true)}
+      onOpenRangeEditor={() => setRangeEditorOpen(true)}
+      onEditHornName={() => { setHornNameDraft(engine.nickname); setHornNameEdit(true); }}
+      droneVoice={droneVoice}
+      setDroneVoice={setDroneVoice}
+    />
+  );
+
   return (
     <View style={styles.rootTabbed}>
-      <View style={styles.faceplateTabbed}>
+      {/* Persistent header — TopBar + banners stay visible across all tabs
+          (architecturally, they sit OUTSIDE the navigator). */}
+      <View style={styles.faceplateHeader}>
         <TopBar
           status={engine.status}
           streamErrorReason={engine.streamErrorReason}
@@ -373,50 +443,29 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
             onRelease={() => AutoMicClaim.endTunerCallAsync().catch(() => {})}
           />
         )}
-
-        {/* Active screen */}
-        {tab === 'tuner' && (
-          <TunerScreen
-            engine={engine}
-            refHz={refHz}
-            noteDisplay={noteDisplay}
-            isLandscape={isLandscape}
-            noteFontSize={noteFontSize}
-            isOutOfRange={isOutOfRange}
-            displayMode={displayMode}
-            transp={transp}
-            fillAnim={fillAnim}
-            peakAnim={peakAnim}
-            showDebugOverlay={showDebugOverlay}
-            drone={drone}
-            droneVolume={droneVolume}
-            droneSemitones={droneSemitones}
-            setDroneVolume={setDroneVolume}
-            setDroneSemitones={setDroneSemitones}
-          />
-        )}
-        {tab === 'metro' && <MetroScreen metro={metro} metroStyle={engine.metroStyle} outputRoute={engine.metroOutputRoute} />}
-        {tab === 'deck'  && <DeckScreen  deck={deck}   deckStyle={engine.deckStyle} />}
-        {tab === 'setup' && (
-          <SetupScreen
-            engine={engine}
-            refHz={refHz}
-            setRefHz={(v) => {
-              setRefHz(v);
-              engine.savePrefsNow({ refHz: v }).catch(() => {});
-            }}
-            showDebugOverlay={showDebugOverlay}
-            setShowDebugOverlay={handleSetShowDebugOverlay}
-            onOpenPipes={() => setPipesOpen(true)}
-            onOpenRangeEditor={() => setRangeEditorOpen(true)}
-            onEditHornName={() => { setHornNameDraft(engine.nickname); setHornNameEdit(true); }}
-            droneVoice={droneVoice}
-            setDroneVoice={setDroneVoice}
-          />
-        )}
       </View>
 
-      <TabBar active={tab} onChange={setTab} />
+      {/* Navigator. Each screen lives in its own route; the bottom TabBar
+          comes from the `tabBar` prop (our existing custom TabBar via the
+          NavTabBar adapter). `sceneStyle` applies the per-screen padding
+          we used to get from `faceplateTabbed`. Android back from a non-
+          initial tab returns to the initial tab now, which is the standard
+          tab-app expectation. */}
+      <NavigationContainer>
+        <Tab.Navigator
+          initialRouteName="tuner"
+          screenOptions={{
+            headerShown: false,
+            sceneStyle: { backgroundColor: C.face, paddingHorizontal: 24 },
+          }}
+          tabBar={(p) => <NavTabBar {...p} />}
+        >
+          <Tab.Screen name="tuner">{renderTunerScreen}</Tab.Screen>
+          <Tab.Screen name="metro">{renderMetroScreen}</Tab.Screen>
+          <Tab.Screen name="deck">{renderDeckScreen}</Tab.Screen>
+          <Tab.Screen name="setup">{renderSetupScreen}</Tab.Screen>
+        </Tab.Navigator>
+      </NavigationContainer>
 
       {/* Modals — visible across tabs as overlays. */}
       <InstrumentPicker
@@ -476,5 +525,26 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
         setDraft={setHornNameDraft}
       />
     </View>
+  );
+}
+
+/**
+ * Adapter — translates react-navigation's BottomTabBarProps to our custom
+ * TabBar's `{ active, onChange }` interface. The route names registered on
+ * Tab.Navigator are already our TabKey values, so the mapping is identity.
+ *
+ * `navigation.navigate(route)` is the standard way to switch tabs; it also
+ * lets Android's back button restore the previous tab (the navigator owns
+ * a history stack for tab switches when you opt in via `backBehavior`).
+ */
+function NavTabBar(props: BottomTabBarProps) {
+  const active = props.state.routes[props.state.index].name as TabKey;
+  return (
+    <TabBar
+      active={active}
+      onChange={(next) => {
+        props.navigation.navigate(next as never);
+      }}
+    />
   );
 }
