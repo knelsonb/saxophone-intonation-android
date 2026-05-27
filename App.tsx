@@ -276,13 +276,28 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   const peakAnim = useRef(new Animated.Value(IDLE_GLOW)).current;
   const peakVal = useRef(IDLE_GLOW);
   const peakTs = useRef(Date.now());
+  // PPM/VU convention: latch the peak, hold for 2 s so the eye can read
+  // it, THEN decay. Pre-v0.9.8 the peak retreated on the very next render,
+  // making the indicator useless for transients.
+  const peakHoldUntilRef = useRef(0);
 
+  const nowMs = Date.now();
   const mf = Math.max(IDLE_GLOW, engine.meterFill);
-  const elapsed = (Date.now() - peakTs.current) / 1000;
-  const decayed = Math.max(IDLE_GLOW, peakVal.current - PEAK_DECAY_PER_SEC * elapsed);
-  const newPeak = Math.max(decayed, mf);
+  let newPeak: number;
+  if (mf >= peakVal.current) {
+    // New peak — latch and refresh the hold window.
+    newPeak = mf;
+    peakHoldUntilRef.current = nowMs + 2000;
+  } else if (nowMs < peakHoldUntilRef.current) {
+    // Still inside the hold window — freeze.
+    newPeak = peakVal.current;
+  } else {
+    // Decay phase — same rate as before but only after the hold expires.
+    const elapsed = (nowMs - peakTs.current) / 1000;
+    newPeak = Math.max(IDLE_GLOW, peakVal.current - PEAK_DECAY_PER_SEC * elapsed);
+  }
   peakVal.current = newPeak;
-  peakTs.current = Date.now();
+  peakTs.current = nowMs;
   Animated.spring(fillAnim, { toValue: mf, useNativeDriver: false, damping: 10, stiffness: 260, mass: 0.2 }).start();
   Animated.timing(peakAnim, { toValue: newPeak, duration: 60, useNativeDriver: false }).start();
 

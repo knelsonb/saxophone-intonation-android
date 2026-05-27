@@ -61,10 +61,8 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
 
   return (
     <View style={{ flex: 1 }}>
-      <View style={styles.screenHeader}>
-        <Text style={styles.screenTitle}>DECK</Text>
-        <Text style={styles.screenSubtitle}>Record · review · save</Text>
-      </View>
+      {/* v0.9.8 — `screenHeader` ("DECK" + subtitle) removed for the same
+          reason as METRO: tab bar already names this tab. */}
 
       {/* Visualisation strip */}
       {deckStyle === 'waveform' ? (
@@ -87,6 +85,7 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
         <ReelsDisplay
           spinning={isRecording || isPlaying}
           clockSec={clockSec}
+          durationSec={dur > 0 ? dur : null}
           statusLine={statusLine}
           highlightClock={isRecording}
         />
@@ -127,7 +126,7 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
               <Text style={styles.deckPlayBtnText}>{isPlaying ? '||' : '▶'}</Text>
             </Pressable>
             <View
-              style={styles.deckScrubTrack}
+              style={styles.deckScrubOuter}
               onLayout={(e) => { trackWidthRef.current = e.nativeEvent.layout.width; }}
               onStartShouldSetResponder={() => true}
               onMoveShouldSetResponder={() => true}
@@ -136,8 +135,10 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
               accessibilityRole="adjustable"
               accessibilityLabel={`Playback position. ${mmss(deck.playPos)} of ${mmss(dur)}.`}
             >
-              <View style={[styles.deckScrubFill, { width: `${frac * 100}%` }]} />
-              <View style={[styles.deckScrubKnob, { left: `${frac * 100}%` }]} />
+              <View style={styles.deckScrubTrack}>
+                <View style={[styles.deckScrubFill, { width: `${frac * 100}%` }]} />
+              </View>
+              <View style={[styles.deckScrubKnob, { left: `${frac * 100}%` }]} pointerEvents="none" />
             </View>
           </View>
           <View style={styles.deckTimecodes}>
@@ -145,15 +146,12 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
             <Text style={styles.deckTimecode}>{mmss(dur)}</Text>
           </View>
 
+          {/* v0.9.8 — SAVE/CLEAR hierarchy: SAVE is the dominant accent-fill
+              destination action (wider, taller, on the LEFT — primary
+              position). CLEAR is a smaller secondary destructive action
+              with thin red outline on the RIGHT, so accidental taps on
+              SAVE don't hit CLEAR. */}
           <View style={styles.deckActionRow}>
-            <Pressable
-              onPress={deck.clearTake}
-              accessibilityRole="button"
-              accessibilityLabel="Clear the current take"
-              style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnDanger, pressed && styles.deckActionBtnPressed]}
-            >
-              <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextDanger]}>CLEAR</Text>
-            </Pressable>
             <Pressable
               onPress={() => deck.saveTake().catch(() => {})}
               accessibilityRole="button"
@@ -161,6 +159,14 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
               style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnPrimary, pressed && styles.deckActionBtnPressed]}
             >
               <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextPrimary]}>SAVE</Text>
+            </Pressable>
+            <Pressable
+              onPress={deck.clearTake}
+              accessibilityRole="button"
+              accessibilityLabel="Clear the current take"
+              style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnDanger, pressed && styles.deckActionBtnPressed]}
+            >
+              <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextDanger]}>CLEAR</Text>
             </Pressable>
           </View>
         </View>

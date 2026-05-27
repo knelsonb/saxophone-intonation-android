@@ -241,17 +241,28 @@ export function makeStyles(C: ThemePalette) {
   arcScaleRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   arcEnd: { color: C.inkDim, fontSize: 11, letterSpacing: 2, fontVariant: ['tabular-nums'] },
   arcCenterLabel: { color: C.inkMid, fontSize: 11, letterSpacing: 2, fontVariant: ['tabular-nums'] },
-  arcTrack: { height: 38, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', position: 'relative' },
-  arcTick: { width: 1, height: 10, backgroundColor: C.inkVeryDim },
-  arcTickMajor: { height: 18, backgroundColor: C.inkDim },
-  arcTickCenter: { width: 2, height: 26, backgroundColor: C.inkMid },
-  arcTickActive: { backgroundColor: C.accent },
-  arcNeedle: { position: 'absolute', top: 0, bottom: 0, width: 2, marginLeft: -1, backgroundColor: C.accent },
+  // v0.9.8 CentArc rebuild — zones MOVED BEHIND the ticks (was a 2dp
+  // hairline underneath at 35 % opacity, essentially invisible). The
+  // track is now 56dp tall, zones fill it as a backdrop at 0.45–0.55
+  // opacity, and the tick marks render on top in high-contrast ink
+  // colors. The needle is widened to 4dp + tagged with a colored tip so
+  // it can no longer be confused with an active tick.
+  arcTrack: { height: 56, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', position: 'relative', borderRadius: 2, overflow: 'hidden' },
+  arcZonesBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, flexDirection: 'row' },
+  arcTick: { width: 1, height: 12, backgroundColor: C.inkMid, opacity: 0.7, zIndex: 1 },
+  // Sub-major: tick mark at ±25 — the labels reference these positions and
+  // they need visible weight beneath the label text.
+  arcTickSubMajor: { width: 1.5, height: 20, backgroundColor: C.ink, opacity: 0.85 },
+  arcTickMajor: { width: 2, height: 28, backgroundColor: C.ink },
+  arcTickCenter: { width: 3, height: 36, backgroundColor: C.ink },
+  arcTickActive: { opacity: 1 },
+  arcNeedle: { position: 'absolute', top: 0, bottom: 0, width: 4, marginLeft: -2, backgroundColor: C.accent, borderRadius: 2, zIndex: 10, shadowColor: C.accent, shadowOpacity: 0.6, shadowRadius: 3, elevation: 4 },
+  arcNeedleTip: { position: 'absolute', top: -4, left: -4, width: 12, height: 12, borderRadius: 6, backgroundColor: C.accent, zIndex: 11 },
   arcZones: { flexDirection: 'row', marginTop: 4, height: 2 },
-  arcZone: { height: 2 },
-  arcZoneFlat: { flex: 35, backgroundColor: C.flat, opacity: 0.35 },
-  arcZoneInTune: { flex: 30, backgroundColor: C.inTune, opacity: 0.5 },
-  arcZoneSharp: { flex: 35, backgroundColor: C.sharp, opacity: 0.35 },
+  arcZone: { height: '100%' },
+  arcZoneFlat: { flex: 35, backgroundColor: C.flat, opacity: 0.45 },
+  arcZoneInTune: { flex: 30, backgroundColor: C.inTune, opacity: 0.55 },
+  arcZoneSharp: { flex: 35, backgroundColor: C.sharp, opacity: 0.45 },
 
   noteBlock: { alignItems: 'center', marginTop: 12 },
   noteRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'center' },
@@ -448,12 +459,27 @@ export function makeStyles(C: ThemePalette) {
   filterPillTextActive: { color: C.onAccent },
   bottomLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, marginBottom: 2 },
   meterLabel: { marginTop: 8 },
-  meterTrack: { height: 10, backgroundColor: C.bg, borderColor: C.edge, borderWidth: 1, borderRadius: 1, overflow: 'hidden', position: 'relative' },
+  meterTrack: { height: 12, backgroundColor: C.bg, borderColor: C.edge, borderWidth: 1, borderRadius: 1, overflow: 'hidden', position: 'relative' },
+  // v0.9.8 — colored zones underneath the fill. Standard digital-meter
+  // convention: green up to -12 dB (0–80 % of a 60 dB scale), amber to
+  // -3 dB (80–95 %), red to 0 dB (95–100 %). All three zones are always
+  // rendered at full width; the `meterDim` overlay above darkens the
+  // portion BEYOND the current fill, so only zones up-to-fill are visible.
+  meterZoneGreen: { position: 'absolute', top: 0, bottom: 0, left: '0%',  width: '80%', backgroundColor: C.inTune, opacity: 0.85 },
+  meterZoneAmber: { position: 'absolute', top: 0, bottom: 0, left: '80%', width: '15%', backgroundColor: C.accent, opacity: 0.9 },
+  meterZoneRed:   { position: 'absolute', top: 0, bottom: 0, left: '95%', width: '5%',  backgroundColor: C.sharp,  opacity: 0.9 },
+  // Dim overlay — `left` is animated to current fill %, `right: 0` fixed.
+  meterDim:       { position: 'absolute', top: 0, bottom: 0, right: 0, backgroundColor: C.bg, opacity: 0.82 },
   meterFill: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: C.accent, opacity: 0.85 },
-  peakMark: { position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: C.ink },
-  meterTick: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: C.edge },
-  meterTickHot: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: C.accent, opacity: 0.6 },
-  meterScale: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
+  peakMark: { position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: C.ink, zIndex: 5 },
+  meterTick: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: C.inkDim, opacity: 0.7, zIndex: 4 },
+  meterTickHot: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: C.sharp, opacity: 0.8, zIndex: 4 },
+  // v0.9.8 — scale labels positioned by absolute % offsets aligned to the
+  // tick positions, not space-between. Previously "-6 dB" labelled the
+  // 100 % column despite its tick sitting at 90 %.
+  meterScale: { position: 'relative', height: 14, marginTop: 4 },
+  meterScaleLabel: { position: 'absolute', top: 0, color: C.inkDim, fontSize: 9, letterSpacing: 1, fontVariant: ['tabular-nums'] },
+  meterScaleLabelHot: { color: C.sharp, fontWeight: '700' },
   meterScaleTick: { color: C.inkDim, fontSize: 9, letterSpacing: 1, fontVariant: ['tabular-nums'] },
   meterScaleTickHot: { color: C.accent },
   bottomRight: { alignItems: 'flex-end', minWidth: 120 },
@@ -540,7 +566,26 @@ export function makeStyles(C: ThemePalette) {
   screenScrollContent: { paddingBottom: 24 },
 
   // METRO ----------------------------------------------------------------
-  metroBpmRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 4 },
+  // v0.9.8 — BPM numeral + stepper buttons live on a single row, with the
+  // steppers FLANKING the number rather than sitting below it. This makes
+  // them feel like the BPM's satellite controls (real hardware metronomes
+  // put +/− right next to the tempo readout) instead of an editor panel
+  // that interrupts the eye path between BPM and the beat visual.
+  metroBpmRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 4 },
+  metroBpmFlankStepper: {
+    minWidth: 48,
+    minHeight: 48,
+    paddingHorizontal: 10,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: C.edge,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metroBpmFlankStepperAccent: { borderColor: C.accent },
+  metroBpmFlankStepperPressed: { backgroundColor: C.edge },
+  metroBpmFlankStepperText: { color: C.ink, fontSize: 14, fontWeight: '700', letterSpacing: 1 },
+  metroBpmFlankStepperTextAccent: { color: C.accent },
   // BPM tightened from 88/92 → 64/68 — the heroic display was eating ~24dp
   // that MetroScreen needed to stay inside the body budget on Pixel 9 Pro.
   metroBpmDisplay: {
@@ -610,27 +655,25 @@ export function makeStyles(C: ThemePalette) {
   metroTapText: { color: C.accent, fontSize: 14, letterSpacing: 4, fontWeight: '700' },
   metroTapHint: { color: C.inkDim, fontSize: 10, letterSpacing: 1, marginTop: 4 },
 
-  // Tightened in v0.9.6 from paddingV 18 / minHeight 64. v0.9.7 nudged
-  // paddingV 12 → 14 and minHeight 52 → 56 — the v0.9.6 size made the
-  // primary START/STOP visually subordinate to the secondary TAP button
-  // (minHeight 56), and primary should never read as smaller than
-  // secondary. MetroScreen still has ~80dp of slack after the v0.9.6
-  // shaves so the extra 4dp here costs nothing.
+  // v0.9.8 — primary START/STOP gets the dominant treatment a real metronome's
+  // start button has: minHeight 72, solid colored fill (not bordered), and
+  // a larger font. Previously matched TAP's 56dp size and used a faint
+  // background tint, so both buttons read as equal peers. Now START
+  // unambiguously reads as the headline action.
   metroPrimary: {
     marginTop: 12,
-    paddingVertical: 14,
-    borderRadius: 4,
-    borderWidth: 1,
+    paddingVertical: 18,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 56,
+    minHeight: 72,
   },
-  metroPrimaryIdle: { borderColor: C.accent, backgroundColor: C.face },
-  metroPrimaryActive: { borderColor: C.sharp, backgroundColor: C.dangerTint },
-  metroPrimaryPressed: { opacity: 0.75 },
-  metroPrimaryText: { fontSize: 16, letterSpacing: 6, fontWeight: '700' },
-  metroPrimaryTextIdle: { color: C.accent },
-  metroPrimaryTextActive: { color: C.sharp },
+  metroPrimaryIdle: { backgroundColor: C.accent },
+  metroPrimaryActive: { backgroundColor: C.sharp },
+  metroPrimaryPressed: { opacity: 0.8 },
+  metroPrimaryText: { fontSize: 20, letterSpacing: 8, fontWeight: '800' },
+  metroPrimaryTextIdle: { color: C.onAccent },
+  metroPrimaryTextActive: { color: C.bg },
 
   metroLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, marginTop: 12, textAlign: 'center', fontWeight: '700' },
 
@@ -663,7 +706,9 @@ export function makeStyles(C: ThemePalette) {
   },
   deckRecordBtnActive: { backgroundColor: C.sharp },
   deckRecordBtnPressed: { opacity: 0.8 },
-  deckRecordBtnText: { color: C.sharp, fontSize: 14, letterSpacing: 4, fontWeight: '800' },
+  // v0.9.8 — fontSize 14 → 22. The RECORD label was timid inside a 140dp
+  // circle; on a real tape deck RECORD is the dominant typographic element.
+  deckRecordBtnText: { color: C.sharp, fontSize: 22, letterSpacing: 4, fontWeight: '800' },
   deckRecordBtnTextActive: { color: C.bg },
 
   deckPlaybackCard: {
@@ -683,20 +728,46 @@ export function makeStyles(C: ThemePalette) {
   },
   deckPlayBtnPressed: { opacity: 0.7 },
   deckPlayBtnText: { color: C.accent, fontSize: 22, fontWeight: '700' },
-  deckScrubTrack: { flex: 1, height: 12, backgroundColor: C.edgeSoft, borderRadius: 6, overflow: 'hidden', position: 'relative' },
+  // Scrubber rebuilt v0.9.8: previously the 20×20 knob was clipped by the
+  // 12dp-tall track's `overflow: 'hidden'` and a `top: -4` that pushed it
+  // above the rail. Net effect — the knob was invisible/non-functional.
+  // Now the OUTER container is the gesture target (24dp tall for fingers),
+  // the inner track holds only the fill (with rounded clipping), and the
+  // knob is a sibling rendered ON TOP of the track so it can extend
+  // visibly above and below.
+  deckScrubOuter: { flex: 1, height: 24, justifyContent: 'center', position: 'relative' },
+  deckScrubTrack: { height: 8, backgroundColor: C.edgeSoft, borderRadius: 4, overflow: 'hidden', position: 'relative' },
   deckScrubFill: { position: 'absolute', top: 0, bottom: 0, left: 0, backgroundColor: C.accent, opacity: 0.7 },
-  deckScrubKnob: { position: 'absolute', top: -4, width: 20, height: 20, borderRadius: 10, backgroundColor: C.accent, marginLeft: -10 },
+  deckScrubKnob: { position: 'absolute', top: 0, width: 24, height: 24, borderRadius: 12, backgroundColor: C.accent, marginLeft: -12, borderColor: C.face, borderWidth: 2 },
   deckTimecodes: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   deckTimecode: { color: C.inkMid, fontSize: 11, fontVariant: ['tabular-nums'], letterSpacing: 1 },
 
-  deckActionRow: { flexDirection: 'row', gap: 10, marginTop: 16, justifyContent: 'center', flexWrap: 'wrap' },
+  // v0.9.8 — SAVE / CLEAR hierarchy rebuilt. Previously identical size
+  // (minWidth 110, equal padding) — users went for SAVE on the right and
+  // hit CLEAR by accident. Now SAVE has the dominant treatment (solid
+  // accent fill, wider) and CLEAR is a smaller subordinate destructive
+  // outlined button.
+  deckActionRow: { flexDirection: 'row', gap: 10, marginTop: 16, justifyContent: 'center', flexWrap: 'wrap', alignItems: 'center' },
   deckActionBtn: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 4, borderWidth: 1, borderColor: C.edge, minHeight: 44, alignItems: 'center', justifyContent: 'center', minWidth: 110 },
-  deckActionBtnPrimary: { borderColor: C.accent, backgroundColor: C.face },
-  deckActionBtnDanger:  { borderColor: C.sharp,  backgroundColor: 'transparent' },
+  deckActionBtnPrimary: {
+    backgroundColor: C.accent,
+    borderColor: C.accent,
+    minWidth: 160,
+    minHeight: 52,
+    paddingHorizontal: 24,
+  },
+  deckActionBtnDanger:  {
+    backgroundColor: 'transparent',
+    borderColor: C.sharp,
+    minWidth: 80,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
   deckActionBtnPressed: { opacity: 0.7 },
   deckActionBtnText: { color: C.inkMid, fontSize: 12, letterSpacing: 2, fontWeight: '700' },
-  deckActionBtnTextPrimary: { color: C.accent },
-  deckActionBtnTextDanger:  { color: C.sharp },
+  deckActionBtnTextPrimary: { color: C.onAccent, fontSize: 14, letterSpacing: 4, fontWeight: '800' },
+  deckActionBtnTextDanger:  { color: C.sharp, fontSize: 11, letterSpacing: 2 },
 
   deckToast: {
     position: 'absolute',

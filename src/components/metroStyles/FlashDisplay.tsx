@@ -5,7 +5,7 @@
  * band director standing at the back of the rehearsal room.
  */
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
 
@@ -22,20 +22,35 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
   const styles = useMemo(() => makeStyles(C), [C]);
   const halfBeatMs = Math.max(50, Math.min(1000, (60000 / Math.max(1, bpm)) * 0.5));
 
-  // v0.9.1 — useNativeDriver: true. Only `opacity` is interpolated by the
-  // Animated value; `backgroundColor` is set discretely per beat and is
-  // safe to leave on the JS thread. Native-driving the opacity ramp removes
-  // JS-frame jitter from the visual peak, keeping the audio calibration
-  // honest.
+  // v0.9.8 flash rebuild:
+  //   • Peak opacity goes to 1.0 (was 0.85 — the background bled through
+  //     and the flash never read as ON across the room).
+  //   • Color is SNAPSHOTTED inside the effect so we can't race the next
+  //     beat's color into the current decay tween. Previously
+  //     `beat === 1 ? inTune : accent` was read at render time and could
+  //     swap mid-fade when pulse advanced before the beat re-render landed.
+  //   • Easing.out(Easing.quad) front-loads brightness — bright snap, sharp
+  //     cut — replacing the gentle linear dissolve that read as a pulse.
+  // useNativeDriver: true (opacity transform only).
   const flashAnim = useRef(new Animated.Value(0)).current;
+  const flashColorRef = useRef(C.accent);
+  const [flashBg, setFlashBg] = React.useState(C.accent);
   useEffect(() => {
     if (!running || pulse === 0) return;
+    const color = beat === 1 ? C.inTune : C.accent;
+    flashColorRef.current = color;
+    setFlashBg(color);
     flashAnim.setValue(1);
-    Animated.timing(flashAnim, { toValue: 0, duration: halfBeatMs, useNativeDriver: true }).start();
+    Animated.timing(flashAnim, {
+      toValue: 0,
+      duration: halfBeatMs,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pulse, running, halfBeatMs, flashAnim]);
 
-  const flashBg = beat === 1 ? C.inTune : C.accent;
-  const opacityInterp = flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.85] });
+  const opacityInterp = flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
   return (
     <View style={styles.root}>

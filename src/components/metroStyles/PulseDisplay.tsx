@@ -1,10 +1,16 @@
 /**
  * PulseDisplay — Boss DB-90 / school band class style metronome visual.
  *
- * A row of N dots (one per beat in the current time signature). The current
- * beat's dot fills with `C.accent` (or `C.inTune` on the downbeat); previous
- * dots fade. Plus a small centre disc that throbs on each beat — gives the
- * eye a tasteful "heartbeat" cue even from a glance.
+ * v0.9.8 rebuild: the previous version had a row of dots AND a separate
+ * pulsing disc, which created two competing visual signals. A real DB-90
+ * lights ONE dot per beat — the lit dot IS the beat. We dropped the disc
+ * entirely; the dot just scales briefly on activation as a "blink."
+ *
+ * Dots are 12dp with 8dp gaps (tightly grouped, like real hardware LEDs).
+ * The downbeat dot is the SAME size as the others; differentiation is
+ * COLOR ONLY (inTune green vs accent amber). The prior 26-vs-22 size
+ * caused the row to shift horizontally between beats 1 and 2-N — a layout
+ * jitter that read as a bug.
  */
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
@@ -14,6 +20,9 @@ import type { ThemePalette } from '../../theme';
 const BEATS_OF_SIG: Record<string, number> = {
   '2/4': 2, '3/4': 3, '4/4': 4, '6/8': 6,
 };
+
+const DOT_SIZE = 12;
+const DOT_GAP = 8;
 
 export interface PulseDisplayProps {
   running: boolean;
@@ -28,19 +37,14 @@ export function PulseDisplay({ running, beat, pulse, timeSig }: PulseDisplayProp
 
   const beats = BEATS_OF_SIG[timeSig] ?? 4;
 
-  // Throb: one Animated.Value bumped to 1 on each pulse, decays to 0.
-  // v0.9.1 — useNativeDriver: true. We only interpolate `scale` (transform)
-  // and `opacity`, both of which the UI thread can drive without bouncing
-  // back to JS. `backgroundColor` is read separately by React (discrete
-  // per-beat switch between accent / inTune) so it's not on the animation
-  // path. Native-driving the throb removes the JS-frame jitter from the
-  // visual peak — critical for the calibration math to be honest.
-  const throbAnim = useRef(new Animated.Value(0)).current;
+  // The lit dot pulses briefly (scale 1.0 → 1.6 → 1.0) on each beat.
+  // useNativeDriver: true — scale is transform-only.
+  const pulseAnim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
     if (!running || pulse === 0) return;
-    throbAnim.setValue(1);
-    Animated.timing(throbAnim, { toValue: 0, duration: 280, useNativeDriver: true }).start();
-  }, [pulse, running, throbAnim]);
+    pulseAnim.setValue(1.6);
+    Animated.timing(pulseAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+  }, [pulse, running, pulseAnim]);
 
   return (
     <View style={styles.root}>
@@ -48,34 +52,19 @@ export function PulseDisplay({ running, beat, pulse, timeSig }: PulseDisplayProp
         {Array.from({ length: beats }).map((_, i) => {
           const isActive = running && i === beat - 1;
           const isDownbeat = i === 0;
+          const activeColor = isDownbeat ? C.inTune : C.accent;
           return (
-            <View
+            <Animated.View
               key={i}
               style={[
                 styles.dot,
-                isDownbeat && styles.dotDownbeat,
-                isActive && isDownbeat && styles.dotActiveDownbeat,
-                isActive && !isDownbeat && styles.dotActive,
+                isActive && { backgroundColor: activeColor, borderColor: activeColor, transform: [{ scale: pulseAnim }] },
               ]}
               accessibilityRole="image"
-              accessibilityLabel={`Beat ${i + 1} ${isActive ? '(now)' : ''}`}
+              accessibilityLabel={`Beat ${i + 1}${isActive ? ' (now)' : ''}`}
             />
           );
         })}
-      </View>
-
-      {/* Throb disc */}
-      <View style={styles.throbWrap}>
-        <Animated.View
-          style={[
-            styles.throbDisc,
-            {
-              transform: [{ scale: throbAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1.15] }) }],
-              opacity: throbAnim.interpolate({ inputRange: [0, 1], outputRange: [0.25, 1] }),
-              backgroundColor: beat === 1 ? C.inTune : C.accent,
-            },
-          ]}
-        />
       </View>
 
       <Text style={styles.label}>
@@ -88,22 +77,13 @@ export function PulseDisplay({ running, beat, pulse, timeSig }: PulseDisplayProp
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
     root: { alignItems: 'center', marginTop: 8, marginBottom: 12 },
-    dotRow: { flexDirection: 'row', gap: 16, marginBottom: 16 },
+    dotRow: { flexDirection: 'row', gap: DOT_GAP, marginBottom: 16 },
     dot: {
-      width: 22, height: 22, borderRadius: 11,
+      width: DOT_SIZE, height: DOT_SIZE, borderRadius: DOT_SIZE / 2,
       backgroundColor: 'transparent',
-      borderWidth: 2,
+      borderWidth: 1.5,
       borderColor: C.edge,
     },
-    dotDownbeat: { width: 26, height: 26, borderRadius: 13, borderColor: C.inkDim },
-    dotActive: { backgroundColor: C.accent, borderColor: C.accent },
-    dotActiveDownbeat: { backgroundColor: C.inTune, borderColor: C.inTune },
-    // Shrunk in v0.9.6 from 110×110/96×96 → 80×80/72×72 to give MetroScreen
-    // back ~30dp of vertical budget. The throb disc is still the most
-    // prominent visual cue on the page; no need for it to be a half-screen
-    // dot.
-    throbWrap: { width: 80, height: 80, alignItems: 'center', justifyContent: 'center' },
-    throbDisc: { width: 72, height: 72, borderRadius: 36 },
     label: { color: C.inkDim, fontSize: 11, letterSpacing: 3, marginTop: 6, fontWeight: '700' },
   });
 }

@@ -440,12 +440,16 @@ export function CentArc({
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
   const ticks = useMemo(() => {
-    const arr: { major: boolean; center: boolean }[] = [];
+    const arr: { major: boolean; center: boolean; subMajor: boolean }[] = [];
     for (let i = 0; i < CENT_TICK_COUNT; i++) {
       const c = -CENT_RANGE + (i * CENT_RANGE * 2) / (CENT_TICK_COUNT - 1);
       const center = Math.abs(c) < 0.001;
       const major = center || c === -CENT_RANGE || c === CENT_RANGE;
-      arr.push({ major, center });
+      // v0.9.8 — sub-major ticks at -25 and +25 so the label grid has
+      // matching tick weight beneath it. Previously the labels at -25 and
+      // +25 hovered above featureless minor ticks, breaking visual grammar.
+      const subMajor = !major && (c === -CENT_RANGE / 2 || c === CENT_RANGE / 2);
+      arr.push({ major, center, subMajor });
     }
     return arr;
   }, []);
@@ -478,11 +482,21 @@ export function CentArc({
         <Text style={styles.arcEnd}>+50</Text>
       </View>
       <View style={styles.arcTrack}>
+        {/* Zone backdrop — sits BEHIND the ticks. Previously a 2dp hairline
+            below the track at ~35 % opacity, which read as a thin border
+            instead of a tuning-zone indicator. Now fills the track at
+            ~50 % opacity so the eye lands on the colored zones first. */}
+        <View style={styles.arcZonesBackdrop}>
+          <View style={[styles.arcZone, styles.arcZoneFlat]} />
+          <View style={[styles.arcZone, styles.arcZoneInTune]} />
+          <View style={[styles.arcZone, styles.arcZoneSharp]} />
+        </View>
         {ticks.map((t, i) => (
           <View
             key={i}
             style={[
               styles.arcTick,
+              t.subMajor && styles.arcTickSubMajor,
               t.major && styles.arcTickMajor,
               t.center && styles.arcTickCenter,
               i === needleIdx && needleActive && styles.arcTickActive,
@@ -501,11 +515,6 @@ export function CentArc({
             },
           ]}
         />
-      </View>
-      <View style={styles.arcZones}>
-        <View style={[styles.arcZone, styles.arcZoneFlat]} />
-        <View style={[styles.arcZone, styles.arcZoneInTune]} />
-        <View style={[styles.arcZone, styles.arcZoneSharp]} />
       </View>
     </View>
   );
@@ -539,21 +548,33 @@ export function BottomStrip({
         )}
         <Text style={[styles.bottomLabel, styles.meterLabel]}>INPUT</Text>
         <View style={styles.meterTrack}>
+          {/* v0.9.8 — three-zone background. Green up to −12 dB, amber to
+              −3 dB, red to 0 dB. The dim overlay covers the portion of
+              the track BEYOND the current fill, so the zones only show
+              up-to-fill. Real mixer/interface meters look exactly like
+              this. */}
+          <View style={styles.meterZoneGreen} />
+          <View style={styles.meterZoneAmber} />
+          <View style={styles.meterZoneRed} />
           <Animated.View
-            style={[styles.meterFill, { width: fillAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]}
+            style={[styles.meterDim, { left: fillAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]}
           />
           <Animated.View
             style={[styles.peakMark, { left: peakAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]}
           />
           <View style={[styles.meterTick, { left: `${tickPct(-40)}%` }]} />
           <View style={[styles.meterTick, { left: `${tickPct(-20)}%` }]} />
-          <View style={[styles.meterTickHot, { left: `${tickPct(-6)}%` }]} />
+          <View style={[styles.meterTick, { left: `${tickPct(-12)}%` }]} />
+          <View style={[styles.meterTickHot, { left: `${tickPct(-3)}%` }]} />
         </View>
+        {/* Scale labels — absolutely positioned at exact tick percentages
+            so they sit DIRECTLY under their ticks. */}
         <View style={styles.meterScale}>
-          <Text style={styles.meterScaleTick}>-60</Text>
-          <Text style={styles.meterScaleTick}>-40</Text>
-          <Text style={styles.meterScaleTick}>-20</Text>
-          <Text style={[styles.meterScaleTick, styles.meterScaleTickHot]}>-6 dB</Text>
+          <Text style={[styles.meterScaleLabel, { left: '0%' }]}>-60</Text>
+          <Text style={[styles.meterScaleLabel, { left: `${tickPct(-40)}%`, marginLeft: -8 }]}>-40</Text>
+          <Text style={[styles.meterScaleLabel, { left: `${tickPct(-20)}%`, marginLeft: -8 }]}>-20</Text>
+          <Text style={[styles.meterScaleLabel, { left: `${tickPct(-12)}%`, marginLeft: -8 }]}>-12</Text>
+          <Text style={[styles.meterScaleLabel, styles.meterScaleLabelHot, { left: `${tickPct(-3)}%`, marginLeft: -10 }]}>-3 dB</Text>
         </View>
       </View>
       <View style={styles.bottomRight}>

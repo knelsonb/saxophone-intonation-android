@@ -44,11 +44,13 @@ export function LedRowDisplay({ noteDisplay, freqHz, noteFontSize, isOutOfRange 
   const ledAnimsRef = useRef<Animated.Value[]>(
     Array.from({ length: LED_COUNT }, () => new Animated.Value(0)),
   );
+  // v0.9.8 snap-to-one: a real Boss TU-3 lights exactly ONE LED — no
+  // neighbour glow. The previous 35% neighbour bleed read as a VU meter
+  // bar, not a stage-tuner pedal. Targets are now binary 0/1; the 50 ms
+  // timing keeps the transition smooth as cents cross boundaries.
   useEffect(() => {
     ledAnimsRef.current.forEach((v, i) => {
-      let target = 0;
-      if (i === litIndex) target = 1;
-      else if (Math.abs(i - litIndex) === 1) target = 0.35;
+      const target = i === litIndex ? 1 : 0;
       Animated.timing(v, { toValue: target, duration: 50, useNativeDriver: false }).start();
     });
   }, [litIndex]);
@@ -101,23 +103,27 @@ export function LedRowDisplay({ noteDisplay, freqHz, noteFontSize, isOutOfRange 
         {centsText}<Text style={styles.centsUnit}> ¢</Text>
       </Text>
 
-      {/* The LED row */}
+      {/* The LED row. v0.9.8 — all LEDs are now uniform size (the center
+          dot used to be 4dp larger, which broke the "uniform grid" feel
+          of a real TU-3). The in-tune state is communicated by COLOR
+          only. Each slot is a stack: an unlit "well" (faint outline,
+          always visible — preserves the 11-slot layout) + the lit LED
+          on top, opacity 0 when off and 1 when on. This is the snap
+          behavior a guitarist expects from a pedalboard tuner. */}
       <View style={styles.row}>
         {ledAnimsRef.current.map((v, i) => (
-          <Animated.View
-            key={i}
-            style={[
-              styles.led,
-              i === inTuneIndex && styles.ledCenter,
-              {
-                backgroundColor: ledColor(i),
-                opacity: v.interpolate({
-                  inputRange: [0, 0.35, 1],
-                  outputRange: [0.12, 0.45, 1],
-                }),
-              },
-            ]}
-          />
+          <View key={i} style={styles.ledSlot}>
+            <View style={styles.ledWell} />
+            <Animated.View
+              style={[
+                styles.led,
+                {
+                  backgroundColor: ledColor(i),
+                  opacity: v,
+                },
+              ]}
+            />
+          </View>
         ))}
       </View>
 
@@ -160,12 +166,26 @@ function makeStyles(C: ThemePalette) {
       gap: LED_GAP,
       marginTop: 4,
     },
+    ledSlot: {
+      width: LED_DIAMETER,
+      height: LED_DIAMETER,
+      position: 'relative',
+    },
+    ledWell: {
+      position: 'absolute',
+      width: LED_DIAMETER,
+      height: LED_DIAMETER,
+      borderRadius: LED_DIAMETER / 2,
+      borderColor: C.edge,
+      borderWidth: 1,
+      backgroundColor: C.bg,
+    },
     led: {
+      position: 'absolute',
       width: LED_DIAMETER,
       height: LED_DIAMETER,
       borderRadius: LED_DIAMETER / 2,
     },
-    ledCenter: { width: LED_DIAMETER + 4, height: LED_DIAMETER + 4, borderRadius: (LED_DIAMETER + 4) / 2 },
     baselineWrap: {
       width: '100%',
       maxWidth: (LED_DIAMETER + LED_GAP) * LED_COUNT,

@@ -15,8 +15,11 @@ import type { ThemePalette } from '../../theme';
 import type { NoteDisplay } from '../../tunerWidgets';
 
 const STRIP_HEIGHT = 120;
-const BAR_WIDTH = 6;
-const BAR_GAP = 14;
+// v0.9.8 duty cycle 50/50 — real Peterson strobe gratings are equal
+// bar/gap, which makes the moving pattern read as an optical field rather
+// than a railroad-tie picket fence. Previous 6/14 (30% duty) didn't strobe.
+const BAR_WIDTH = 10;
+const BAR_GAP = 10;
 const PERIOD = BAR_WIDTH + BAR_GAP;
 const BAR_COUNT = 24; // enough to fully cover any reasonable screen width
 
@@ -52,7 +55,13 @@ export function StrobeDisplay({ noteDisplay, freqHz, isOutOfRange }: StrobeDispl
       if (cancelled) return;
       const c = centsRef.current;
       if (c !== null && Math.abs(c) > 0.5) {
-        offsetRef.current = (offsetRef.current + c * PX_PER_FRAME_PER_CENT) % PERIOD;
+        // v0.9.8 sign flip — bars are drawn at `i * PERIOD - offset`, so a
+        // POSITIVE offset shifts them LEFT and a NEGATIVE offset shifts
+        // them RIGHT. Sharp (positive cents) should drift RIGHT per the
+        // legend below; the prior `+ c * PX...` formula inverted this and
+        // told the user to tune the wrong way — a lying tuner is worse
+        // than no tuner. Subtracting c restores correct directionality.
+        offsetRef.current = (offsetRef.current - c * PX_PER_FRAME_PER_CENT) % PERIOD;
         // Keep offset in (-PERIOD, +PERIOD)
         if (offsetRef.current < 0) offsetRef.current += PERIOD;
         setOffset(offsetRef.current);

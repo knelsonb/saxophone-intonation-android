@@ -1,20 +1,31 @@
 /**
- * PendulumDisplay — Wittner-style vintage mechanical metronome.
+ * PendulumDisplay — Wittner pyramid metronome.
  *
- * A trapezoid body sits below a swinging arm with a small weight bead near
- * the top. The arm pivots from a point inside the body and swings ±26° at
- * the BPM rate. Each beat coincides with the arm reaching one of its two
- * extremes — the visual "tick" lands on the audio click.
+ * v0.9.8 rebuild after a fidelity review found three breakages:
+ *   1. The pivot was rendered ABOVE the body, so the arm appeared to hang
+ *      in mid-air. A real Wittner has the pivot embedded ~12dp INSIDE the
+ *      body's top edge — the arm visibly emerges from a pivot hole in the
+ *      body.
+ *   2. Body-to-arm ratio was 1:2 (small body, tall stick) — a real Wittner
+ *      is body-dominant (the pyramid mass is the visual anchor; the arm
+ *      protrudes above by maybe 60-80% of the body height).
+ *   3. The "trapezoid" was a rectangle with a smaller rectangle cap —
+ *      visibly stepped, not tapered. We now stack 6 progressively narrower
+ *      slats to give a proper tapered silhouette without an SVG dep.
  *
- * Timing model: each `pulse` increment fires an Animated.timing from the
- * current side (-1 or +1) to the opposite. Duration = 60000 / bpm ms, so the
- * arm reaches the new extreme exactly as the next pulse fires. We use
- * `Easing.inOut(Easing.sin)` for a natural pendulum feel — slow at the
- * extremes, fast at the centre.
+ * Geometry (numbers in display-pixels):
+ *   frame:   220 × 180
+ *   body:    six 14dp slats, widths 150/130/110/95/80/65 (bottom → top)
+ *            → body height 84dp, base 150dp, top 65dp
+ *   pivot:   12dp inside the top of the body, accent-colored
+ *   arm:     starts at pivot, extends ~90dp upward (visible above body
+ *            ~ 78dp, i.e. ~93% of body height — close to 1:1 protrusion)
+ *   weight:  18dp bead, ~14dp below the top of the arm
  *
- * `useNativeDriver: true` — rotation is a transform-only animation so the
- * arm can be driven on the UI thread, keeping the apex phase honest against
- * the calibration math in useMetronome.ts.
+ * Timing model unchanged from prior: each `pulse` increment fires an
+ * Animated.timing toward the opposite extreme over one beat interval
+ * (60000/bpm ms), with Easing.inOut(Easing.sin) for a natural pendulum
+ * feel. useNativeDriver: true.
  */
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
@@ -22,16 +33,23 @@ import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
 
 const SWING_DEG = 26;
-const ARM_HEIGHT = 130;
-const ARM_WIDTH = 3;
+
+// Body — 6 slats stacked bottom (widest) → top (narrowest).
+const SLAT_H = 14;
+const SLAT_WIDTHS = [150, 130, 110, 95, 80, 65];
+const BODY_H = SLAT_H * SLAT_WIDTHS.length; // 84dp
+
+// Pivot lives 12dp inside the body from its top edge.
+const PIVOT_FROM_BODY_TOP = 12;
+
+// Arm length from the pivot upward.
+const ARM_H = 96;
+const ARM_W = 4;
 const BEAD_SIZE = 18;
-const BEAD_FROM_TOP = 18;
+const BEAD_FROM_ARM_TOP = 14;
 
-const BODY_BASE_W = 130;
-const BODY_TOP_W = 70;
-const BODY_H = 70;
-
-const PIVOT_FROM_BODY_TOP = 6;
+const FRAME_W = 220;
+const FRAME_H = ARM_H + BODY_H - PIVOT_FROM_BODY_TOP + 4;
 
 export interface PendulumDisplayProps {
   running: boolean;
@@ -44,12 +62,10 @@ export function PendulumDisplay({ running, beat, pulse, bpm }: PendulumDisplayPr
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
 
-  // -1 = left extreme, +1 = right extreme. Held across renders.
+  // -1 = left extreme, +1 = right extreme.
   const armAnim = useRef(new Animated.Value(1)).current;
   const sideRef = useRef<1 | -1>(1);
 
-  // Swing on every pulse increment. Duration matches the beat interval so
-  // the arm lands at the next extreme just as the click sounds.
   useEffect(() => {
     if (!running || pulse === 0) return;
     sideRef.current = sideRef.current === 1 ? -1 : 1;
@@ -62,8 +78,6 @@ export function PendulumDisplay({ running, beat, pulse, bpm }: PendulumDisplayPr
     }).start();
   }, [pulse, running, bpm, armAnim]);
 
-  // When the user stops the metronome, settle the arm back to vertical so
-  // the visual rest state isn't tilted.
   useEffect(() => {
     if (!running) {
       sideRef.current = 1;
@@ -83,28 +97,56 @@ export function PendulumDisplay({ running, beat, pulse, bpm }: PendulumDisplayPr
 
   return (
     <View style={styles.root}>
-      <View style={styles.frame} accessibilityRole="image" accessibilityLabel={running ? `Mechanical metronome swinging at ${bpm} beats per minute` : 'Mechanical metronome (idle)'}>
-        {/* Pendulum arm + weight. Wrapped in an outer View whose top sits at
-            the pivot; the arm rotates around that wrapper's top edge by
-            virtue of being anchored there. transformOrigin: 'top center'. */}
+      <View
+        style={styles.frame}
+        accessibilityRole="image"
+        accessibilityLabel={running
+          ? `Mechanical metronome swinging at ${bpm} beats per minute`
+          : 'Mechanical metronome (idle)'}
+      >
+        {/* Body — six tapered slats. Rendered first so the arm draws on
+            top. The slats are absolute-positioned to stack from the
+            bottom of the frame upward. */}
+        {SLAT_WIDTHS.map((w, i) => (
+          <View
+            key={i}
+            style={[
+              styles.slat,
+              {
+                width: w,
+                bottom: i * SLAT_H,
+              },
+            ]}
+          />
+        ))}
+
+        {/* Arm wrap. Bottom of wrap sits at the pivot location. Rotation
+            origin is the bottom-center, so the arm pivots around that
+            point. Arm and weight live inside the wrap, anchored at its
+            bottom — they extend UPWARD as the wrap's content. */}
         <Animated.View
-          style={[styles.armWrap, { transform: [{ rotate: armRotation }] }]}
+          style={[
+            styles.armWrap,
+            {
+              bottom: BODY_H - PIVOT_FROM_BODY_TOP,
+              transform: [{ rotate: armRotation }],
+            },
+          ]}
         >
           <View style={styles.arm} />
           <View style={styles.weight} />
         </Animated.View>
 
-        {/* Trapezoid body (drawn with the standard RN border trick — a View
-            with zero width and angled left/right borders forms the sides). */}
-        <View style={styles.body}>
-          <View style={styles.bodyTopCap} />
-          <View style={styles.pivotDot} />
-        </View>
+        {/* Pivot dot — drawn on top of the body so it's visible. */}
+        <View
+          style={[
+            styles.pivotDot,
+            { bottom: BODY_H - PIVOT_FROM_BODY_TOP - 4 },
+          ]}
+        />
       </View>
 
-      <Text style={styles.label}>
-        {running ? `BEAT ${beat}` : 'STOPPED'}
-      </Text>
+      <Text style={styles.label}>{running ? `BEAT ${beat}` : 'STOPPED'}</Text>
     </View>
   );
 }
@@ -114,82 +156,64 @@ function makeStyles(C: ThemePalette) {
     root: { alignItems: 'center', marginTop: 8, marginBottom: 12 },
 
     frame: {
-      width: 200,
-      height: ARM_HEIGHT + BODY_H + 12,
+      width: FRAME_W,
+      height: FRAME_H,
       alignItems: 'center',
       justifyContent: 'flex-end',
+      position: 'relative',
     },
 
-    // Arm wrapper — pivot is its TOP-CENTER. transformOrigin shifts the
-    // rotation centre so the swing pivots from the apex of the body rather
-    // than the centre of the View.
-    armWrap: {
+    slat: {
       position: 'absolute',
-      top: ARM_HEIGHT - PIVOT_FROM_BODY_TOP,
-      width: ARM_WIDTH * 4,
-      height: ARM_HEIGHT,
-      alignItems: 'center',
-      transformOrigin: 'top center',
-    },
-    arm: {
-      width: ARM_WIDTH,
-      height: ARM_HEIGHT - BEAD_SIZE - 4,
-      backgroundColor: C.inkMid,
-      borderRadius: ARM_WIDTH / 2,
-      position: 'absolute',
-      top: BEAD_SIZE / 2,
-      left: (ARM_WIDTH * 4 - ARM_WIDTH) / 2,
-    },
-    weight: {
-      width: BEAD_SIZE,
-      height: BEAD_SIZE,
-      borderRadius: 3,
-      backgroundColor: C.accent,
-      position: 'absolute',
-      top: BEAD_FROM_TOP,
-      left: (ARM_WIDTH * 4 - BEAD_SIZE) / 2,
-      borderWidth: 1,
-      borderColor: C.edge,
-    },
-
-    // The trapezoid is rendered by overlaying two pieces: a wider rectangle
-    // base + a narrower cap on top. With contrasting widths and aligned
-    // centers it reads as a trapezoid silhouette without needing the (less
-    // portable) borderTopWidth trick.
-    body: {
-      width: BODY_BASE_W,
-      height: BODY_H,
+      height: SLAT_H,
       backgroundColor: C.face,
       borderColor: C.edge,
-      borderWidth: 1,
-      borderTopLeftRadius: 0,
-      borderTopRightRadius: 0,
-      borderBottomLeftRadius: 4,
-      borderBottomRightRadius: 4,
-      alignItems: 'center',
-    },
-    bodyTopCap: {
-      position: 'absolute',
-      top: -1,
-      width: BODY_TOP_W,
-      height: 14,
-      backgroundColor: C.face,
-      borderTopColor: C.edge,
-      borderLeftColor: C.edge,
-      borderRightColor: C.edge,
       borderTopWidth: 1,
       borderLeftWidth: 1,
       borderRightWidth: 1,
-      borderTopLeftRadius: 4,
-      borderTopRightRadius: 4,
+      // No bottom border on intermediate slats — the slat below covers
+      // the seam, giving a continuous body silhouette.
     },
-    pivotDot: {
+
+    // Wrap is a thin, tall container whose BOTTOM lives at the pivot. The
+    // arm and bead are children that lay out from the bottom upward.
+    // transformOrigin shifts the rotation centre to the bottom-center.
+    armWrap: {
       position: 'absolute',
-      top: 8,
-      width: 6,
-      height: 6,
+      width: ARM_W * 4,
+      height: ARM_H,
+      alignItems: 'center',
+      transformOrigin: 'bottom center',
+    },
+    arm: {
+      position: 'absolute',
+      bottom: 0,
+      width: ARM_W,
+      height: ARM_H - 2,
+      backgroundColor: C.inkMid,
+      borderRadius: ARM_W / 2,
+      left: (ARM_W * 4 - ARM_W) / 2,
+    },
+    weight: {
+      position: 'absolute',
+      top: BEAD_FROM_ARM_TOP,
+      width: BEAD_SIZE,
+      height: BEAD_SIZE * 0.7,
       borderRadius: 3,
       backgroundColor: C.accent,
+      borderWidth: 1,
+      borderColor: C.edge,
+      left: (ARM_W * 4 - BEAD_SIZE) / 2,
+    },
+
+    pivotDot: {
+      position: 'absolute',
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: C.accent,
+      borderWidth: 1,
+      borderColor: C.bg,
     },
 
     label: { color: C.inkDim, fontSize: 11, letterSpacing: 3, marginTop: 6, fontWeight: '700' },

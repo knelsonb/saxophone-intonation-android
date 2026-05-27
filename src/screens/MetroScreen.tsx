@@ -38,10 +38,9 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
 
   return (
     <View style={{ flex: 1 }}>
-      <View style={styles.screenHeader}>
-        <Text style={styles.screenTitle}>METRO</Text>
-        <Text style={styles.screenSubtitle}>Tempo, tap, time signature, start</Text>
-      </View>
+      {/* v0.9.8 — `screenHeader` ("METRO" + subtitle) removed. The bottom tab
+          bar already labels this screen; the duplicate title stole ~48dp
+          for zero information. */}
 
       {/* Bluetooth A2DP buffering is fundamentally late (~200 ms). The hook
           compensates by pre-rolling the click, but a 200 ms lead is enough
@@ -57,9 +56,26 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
         </View>
       )}
 
-      {/* BPM display. The "BEATS / MIN" caption was killed in v0.9.5 — the
-          large numeral on a metronome tab is self-explanatory. */}
+      {/* BPM numeral FLANKED by stepper buttons. v0.9.8 — previously the
+          steppers sat on a separate row underneath the BPM, intercepting
+          the eye path between BPM and the beat visualization. */}
       <View style={styles.metroBpmRow}>
+        <Pressable
+          onPress={() => metro.bumpBpm(-5)}
+          accessibilityRole="button"
+          accessibilityLabel="Decrease tempo by 5 BPM"
+          style={({ pressed }) => [styles.metroBpmFlankStepper, pressed && styles.metroBpmFlankStepperPressed]}
+        >
+          <Text style={styles.metroBpmFlankStepperText}>−5</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => metro.bumpBpm(-1)}
+          accessibilityRole="button"
+          accessibilityLabel="Decrease tempo by 1 BPM"
+          style={({ pressed }) => [styles.metroBpmFlankStepper, styles.metroBpmFlankStepperAccent, pressed && styles.metroBpmFlankStepperPressed]}
+        >
+          <Text style={[styles.metroBpmFlankStepperText, styles.metroBpmFlankStepperTextAccent]}>−1</Text>
+        </Pressable>
         <Text
           style={styles.metroBpmDisplay}
           numberOfLines={1}
@@ -68,41 +84,21 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
         >
           {metro.bpm}
         </Text>
-      </View>
-
-      {/* BPM ± steppers */}
-      <View style={styles.metroBpmStepRow}>
-        <Pressable
-          onPress={() => metro.bumpBpm(-5)}
-          accessibilityRole="button"
-          accessibilityLabel="Decrease tempo by 5 BPM"
-          style={({ pressed }) => [styles.metroStepBtn, pressed && styles.metroStepBtnPressed]}
-        >
-          <Text style={styles.metroStepBtnText}>−5</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => metro.bumpBpm(-1)}
-          accessibilityRole="button"
-          accessibilityLabel="Decrease tempo by 1 BPM"
-          style={({ pressed }) => [styles.metroStepBtn, styles.metroStepBtnAccent, pressed && styles.metroStepBtnPressed]}
-        >
-          <Text style={[styles.metroStepBtnText, styles.metroStepBtnTextAccent]}>−1</Text>
-        </Pressable>
         <Pressable
           onPress={() => metro.bumpBpm(1)}
           accessibilityRole="button"
           accessibilityLabel="Increase tempo by 1 BPM"
-          style={({ pressed }) => [styles.metroStepBtn, styles.metroStepBtnAccent, pressed && styles.metroStepBtnPressed]}
+          style={({ pressed }) => [styles.metroBpmFlankStepper, styles.metroBpmFlankStepperAccent, pressed && styles.metroBpmFlankStepperPressed]}
         >
-          <Text style={[styles.metroStepBtnText, styles.metroStepBtnTextAccent]}>+1</Text>
+          <Text style={[styles.metroBpmFlankStepperText, styles.metroBpmFlankStepperTextAccent]}>+1</Text>
         </Pressable>
         <Pressable
           onPress={() => metro.bumpBpm(5)}
           accessibilityRole="button"
           accessibilityLabel="Increase tempo by 5 BPM"
-          style={({ pressed }) => [styles.metroStepBtn, pressed && styles.metroStepBtnPressed]}
+          style={({ pressed }) => [styles.metroBpmFlankStepper, pressed && styles.metroBpmFlankStepperPressed]}
         >
-          <Text style={styles.metroStepBtnText}>+5</Text>
+          <Text style={styles.metroBpmFlankStepperText}>+5</Text>
         </Pressable>
       </View>
       {/* Visualisation wrapped in flex:1 so any future content variance is

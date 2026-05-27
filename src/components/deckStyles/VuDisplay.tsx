@@ -30,7 +30,26 @@ const DIAL_H = 70;
 const NEEDLE_LEN = 62;
 const REST_DEG = -55;   // needle resting at far left
 const PEAK_DEG = 55;    // needle at right peak
-const RED_FROM_DEG = 30;
+// v0.9.8 — 0 VU is at ~70% across the arc (degree +22), not at the 30°
+// mark which sat at ~80%. Sifam-spec red zone starts AT 0 VU.
+const RED_FROM_DEG = 22;
+// Tick index where 0 VU lives — i/10 * (PEAK_DEG - REST_DEG) + REST_DEG = +22
+// when i = 7. So indices 7..10 are the red zone.
+const RED_FROM_INDEX = 7;
+
+// Label positions (relative dial position 0..1, label text). The values
+// follow VU-spec proportional spacing — -20 at far left, then increasingly
+// dense toward 0 VU near 70% across, ending at +3.
+const SCALE_LABELS: { pos: number; text: string; red: boolean }[] = [
+  { pos: 0.00, text: '-20', red: false },
+  { pos: 0.30, text: '-10', red: false },
+  { pos: 0.50, text: '-7',  red: false },
+  { pos: 0.58, text: '-5',  red: false },
+  { pos: 0.64, text: '-3',  red: false },
+  { pos: 0.70, text: '0',   red: false },
+  { pos: 0.80, text: '+1',  red: true },
+  { pos: 1.00, text: '+3',  red: true },
+];
 
 // VU target update cadence — every 60ms a fresh random walk target is
 // chosen and the needle eases toward it. Slow enough that the animation
@@ -99,10 +118,30 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
     const id = setInterval(() => {
       const lNext = synthEnvelope(mode, -0.04, clockSec, lPrev.current);
       const rNext = synthEnvelope(mode, +0.04, clockSec, rPrev.current);
+      const lAttacking = lNext > lPrev.current;
+      const rAttacking = rNext > rPrev.current;
       lPrev.current = lNext;
       rPrev.current = rNext;
-      Animated.timing(lAnim, { toValue: lNext, duration: 250, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
-      Animated.timing(rAnim, { toValue: rNext, duration: 250, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+      // v0.9.8 — asymmetric ballistics matching real VU spec:
+      //   • Attack (target > prev): fast, ~200 ms, Easing.out so the
+      //     needle snaps toward the new peak.
+      //   • Decay (target < prev): slow, ~600 ms, Easing.in so the
+      //     needle lingers near peak before falling — same mechanical
+      //     "stickiness" a Sifam meter has.
+      // The previous symmetric inOut.quad made attack and decay feel
+      // identical and electronic.
+      Animated.timing(lAnim, {
+        toValue: lNext,
+        duration: lAttacking ? 200 : 600,
+        easing: lAttacking ? Easing.out(Easing.quad) : Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+      Animated.timing(rAnim, {
+        toValue: rNext,
+        duration: rAttacking ? 200 : 600,
+        easing: rAttacking ? Easing.out(Easing.quad) : Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
       setTick((t) => t + 1);
     }, TICK_MS);
     return () => clearInterval(id);
@@ -120,8 +159,10 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
             We draw 11 ticks spread across the dial; the rightmost three are
             in the "red" zone. */}
         {Array.from({ length: 11 }).map((_, i) => {
-          const isRed = i >= 8;
-          const isMajor = [0, 3, 6, 8, 10].includes(i);
+          // v0.9.8 — red zone starts at the tick at 0 VU (index 7), not
+          // index 8 (which sat past 0 VU).
+          const isRed = i >= RED_FROM_INDEX;
+          const isMajor = [0, 3, 5, 7, 10].includes(i);
           const angle = REST_DEG + ((i / 10) * (PEAK_DEG - REST_DEG));
           return (
             <View
@@ -155,9 +196,31 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
           ]}
         />
 
-        <Text style={[styles.scaleText, styles.scaleTextLeft]}>-20</Text>
-        <Text style={[styles.scaleText, styles.scaleTextMid]}>0</Text>
-        <Text style={[styles.scaleText, styles.scaleTextRight]}>+3</Text>
+        {/* v0.9.8 — 8 scale labels positioned along the arc instead of 3
+            at hardcoded pixel offsets. Each label rotates around the
+            dial pivot (bottom-center) by its target angle, then
+            translates outward — same transform stack as the ticks so
+            labels track tick positions. */}
+        {SCALE_LABELS.map((sl) => {
+          const angle = REST_DEG + sl.pos * (PEAK_DEG - REST_DEG);
+          return (
+            <Text
+              key={sl.text}
+              style={[
+                styles.scaleText,
+                sl.red && styles.scaleTextRed,
+                {
+                  transform: [
+                    { rotate: `${angle}deg` },
+                    { translateY: -DIAL_H + 22 },
+                  ],
+                },
+              ]}
+            >
+              {sl.text}
+            </Text>
+          );
+        })}
 
         <Animated.View
           style={[
@@ -252,15 +315,18 @@ function makeStyles(C: ThemePalette) {
 
     scaleText: {
       position: 'absolute',
-      color: C.inkDim,
-      fontSize: 8,
-      letterSpacing: 0.5,
+      bottom: 0,
+      left: DIAL_W / 2 - 6,
+      width: 12,
+      textAlign: 'center',
+      color: C.inkMid,
+      fontSize: 7,
+      letterSpacing: 0.3,
       fontVariant: ['tabular-nums'],
       fontWeight: '700',
+      transformOrigin: 'bottom center',
     },
-    scaleTextLeft:  { left: 6,  bottom: 4 },
-    scaleTextMid:   { left: DIAL_W / 2 - 4, top: 6 },
-    scaleTextRight: { right: 6, bottom: 4, color: C.sharp },
+    scaleTextRed: { color: C.sharp },
 
     label: { color: C.inkDim, fontSize: 10, letterSpacing: 3, marginTop: 10, fontWeight: '700' },
 
