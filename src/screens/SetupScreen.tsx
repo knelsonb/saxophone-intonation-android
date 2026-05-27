@@ -377,7 +377,7 @@ export function SetupScreen(props: SetupScreenProps) {
           <View style={{ flex: 1 }}>
             <Text style={styles.settingsRowLabel}>Visual</Text>
             <Text style={styles.settingsRowHint}>
-              PULSE is the dot row + throb. FLASH lights the screen on every beat. PENDULUM is deferred to a follow-up release.
+              PULSE is the dot row + throb. FLASH lights the screen on every beat. PENDULUM is the vintage mechanical swing.
             </Text>
           </View>
           <View style={styles.settingsToggle}>
@@ -472,7 +472,7 @@ export function SetupScreen(props: SetupScreenProps) {
           <View style={{ flex: 1 }}>
             <Text style={styles.settingsRowLabel}>Visual</Text>
             <Text style={styles.settingsRowHint}>
-              REELS is twin tape spools. WAVEFORM is a minimalist scope with a playhead. VU meters are deferred to a follow-up release.
+              REELS is twin tape spools that jog with the scrubber. WAVEFORM is a minimalist scope with a playhead. VU is twin analog needles with ballistic bounce.
             </Text>
           </View>
           <View style={styles.settingsToggle}>

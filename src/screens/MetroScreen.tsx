@@ -15,7 +15,6 @@ import React, { useMemo } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
-import { BPM_MIN, BPM_MAX } from '../useMetronome';
 import type { MetronomeState, TimeSig } from '../useMetronome';
 import { PulseDisplay } from '../components/metroStyles/PulseDisplay';
 import { FlashDisplay } from '../components/metroStyles/FlashDisplay';
@@ -58,7 +57,8 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
         </View>
       )}
 
-      {/* BPM display */}
+      {/* BPM display. The "BEATS / MIN" caption was killed in v0.9.5 — the
+          large numeral on a metronome tab is self-explanatory. */}
       <View style={styles.metroBpmRow}>
         <Text
           style={styles.metroBpmDisplay}
@@ -69,7 +69,6 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
           {metro.bpm}
         </Text>
       </View>
-      <Text style={[styles.metroBpmUnit, { textAlign: 'center' }]}>BEATS / MIN</Text>
 
       {/* BPM ± steppers */}
       <View style={styles.metroBpmStepRow}>
@@ -106,12 +105,11 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
           <Text style={styles.metroStepBtnText}>+5</Text>
         </Pressable>
       </View>
-      <Text style={[styles.metroBpmUnit, { textAlign: 'center', marginTop: 6 }]}>
-        Range {BPM_MIN}–{BPM_MAX}
-      </Text>
+      {/* (Range caption removed in v0.9.5 — was static reference info that
+          stopped being useful after the user's first session.) */}
 
       {/* The chosen visualisation. PULSE = dots+throb, FLASH = full-area
-          colour flash, PENDULUM = deferred to a follow-up release. */}
+          colour flash, PENDULUM = vintage mechanical swing. */}
       {metroStyle === 'flash' ? (
         <FlashDisplay
           running={metro.running}

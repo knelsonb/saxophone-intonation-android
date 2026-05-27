@@ -362,7 +362,11 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   }
 
   const showSilenceBanner = (engine.micSilenced ?? false) && !bannerDismissed;
-  const noteFontSize = isLandscape ? 180 : 150;
+  // Cap portrait note glyph at 130dp — was 150dp, but on Pixel 9 Pro the
+  // 150dp letter + the rest of TunerScreen overflowed the body budget by
+  // ~34dp in worst-case (drone open + out-of-range pill + non-listening
+  // status). 130dp keeps the readout dominant without clipping.
+  const noteFontSize = isLandscape ? 180 : 130;
 
   // ----- Render -----
 
@@ -388,6 +392,10 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       droneSemitones={droneSemitones}
       setDroneVolume={setDroneVolume}
       setDroneSemitones={setDroneSemitones}
+      carState={carState}
+      callState={callState}
+      onClaimMic={handleClaimMic}
+      onReleaseMic={() => AutoMicClaim.endTunerCallAsync().catch(() => {})}
     />
   );
   const renderMetroScreen = () => (
@@ -439,13 +447,10 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
         {showSilenceBanner && (
           <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
         )}
-        {carState === 'connected' && (
-          <TunerInCarSwitch
-            callState={callState}
-            onClaim={handleClaimMic}
-            onRelease={() => AutoMicClaim.endTunerCallAsync().catch(() => {})}
-          />
-        )}
+        {/* TunerInCarSwitch was previously rendered here for every tab when
+            a car was connected — wasting ~64dp on METRO/DECK/SETUP where
+            you can't claim the mic anyway. Moved into TunerScreen so it
+            only appears where it's actionable. */}
       </View>
 
       {/* Navigator. Each screen lives in its own route; the bottom TabBar

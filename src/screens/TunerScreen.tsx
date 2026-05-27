@@ -20,6 +20,7 @@ import { makeStyles } from '../uiShared';
 import {
   BottomStrip, BucketStatsCard,
   TapToLogCta, PeakSlideToggle, SessionStrip, DiagnosticLine,
+  TunerInCarSwitch,
 } from '../tunerWidgets';
 import type { NoteDisplay } from '../tunerWidgets';
 import { CentArcDisplay } from '../components/tunerStyles/CentArcDisplay';
@@ -28,6 +29,7 @@ import { LedRowDisplay } from '../components/tunerStyles/LedRowDisplay';
 import type { useAudioEngine } from '../useAudioEngine';
 import type { DisplayMode } from '../useAudioEngine';
 import type { DroneState } from '../useDrone';
+import type { CarConnectionState, CallState } from '../../modules/auto-mic-claim';
 
 export interface TunerScreenProps {
   engine: ReturnType<typeof useAudioEngine>;
@@ -47,6 +49,13 @@ export interface TunerScreenProps {
   droneSemitones: number;
   setDroneVolume: (v: number) => void;
   setDroneSemitones: (n: number) => void;
+  // Android Auto in-car mic claim. Previously lived in the persistent
+  // header (visible on all tabs); now scoped to TUNER only since claiming
+  // / releasing the mic is meaningless from METRO / DECK / SETUP.
+  carState: CarConnectionState;
+  callState: CallState;
+  onClaimMic: () => void;
+  onReleaseMic: () => void;
 }
 
 export function TunerScreen(props: TunerScreenProps) {
@@ -69,6 +78,10 @@ export function TunerScreen(props: TunerScreenProps) {
     droneSemitones,
     setDroneVolume,
     setDroneSemitones,
+    carState,
+    callState,
+    onClaimMic,
+    onReleaseMic,
   } = props;
   void isLandscape;
 
@@ -83,6 +96,13 @@ export function TunerScreen(props: TunerScreenProps) {
 
   return (
     <View style={{ flex: 1 }}>
+      {carState === 'connected' && (
+        <TunerInCarSwitch
+          callState={callState}
+          onClaim={onClaimMic}
+          onRelease={onReleaseMic}
+        />
+      )}
       <View style={centerStyle}>
         {engine.peakLock ? (
           engine.freqHz === null ? (

@@ -106,13 +106,18 @@ export function makeStyles(C: ThemePalette) {
     gap: 12,
     flexShrink: 0,
   },
+  // BELLCURVE wordmark — sits at the top of the persistent header. The
+  // padding here is purely visual breathing room around the glyphs; we used
+  // to lean heavier (paddingTop:20 / paddingBottom:18) but that ate 22dp
+  // from the body budget on every tab. The current values give the wordmark
+  // air without crowding the controls below.
   brand: {
     color: C.ink,
     fontSize: 28,
     letterSpacing: 8,
     fontWeight: '800',
-    paddingTop: 20,
-    paddingBottom: 18,
+    paddingTop: 8,
+    paddingBottom: 6,
     paddingHorizontal: 4,
     textAlign: 'left',
   },
@@ -535,15 +540,17 @@ export function makeStyles(C: ThemePalette) {
   screenScrollContent: { paddingBottom: 24 },
 
   // METRO ----------------------------------------------------------------
-  metroBpmRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 8 },
+  metroBpmRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 4 },
+  // BPM tightened from 88/92 → 64/68 — the heroic display was eating ~24dp
+  // that MetroScreen needed to stay inside the body budget on Pixel 9 Pro.
   metroBpmDisplay: {
     color: C.ink,
-    fontSize: 88,
+    fontSize: 64,
     fontWeight: '300',
-    letterSpacing: -2,
+    letterSpacing: -1,
     fontVariant: ['tabular-nums'],
-    lineHeight: 92,
-    minWidth: 220,
+    lineHeight: 68,
+    minWidth: 180,
     textAlign: 'center',
   },
   metroBpmUnit: { color: C.inkDim, fontSize: 14, letterSpacing: 4, marginTop: -6 },
@@ -706,7 +713,13 @@ export function makeStyles(C: ThemePalette) {
   },
   deckEmptyText: { color: C.inkDim, fontSize: 13, letterSpacing: 1, textAlign: 'center', lineHeight: 22 },
 
-  deckConfirmRoot: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
+  // Absolute overlay — covers the whole DeckScreen body. Was `flex: 1` until
+  // v0.9.5, which made it render as an in-flow sibling under the playback
+  // card. That left the rest of the deck tappable BEHIND the "confirm
+  // discard" prompt; a user could fire off RECORD a second time and lose
+  // the take they were being asked about. Absolute positioning fixes the
+  // real-modal expectation.
+  deckConfirmRoot: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.72)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
   deckConfirmCard: { width: '100%', maxWidth: 360, padding: 20, borderRadius: 6, borderWidth: 1, borderColor: C.edge, backgroundColor: C.face },
   deckConfirmTitle: { color: C.ink, fontSize: 14, letterSpacing: 3, fontWeight: '700', marginBottom: 8 },
   deckConfirmBody: { color: C.inkMid, fontSize: 13, letterSpacing: 0.5, lineHeight: 20, marginBottom: 16 },
