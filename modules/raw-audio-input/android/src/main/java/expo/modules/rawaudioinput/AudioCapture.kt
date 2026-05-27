@@ -83,15 +83,42 @@ internal class AudioCapture(
     /**
      * Signals the capture thread to exit and blocks until it finishes.
      * Safe to call when not started (no-op).
+     *
+     * Ordering matters: rec.read(READ_BLOCKING) inside the capture loop can
+     * block indefinitely on its own. Calling rec.stop() first unblocks the
+     * read so the loop can observe running=false and exit. Only after the
+     * thread is confirmed exited do we call rec.release(); releasing while
+     * a read is in flight is undefined behaviour (SIGSEGV in the audio HAL).
      */
     fun stop() {
+        val rec = record
+        val thread = captureThread
+
         running = false
-        captureThread?.join(2000)
-        captureThread = null
-        record?.let { r ->
-            try { r.stop() } catch (_: Exception) {}
-            try { r.release() } catch (_: Exception) {}
+
+        // Unblock the pending read() so the thread loop can return.
+        if (rec != null) {
+            try { rec.stop() } catch (_: Exception) {}
         }
+
+        // 2s is a generous safety bound; rec.stop() should let the loop
+        // exit within milliseconds in the normal case.
+        if (thread != null) {
+            try { thread.join(2000) } catch (_: InterruptedException) {}
+        }
+
+        if (rec != null) {
+            if (thread == null || !thread.isAlive) {
+                try { rec.release() } catch (_: Exception) {}
+            } else {
+                // Thread did not exit within the join window. Releasing now
+                // would race the in-flight read — far better to leak the
+                // AudioRecord (OS reclaims it on process exit) than to crash.
+                Log.w(TAG, "stop: capture thread still alive after join; leaking AudioRecord to avoid use-after-free")
+            }
+        }
+
+        captureThread = null
         record = null
     }
 

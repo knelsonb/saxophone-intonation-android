@@ -7,18 +7,14 @@
  * file:// path to expo-audio's createAudioPlayer. Each note re-uses (or
  * regenerates if refHz changed) its own cache file, keyed by midi + refHz.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 import { createAudioPlayer } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
 import { CHROMATIC_OCTAVE, buildWavBase64, midiToFrequency, tuningNoteForInstrument } from '../pitchTones';
-
-const C = {
-  bg: '#07080b', face: '#0e1116', edge: '#1e242e',
-  ink: '#f0f1f3', inkMid: '#a6acb6', inkDim: '#5a626d', inkVeryDim: '#3a4049',
-  accent: '#d6b86a', inTune: '#5fb87a',
-};
+import { useTheme, H } from '../theme';
+import type { ThemePalette } from '../theme';
 
 interface PitchPipesProps {
   visible: boolean;
@@ -28,6 +24,8 @@ interface PitchPipesProps {
 }
 
 export function PitchPipes({ visible, onClose, refHz, instrumentKey }: PitchPipesProps) {
+  const C = useTheme();
+  const s = useMemo(() => makeStyles(C), [C]);
   const [playingMidi, setPlayingMidi] = useState<number | null>(null);
   const playerRef = useRef<AudioPlayer | null>(null);
   const tuningMidi = tuningNoteForInstrument(instrumentKey)?.sounding_midi ?? null;
@@ -115,26 +113,28 @@ export function PitchPipes({ visible, onClose, refHz, instrumentKey }: PitchPipe
   );
 }
 
-const s = StyleSheet.create({
-  root:           { flex: 1, backgroundColor: C.face, paddingTop: 48 },
-  header:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomColor: C.edge, borderBottomWidth: 1 },
-  headerLeft:     { flex: 1 },
-  title:          { color: C.ink, fontSize: 14, letterSpacing: 6, fontWeight: '600' },
-  subtitle:       { color: C.inkDim, fontSize: 11, letterSpacing: 2, marginTop: 4 },
-  closeBtn:       { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderColor: C.edge, borderWidth: 1, borderRadius: 2 },
-  closeBtnPressed:{ backgroundColor: C.edge },
-  closeBtnText:   { color: C.inkMid, fontSize: 16 },
-  pads:           { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingVertical: 24, gap: 12, justifyContent: 'center' },
-  pad:            { width: '21%', minHeight: 90, paddingVertical: 14, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bg, borderColor: C.edge, borderWidth: 1, borderRadius: 4 },
-  padTuning:      { borderColor: C.accent, borderWidth: 2 },
-  padPlaying:     { backgroundColor: '#1a1f10', borderColor: C.inTune, borderWidth: 2 },
-  padPressed:     { opacity: 0.7 },
-  padNote:        { color: C.inkMid, fontSize: 22, fontWeight: '300', letterSpacing: -1 },
-  padOctave:      { color: C.inkDim, fontSize: 12, letterSpacing: 1, marginTop: -2 },
-  padHz:          { color: C.inkVeryDim, fontSize: 8, letterSpacing: 1, marginTop: 4, fontVariant: ['tabular-nums'] },
-  active:         { color: C.inTune },
-  dot:            { width: 6, height: 6, borderRadius: 3, backgroundColor: C.inTune, marginTop: 6 },
-  footer:         { paddingHorizontal: 24, paddingVertical: 16, borderTopColor: C.edge, borderTopWidth: 1, gap: 6 },
-  footerText:     { color: C.inkDim, fontSize: 11, letterSpacing: 1, textAlign: 'center' },
-  footerWarn:     { color: C.inkVeryDim, fontSize: 9, letterSpacing: 1, textAlign: 'center' },
-});
+function makeStyles(C: ThemePalette) {
+  return StyleSheet.create({
+    root:           { flex: 1, backgroundColor: C.face, paddingTop: 48 },
+    header:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomColor: C.edge, borderBottomWidth: 1 },
+    headerLeft:     { flex: 1 },
+    title:          { color: C.ink, fontSize: 16, letterSpacing: 6, fontWeight: '700' },
+    subtitle:       { color: C.inkMid, fontSize: 12, letterSpacing: 2, marginTop: 4 },
+    closeBtn:       { width: H.touchTarget, height: H.touchTarget, alignItems: 'center', justifyContent: 'center', borderColor: C.edge, borderWidth: 1, borderRadius: 4 },
+    closeBtnPressed:{ backgroundColor: C.edge },
+    closeBtnText:   { color: C.inkMid, fontSize: 18, fontWeight: '700' },
+    pads:           { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingVertical: 24, gap: 12, justifyContent: 'center' },
+    pad:            { width: '21%', minHeight: 96, paddingVertical: 14, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bg, borderColor: C.edge, borderWidth: 1, borderRadius: 4 },
+    padTuning:      { borderColor: C.accent, borderWidth: 2 },
+    padPlaying:     { backgroundColor: C.successTint, borderColor: C.inTune, borderWidth: 2 },
+    padPressed:     { opacity: 0.7 },
+    padNote:        { color: C.ink, fontSize: 24, fontWeight: '400', letterSpacing: -1 },
+    padOctave:      { color: C.inkMid, fontSize: 13, letterSpacing: 1, marginTop: -2 },
+    padHz:          { color: C.inkDim, fontSize: 10, letterSpacing: 1, marginTop: 4, fontVariant: ['tabular-nums'] },
+    active:         { color: C.inTune },
+    dot:            { width: 8, height: 8, borderRadius: 4, backgroundColor: C.inTune, marginTop: 6 },
+    footer:         { paddingHorizontal: 24, paddingVertical: 16, borderTopColor: C.edge, borderTopWidth: 1, gap: 6 },
+    footerText:     { color: C.inkMid, fontSize: 12, letterSpacing: 1, textAlign: 'center' },
+    footerWarn:     { color: C.inkDim, fontSize: 10, letterSpacing: 1, textAlign: 'center' },
+  });
+}

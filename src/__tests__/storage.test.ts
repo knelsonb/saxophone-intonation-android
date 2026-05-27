@@ -56,6 +56,7 @@ const A4_MAX = 450;
 // ---------------------------------------------------------------------------
 
 function asA4Hz(v: unknown): number {
+  if (v == null) return DEFAULT_PREFS.a4Hz;
   const n = Number(v);
   if (!Number.isFinite(n)) return DEFAULT_PREFS.a4Hz;
   return Math.max(A4_MIN, Math.min(A4_MAX, Math.round(n)));

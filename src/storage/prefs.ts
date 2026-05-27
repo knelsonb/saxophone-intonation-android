@@ -1,4 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { ThemeName } from '../theme';
+import type { DroneVoice } from '../audioGen';
 
 const PREFS_KEY = '@intonation/prefs';
 
@@ -31,6 +33,71 @@ export interface AppPrefs {
   // Stored so the user's choice survives restarts. The native side may negotiate
   // down from this value; the actual rate is available from stream.sampleRate.
   audioSampleRate: number;
+  // v0.6.4 peak-lock override.
+  // peakLock: when true, the pitch readout bypasses the filter's per-mode
+  // confidence gate and shows the most recent YIN result directly (EMA-
+  // smoothed). Useful on Android UNPROCESSED captures where the mic gain
+  // is lower than the desktop's tuned-for and the filter rejects valid
+  // notes as "not tonal enough."
+  peakLock: boolean;
+  // User-controlled noise gate in dBFS. The engine takes max(preset floor,
+  // user floor) so the per-mode RMS floor stays as a sensible minimum but
+  // the user can raise the gate (e.g. -30 dB for a noisy room). Range
+  // [-80, -10], default -45.
+  lowCutDb: number;
+  // v0.7.0 onboarding — false until the first-launch sequence completes.
+  // The mount path checks this AFTER prefs hydrate; if any other pref shows
+  // signs of prior use (e.g. nickname non-empty, instrumentKey != default),
+  // the UI may also skip onboarding via heuristics, but this is the canonical
+  // signal.
+  firstLaunchComplete: boolean;
+  // v0.7.0 session model — target window in cents for the "in-tune" arc band.
+  // Reserved for the gear-sheet ±cents stepper. Range [1, 50], default 5.
+  sessionTargetCents: number;
+  // v0.7.0 settings sheet — when true, the bottom diagnostic line (YIN raw
+  // freq, RMS, call counter) re-appears for debugging. Default off. Persisted
+  // so power users don't have to flip it every launch.
+  showDebugOverlay: boolean;
+  // v0.8.0 theme picker — 'dark' (high-contrast amber on near-black, the
+  // workhorse), 'night' (true AMOLED black with optional darken/warmth
+  // filters), or 'light' (high-contrast light theme). Default 'dark'.
+  theme: ThemeName;
+  // v0.8.0 Night-only screen-darken multiplier. 1.0 = full brightness, lower
+  // dims uniformly. Only applied when theme === 'night'. Range [0.4, 1.0].
+  nightDarken: number;
+  // v0.8.0 Night-only warmth tint. 0 = neutral, +1 = warm (red boost / blue
+  // cut), -1 = cool (red cut / blue boost). Only applied when theme === 'night'.
+  // Stored as a tenths integer (-10..10) for stable JSON serialization;
+  // divided by 10 at the read site. Default 0.
+  nightWarmth: number;
+  // v0.9.0 TUNER STYLE — picks the visual on the TUNER screen.
+  //   'arc'    — cents arc with needle + big note letter. Default.
+  //   'strobe' — Peterson StroboPlus emulation. Bars scroll left (flat) or
+  //              right (sharp); stationary when in tune.
+  //   'led'    — Boss TU-3 / Korg TM-60 style 11-LED row.
+  // Persisted so the user's preference survives launches.
+  tunerStyle: 'arc' | 'strobe' | 'led';
+  // v0.9.0 METRO STYLE — picks the visual on the METRO screen.
+  //   'pulse' — Boss DB-90 dot row + downbeat accent. Default.
+  //   'flash' — full-screen colour flash for back-of-room visibility.
+  // (Pendulum visual is deferred for this release — see release notes.)
+  metroStyle: 'pulse' | 'pendulum' | 'flash';
+  // v0.9.0 DECK STYLE — picks the visual on the DECK screen.
+  //   'reels' — twin reel-to-reel spools. Default.
+  //   'waveform' — minimalist scope with playhead.
+  // (VU-meter visual is deferred for this release — see release notes.)
+  deckStyle: 'reels' | 'vu' | 'waveform';
+  // v0.9.0 DRONE — sustained reference tone that tracks the user's detected
+  // pitch ± a semitone offset. Tuner-screen-only.
+  // droneVoice: timbre of the drone. 'cello' default — fundamental + 2x/3x/4x
+  //             harmonics + 5 Hz vibrato. 'sine' is the pure fundamental.
+  //             'saw' is a brighter band-limited sawtooth.
+  droneVoice: DroneVoice;
+  // droneVolume: 0..1 playback gain for the drone audio. Default 0.5.
+  droneVolume: number;
+  // droneSemitones: signed semitone offset added to the detected MIDI before
+  // synthesizing the drone pitch. Range [-12, +12], integer. Default 0.
+  droneSemitones: number;
 }
 
 export const DEFAULT_PREFS: AppPrefs = {
@@ -50,6 +117,23 @@ export const DEFAULT_PREFS: AppPrefs = {
   // launch when hiFiMode defaulted true (engine stuck in 'warming-up').
   hiFiMode: false,
   audioSampleRate: 48000,
+  // Default ON — Android mic gain on UNPROCESSED is well below what the
+  // desktop's filter presets are tuned for. The filter's confidence gate
+  // rejects valid notes; PEAK bypasses it so the tuner actually displays.
+  peakLock: true,
+  lowCutDb: -45,
+  firstLaunchComplete: false,
+  sessionTargetCents: 5,
+  showDebugOverlay: false,
+  theme: 'dark',
+  nightDarken: 1.0,
+  nightWarmth: 0,
+  droneVoice: 'cello',
+  droneVolume: 0.5,
+  droneSemitones: 0,
+  tunerStyle: 'arc',
+  metroStyle: 'pulse',
+  deckStyle: 'reels',
 };
 
 // ---------------------------------------------------------------------------
@@ -70,8 +154,19 @@ function asBool(v: unknown, def: boolean): boolean {
 }
 
 function asInt(v: unknown, def: number): number {
+  // Number(null) === 0 and Number(undefined) === NaN — neither should clamp
+  // to A4_MIN. Guard before coercion so a corrupted/empty field falls back
+  // to the supplied default.
+  if (v == null) return def;
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : def;
+}
+
+function asFloat(v: unknown, def: number, lo: number, hi: number): number {
+  if (v == null) return def;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(lo, Math.min(hi, n));
 }
 
 function asStr(v: unknown, def: string): string {
@@ -121,6 +216,20 @@ export async function loadPrefs(): Promise<AppPrefs> {
       allowOutOfRange: asBool(d.allowOutOfRange, DEFAULT_PREFS.allowOutOfRange),
       hiFiMode:        asBool(d.hiFiMode, DEFAULT_PREFS.hiFiMode),
       audioSampleRate: Math.max(8000, Math.min(96000, asInt(d.audioSampleRate, DEFAULT_PREFS.audioSampleRate))),
+      peakLock:        asBool(d.peakLock, DEFAULT_PREFS.peakLock),
+      lowCutDb:        Math.max(-80, Math.min(-10, asInt(d.lowCutDb, DEFAULT_PREFS.lowCutDb))),
+      firstLaunchComplete: asBool(d.firstLaunchComplete, DEFAULT_PREFS.firstLaunchComplete),
+      sessionTargetCents:  Math.max(1, Math.min(50, asInt(d.sessionTargetCents, DEFAULT_PREFS.sessionTargetCents))),
+      showDebugOverlay:    asBool(d.showDebugOverlay, DEFAULT_PREFS.showDebugOverlay),
+      theme:               asOneOf(d.theme, ['dark', 'night', 'light'] as const, DEFAULT_PREFS.theme),
+      nightDarken:         asFloat(d.nightDarken, DEFAULT_PREFS.nightDarken, 0.4, 1.0),
+      nightWarmth:         asFloat(d.nightWarmth, DEFAULT_PREFS.nightWarmth, -1.0, 1.0),
+      droneVoice:          asOneOf(d.droneVoice, ['cello', 'sine', 'saw'] as const, DEFAULT_PREFS.droneVoice),
+      droneVolume:         asFloat(d.droneVolume, DEFAULT_PREFS.droneVolume, 0.0, 1.0),
+      droneSemitones:      Math.max(-12, Math.min(12, asInt(d.droneSemitones, DEFAULT_PREFS.droneSemitones))),
+      tunerStyle:          asOneOf(d.tunerStyle, ['arc', 'strobe', 'led'] as const, DEFAULT_PREFS.tunerStyle),
+      metroStyle:          asOneOf(d.metroStyle, ['pulse', 'pendulum', 'flash'] as const, DEFAULT_PREFS.metroStyle),
+      deckStyle:           asOneOf(d.deckStyle, ['reels', 'vu', 'waveform'] as const, DEFAULT_PREFS.deckStyle),
     };
   } catch {
     return { ...DEFAULT_PREFS };

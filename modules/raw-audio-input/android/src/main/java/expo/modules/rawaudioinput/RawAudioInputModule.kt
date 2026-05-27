@@ -35,7 +35,7 @@ class RawAudioInputModule : Module() {
 
         Name("RawAudioInput")
 
-        Events("audioStreamBuffer", "captureStateChange")
+        Events("audioStreamBuffer", "captureStateChange", "audioStreamError")
 
         // -----------------------------------------------------------------
         // OnDestroy — ensure the capture thread is stopped when the module
@@ -87,6 +87,13 @@ class RawAudioInputModule : Module() {
                 },
                 errorCallback      = { reason ->
                     capture = null
+                    // Fire both: captureStateChange so isStreaming flips false,
+                    // and audioStreamError so the engine can transition to a
+                    // dedicated stream-failed state with the reason string.
+                    sendEvent(
+                        "audioStreamError",
+                        mapOf("reason" to reason),
+                    )
                     sendEvent(
                         "captureStateChange",
                         mapOf(

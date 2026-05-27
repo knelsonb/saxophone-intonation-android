@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Intonation Analyzer",
+    "name": "BellCurve",
     "slug": "saxophone-intonation-android",
     "version": "0.6.3",
     "orientation": "default",
@@ -22,6 +22,17 @@
             "minSdkVersion": 26
           }
         }
+      ],
+      "./plugins/withReleaseSigning",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./assets/fonts/Ubuntu-Bold.ttf",
+            "./assets/fonts/Ubuntu-Medium.ttf",
+            "./assets/fonts/Ubuntu-Regular.ttf"
+          ]
+        }
       ]
     ],
     "ios": {
@@ -33,6 +44,7 @@
     },
     "android": {
       "package": "com.knelsonb.intonationanalyzer",
+      "versionCode": 7,
       "permissions": [
         "RECORD_AUDIO"
       ],

@@ -5,12 +5,14 @@
  * Resets via clearRangeOverride. Validates lo < hi, both in [0,127].
  * Display uses displayMode for note labels but stores fingered MIDI internally.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { rangeMap, transpMap } from '../instruments';
 import { saveRangeOverride, clearRangeOverride } from '../storage/rangeOverrides';
 import { midiToNoteName } from '../music';
 import type { DisplayMode } from '../useAudioEngine';
+import { useTheme, H } from '../theme';
+import type { ThemePalette } from '../theme';
 
 interface Props {
   visible: boolean;
@@ -21,12 +23,6 @@ interface Props {
   onSaved: (lo: number, hi: number) => void;
   onReset: () => void;
 }
-
-const C = {
-  bg: '#07080b', face: '#0e1116', edge: '#1e242e', edgeSoft: '#161b22',
-  ink: '#f0f1f3', inkMid: '#a6acb6', inkDim: '#5a626d',
-  accent: '#d6b86a', bad: '#b8635f',
-};
 
 function midiLabel(midiFing: number, displayMode: DisplayMode, instrumentKey: string): string {
   const transp = transpMap[instrumentKey] ?? 0;
@@ -43,6 +39,8 @@ function MidiStepper({ label, midiFing, onChange, displayMode, instrumentKey }: 
   label: string; midiFing: number; onChange: (v: number) => void;
   displayMode: DisplayMode; instrumentKey: string;
 }) {
+  const C = useTheme();
+  const sp = useMemo(() => makeStepperStyles(C), [C]);
   return (
     <View style={sp.container}>
       <Text style={sp.label}>{label}</Text>
@@ -64,21 +62,25 @@ function MidiStepper({ label, midiFing, onChange, displayMode, instrumentKey }: 
   );
 }
 
-const sp = StyleSheet.create({
-  container: { alignItems: 'center', gap: 8 },
-  label: { color: C.inkDim, fontSize: 10, letterSpacing: 3 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  btn: { width: 40, height: 40, borderColor: C.edge, borderWidth: 1, borderRadius: 2, alignItems: 'center', justifyContent: 'center' },
-  btnPressed: { backgroundColor: C.edge },
-  btnText: { color: C.accent, fontSize: 14 },
-  valueBox: { alignItems: 'center', minWidth: 72 },
-  noteLabel: { color: C.ink, fontSize: 22, letterSpacing: 1, fontVariant: ['tabular-nums'] },
-  midiLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 2, fontVariant: ['tabular-nums'], marginTop: 2 },
-});
+function makeStepperStyles(C: ThemePalette) {
+  return StyleSheet.create({
+    container: { alignItems: 'center', gap: 8 },
+    label: { color: C.inkDim, fontSize: 11, letterSpacing: 3, fontWeight: '700' },
+    row: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+    btn: { width: H.touchTarget, height: H.touchTarget, borderColor: C.edge, borderWidth: 1, borderRadius: 4, alignItems: 'center', justifyContent: 'center' },
+    btnPressed: { backgroundColor: C.edge },
+    btnText: { color: C.accent, fontSize: 16, fontWeight: '700' },
+    valueBox: { alignItems: 'center', minWidth: 84 },
+    noteLabel: { color: C.ink, fontSize: 24, letterSpacing: 1, fontVariant: ['tabular-nums'], fontWeight: '600' },
+    midiLabel: { color: C.inkDim, fontSize: 11, letterSpacing: 2, fontVariant: ['tabular-nums'], marginTop: 2 },
+  });
+}
 
 export function RangeEditor({
   visible, onClose, instrumentKey, displayMode, currentRange, onSaved, onReset,
 }: Props) {
+  const C = useTheme();
+  const s = useMemo(() => makeStyles(C), [C]);
   const baked: [number, number] = rangeMap[instrumentKey] ?? [0, 127];
   const [lo, setLo] = useState<number>(currentRange[0]);
   const [hi, setHi] = useState<number>(currentRange[1]);
@@ -149,26 +151,28 @@ export function RangeEditor({
   );
 }
 
-const s = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: C.face, borderTopColor: C.edge, borderTopWidth: 1, borderTopLeftRadius: 6, borderTopRightRadius: 6, paddingBottom: 32 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomColor: C.edgeSoft, borderBottomWidth: 1 },
-  headerTitle: { color: C.ink, fontSize: 12, letterSpacing: 4, fontWeight: '600' },
-  closeBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderColor: C.edge, borderWidth: 1, borderRadius: 2 },
-  closeBtnPressed: { backgroundColor: C.edge },
-  closeBtnText: { color: C.inkMid, fontSize: 13 },
-  defaultRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 12, borderBottomColor: C.edgeSoft, borderBottomWidth: 1 },
-  defaultLabel: { color: C.inkDim, fontSize: 9, letterSpacing: 3, width: 60 },
-  defaultValue: { color: C.inkMid, fontSize: 12, letterSpacing: 1 },
-  defaultMidi: { color: C.inkDim, fontSize: 10 },
-  steppers: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 28, paddingHorizontal: 20 },
-  validationError: { color: C.bad, fontSize: 11, letterSpacing: 1, textAlign: 'center', marginBottom: 8, paddingHorizontal: 20 },
-  actions: { flexDirection: 'row', gap: 12, paddingHorizontal: 20, paddingTop: 8 },
-  resetBtn: { flex: 1, height: 44, alignItems: 'center', justifyContent: 'center', borderColor: C.edge, borderWidth: 1, borderRadius: 2 },
-  resetBtnPressed: { backgroundColor: C.edge },
-  resetBtnText: { color: C.inkMid, fontSize: 11, letterSpacing: 2, fontWeight: '600' },
-  saveBtn: { flex: 1, height: 44, alignItems: 'center', justifyContent: 'center', backgroundColor: C.accent, borderRadius: 2 },
-  saveBtnPressed: { opacity: 0.8 },
-  saveBtnText: { color: C.bg, fontSize: 11, letterSpacing: 3, fontWeight: '700' },
-  btnDisabled: { opacity: 0.35 },
-});
+function makeStyles(C: ThemePalette) {
+  return StyleSheet.create({
+    backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
+    sheet: { backgroundColor: C.face, borderTopColor: C.edge, borderTopWidth: 1, borderTopLeftRadius: 6, borderTopRightRadius: 6, paddingBottom: 32 },
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomColor: C.edgeSoft, borderBottomWidth: 1 },
+    headerTitle: { color: C.ink, fontSize: 13, letterSpacing: 4, fontWeight: '700' },
+    closeBtn: { width: H.touchTarget, height: H.touchTarget, alignItems: 'center', justifyContent: 'center', borderColor: C.edge, borderWidth: 1, borderRadius: 4 },
+    closeBtnPressed: { backgroundColor: C.edge },
+    closeBtnText: { color: C.inkMid, fontSize: 16, fontWeight: '700' },
+    defaultRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 12, borderBottomColor: C.edgeSoft, borderBottomWidth: 1 },
+    defaultLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, width: 60, fontWeight: '700' },
+    defaultValue: { color: C.inkMid, fontSize: 13, letterSpacing: 1 },
+    defaultMidi: { color: C.inkDim, fontSize: 11 },
+    steppers: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 28, paddingHorizontal: 20 },
+    validationError: { color: C.sharp, fontSize: 12, letterSpacing: 1, textAlign: 'center', marginBottom: 8, paddingHorizontal: 20, fontWeight: '700' },
+    actions: { flexDirection: 'row', gap: 12, paddingHorizontal: 20, paddingTop: 8 },
+    resetBtn: { flex: 1, minHeight: H.primaryNav, alignItems: 'center', justifyContent: 'center', borderColor: C.edge, borderWidth: 1, borderRadius: 4 },
+    resetBtnPressed: { backgroundColor: C.edge },
+    resetBtnText: { color: C.inkMid, fontSize: 12, letterSpacing: 2, fontWeight: '700' },
+    saveBtn: { flex: 1, minHeight: H.primaryNav, alignItems: 'center', justifyContent: 'center', backgroundColor: C.accent, borderRadius: 4 },
+    saveBtnPressed: { opacity: 0.8 },
+    saveBtnText: { color: C.onAccent, fontSize: 13, letterSpacing: 3, fontWeight: '700' },
+    btnDisabled: { opacity: 0.35 },
+  });
+}

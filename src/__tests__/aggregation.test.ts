@@ -56,7 +56,8 @@ function populationStdDev(values: number[]): number {
   if (values.length < 2) return 0;
   const mean = values.reduce((s, v) => s + v, 0) / values.length;
   const variance = values.reduce((s, v) => s + (v - mean) * (v - mean), 0) / values.length;
-  return Math.sqrt(Math.max(0, variance));
+  const std = Math.sqrt(Math.max(0, variance));
+  return Number.isFinite(std) ? std : 0;
 }
 
 function aggregate(samples: RawSample[], instrumentKey: string, minN: number): AggregatedNote[] {

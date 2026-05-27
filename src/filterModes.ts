@@ -25,6 +25,14 @@ export interface FilterPreset {
   /** Linear RMS gate — sqrt(mean(x²)). 8e-5≈-82dBFS, 1.5e-4≈-76dBFS, 3e-4≈-70dBFS. */
   rmsFloorLinear: number;
   edgeHops: number;
+  /**
+   * EMA weight for the PEAK-override readout path (engine bypasses the filter
+   * vote/median state machine and shows YIN's raw freq directly). Higher =
+   * snappier display, lower = smoother. Mode-coupled so the RESPONSE selector
+   * affects the readout cadence even when PEAK is on — without this the PEAK
+   * path was strobing at the full 40 Hz audio rate regardless of mode.
+   */
+  peakEmaAlpha: number;
 }
 
 /** Internal mutable state. Exported so the engine can allocate one per
@@ -38,9 +46,9 @@ export interface FilterState {
 
 // Presets must match sax_audio_engine.py FILTER_PRESETS exactly (lines 105–107).
 export const FILTER_PRESETS: Record<FilterMode, FilterPreset> = {
-  fast:   { window: 3,  confirm: 2, yinThreshold: 0.15, rmsFloorLinear: 8e-5,   edgeHops: 1 },
-  normal: { window: 5,  confirm: 3, yinThreshold: 0.10, rmsFloorLinear: 1.5e-4, edgeHops: 2 },
-  slow:   { window: 10, confirm: 6, yinThreshold: 0.07, rmsFloorLinear: 3e-4,   edgeHops: 4 },
+  fast:   { window: 3,  confirm: 2, yinThreshold: 0.15, rmsFloorLinear: 8e-5,   edgeHops: 1, peakEmaAlpha: 0.55 },
+  normal: { window: 5,  confirm: 3, yinThreshold: 0.10, rmsFloorLinear: 1.5e-4, edgeHops: 2, peakEmaAlpha: 0.25 },
+  slow:   { window: 10, confirm: 6, yinThreshold: 0.07, rmsFloorLinear: 3e-4,   edgeHops: 4, peakEmaAlpha: 0.10 },
 };
 
 export function newFilterState(): FilterState {

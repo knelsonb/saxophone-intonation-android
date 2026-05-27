@@ -19,7 +19,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Set up JDK
@@ -34,6 +34,9 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
+      - name: Run unit tests
+        run: npm test
+
       - name: Expo prebuild (generates android/)
         run: npx expo prebuild --platform android --non-interactive
 
@@ -43,13 +46,27 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('package-lock.json', 'app.json') }}
+
+      - name: Decode upload keystore
+        # When ANDROID_KEYSTORE_BASE64 is unset, gradle falls back to the debug
+        # keystore via the withReleaseSigning plugin's signingConfig selector.
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret set — release APK will be debug-signed."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/keystore"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/upload.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/keystore/upload.jks" >> "$GITHUB_ENV"
 
       - name: Build release APK
-        # No signing config is supplied here, so Gradle falls back to the
-        # debug keystore. That's fine for installs from a GitHub release —
-        # Tom enables "Install from unknown sources" once and we're done.
-        # Chunk 5 will add a real upload key for the Play Store.
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           cd android
           chmod +x ./gradlew

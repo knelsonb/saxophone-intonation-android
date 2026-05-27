@@ -14,8 +14,11 @@ import type {
 // ---------------------------------------------------------------------------
 
 type RawAudioInputEvents = {
-  audioStreamBuffer: (payload: { data: ArrayBuffer; sampleRate: number }) => void;
+  // The Expo new-arch bridge delivers Kotlin ByteArray as a JS Uint8Array.
+  // See RawAudioBuffer comment for the byte→Float32 unpacking pattern.
+  audioStreamBuffer: (payload: { data: Uint8Array; sampleRate: number }) => void;
   captureStateChange: (payload: { isStreaming: boolean; activeSource: string }) => void;
+  audioStreamError: (payload: { reason: string }) => void;
 };
 
 // Options object passed to the native startCaptureAsync function.
@@ -161,6 +164,17 @@ export function useRawAudioInput(options?: RawAudioOptions): RawAudioStreamHandl
     []
   );
 
+  const addErrorListener = useCallback(
+    (cb: (reason: string) => void): { remove(): void } => {
+      const sub: EventSubscription = NativeRawAudioInput.addListener(
+        'audioStreamError',
+        (payload) => { cb(payload.reason); }
+      );
+      return sub;
+    },
+    []
+  );
+
   const stream: RawAudioStreamHandle['stream'] = {
     id: sessionId,
     get sampleRate() { return actualSampleRateRef.current; },
@@ -168,6 +182,7 @@ export function useRawAudioInput(options?: RawAudioOptions): RawAudioStreamHandl
     start,
     stop,
     addListener,
+    addErrorListener,
   };
 
   return { stream, isStreaming, capability };
