@@ -13,6 +13,7 @@
  */
 import React, { useMemo } from 'react';
 import { GestureResponderEvent, Modal, Pressable, Text, View } from 'react-native';
+import * as Sharing from 'expo-sharing';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
 import type { DeckState } from '../useDeck';
@@ -58,6 +59,44 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
     if (trackWidthRef.current <= 0) return;
     deck.scrubTo(x / trackWidthRef.current);
   };
+
+  // v1.0.1 — local toast slot for SHARE errors. useDeck owns the canonical
+  // toast; we render this one in the same toast component only when deck.toast
+  // is null, so the two never collide. Same `DeckToast` shape.
+  const [shareToast, setShareToast] = React.useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const shareToastIdRef = React.useRef(0);
+  const flashShareToast = React.useCallback((text: string, kind: 'ok' | 'error') => {
+    shareToastIdRef.current += 1;
+    const id = shareToastIdRef.current;
+    setShareToast({ kind, text });
+    setTimeout(() => {
+      if (shareToastIdRef.current === id) setShareToast(null);
+    }, 2400);
+  }, []);
+
+  // v1.0.1 — SHARE handler. Hands the take URI to the OS share sheet.
+  // `expo-sharing.shareAsync` covers Drive / Files / email / Messages.
+  const handleShare = React.useCallback(async () => {
+    if (!deck.take) return;
+    // v1.0.1 — capture uri before any await so a concurrent CLEAR can't null it mid-handler.
+    const uri = deck.take.uri;
+    try {
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        flashShareToast("Sharing not available on this device — try SAVE.", 'error');
+        return;
+      }
+      await Sharing.shareAsync(uri, {
+        mimeType: 'audio/mp4',
+        dialogTitle: 'Share take',
+        UTI: 'public.mpeg-4-audio',
+      });
+    } catch {
+      flashShareToast("Couldn't share — try SAVE first.", 'error');
+    }
+  }, [deck.take, flashShareToast]);
+
+  const visibleToast = deck.toast ?? shareToast;
 
   return (
     <View style={{ flex: 1 }}>
@@ -151,14 +190,25 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
               position). CLEAR is a smaller secondary destructive action
               with thin red outline on the RIGHT, so accidental taps on
               SAVE don't hit CLEAR. */}
+          {/* v1.0.1 — SAVE | SHARE | CLEAR. SHARE uses the default outlined
+              (neutral) deckActionBtn style — secondary between primary SAVE
+              and danger CLEAR. */}
           <View style={styles.deckActionRow}>
             <Pressable
               onPress={() => deck.saveTake().catch(() => {})}
               accessibilityRole="button"
-              accessibilityLabel="Save this take to the recordings folder"
+              accessibilityLabel="Save this take to the recordings folder. Tap SHARE to send it elsewhere."
               style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnPrimary, pressed && styles.deckActionBtnPressed]}
             >
               <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextPrimary]}>SAVE</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => { handleShare(); }}
+              accessibilityRole="button"
+              accessibilityLabel="Share this take to another app — save it, send it to your teacher, copy it to Drive."
+              style={({ pressed }) => [styles.deckActionBtn, pressed && styles.deckActionBtnPressed]}
+            >
+              <Text style={styles.deckActionBtnText}>SHARE</Text>
             </Pressable>
             <Pressable
               onPress={deck.requestClearTake}
@@ -181,11 +231,12 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
         </View>
       )}
 
-      {/* Toast — bottom of the screen body. */}
-      {deck.toast !== null && (
-        <View style={[styles.deckToast, deck.toast.kind === 'error' && styles.deckToastError]} pointerEvents="none">
-          <Text style={[styles.deckToastText, deck.toast.kind === 'error' && styles.deckToastTextError]}>
-            {deck.toast.text}
+      {/* Toast — bottom of the screen body. v1.0.1 — local SHARE toasts share
+          the same slot via visibleToast (deck.toast takes precedence). */}
+      {visibleToast !== null && (
+        <View style={[styles.deckToast, visibleToast.kind === 'error' && styles.deckToastError]} pointerEvents="none">
+          <Text style={[styles.deckToastText, visibleToast.kind === 'error' && styles.deckToastTextError]}>
+            {visibleToast.text}
           </Text>
         </View>
       )}

@@ -50,6 +50,18 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
 
   // Demote to corner dot when reduce-motion is on OR BPM > 150 (PSE band).
   const safeMode = reduceMotion || bpm > PSE_BPM_CAP;
+  // v1.0.1 — branch the trigger so we can label honestly. BPM trigger wins
+  // if both are true (it's the more surprising demote at runtime).
+  const safeReason: 'bpm' | 'reduce-motion' | null =
+    bpm > PSE_BPM_CAP ? 'bpm' : reduceMotion ? 'reduce-motion' : null;
+  const safeLabel =
+    safeReason === 'bpm' ? `FLASH dimmed above ${PSE_BPM_CAP} BPM` :
+    safeReason === 'reduce-motion' ? 'FLASH dimmed — reduced motion' :
+    '';
+  const safeA11y =
+    safeReason === 'bpm'
+      ? `High tempo safety mode — visual demoted to corner dot above ${PSE_BPM_CAP} BPM`
+      : 'Reduced motion — visual demoted to corner dot';
 
   // v0.9.8 flash rebuild:
   //   • Peak opacity goes to 1.0 (was 0.85 — the background bled through
@@ -89,17 +101,37 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
 
   const opacityInterp = flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
+  // v1.0.1 — beat-tied numeral pulse for safeMode. When the big flash panel
+  // is demoted, the central beat numeral keeps peripheral-vision pickup by
+  // pulsing scale + opacity on each beat. Reuses flashAnim so it's already
+  // beat-synced (it ramps 1→0 over half a beat). Skip when not in safeMode
+  // so the unpulsed numeral renders crisply behind the full flash.
+  const numeralScale = safeMode
+    ? flashAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] })
+    : 1;
+  const numeralOpacity = safeMode
+    ? flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0.75, 1] })
+    : 1;
+
   return (
     <View style={styles.root}>
       {safeMode ? (
-        // v1.0 — corner dot mode. Single 24dp circle pulsing in the top-right.
-        // No full-area flash; safe for reduce-motion users and outside PSE band.
-        <Animated.View
-          pointerEvents="none"
-          style={[styles.cornerDot, { backgroundColor: flashBg, opacity: opacityInterp }]}
-          accessibilityRole="image"
-          accessibilityLabel={running ? `Beat ${beat} (reduced motion)` : 'Stopped'}
-        />
+        <>
+          {/* v1.0 — corner dot mode. Single 24dp circle pulsing in the top-right.
+              No full-area flash; safe for reduce-motion users and outside PSE band. */}
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.cornerDot, { backgroundColor: flashBg, opacity: opacityInterp }]}
+            accessibilityRole="image"
+            accessibilityLabel={running ? `Beat ${beat}. ${safeA11y}` : `Stopped. ${safeA11y}`}
+          />
+          {/* v1.0.1 — visible explanation so the user knows why the big flash
+              isn't firing. Dim + small so it doesn't compete with the
+              metronome itself. */}
+          <Text style={styles.safeNote} accessibilityElementsHidden importantForAccessibility="no">
+            {safeLabel}
+          </Text>
+        </>
       ) : (
         <Animated.View
           style={[
@@ -112,7 +144,15 @@ export function FlashDisplay({ running, beat, pulse, bpm, timeSig }: FlashDispla
         />
       )}
       <View style={styles.center}>
-        <Text style={styles.beatLabel}>{running ? beat : '·'}</Text>
+        {/* v1.0.1 — beat-tied numeral pulse only in safeMode (scale+opacity). */}
+        <Animated.Text
+          style={[
+            styles.beatLabel,
+            safeMode && { transform: [{ scale: numeralScale }], opacity: numeralOpacity },
+          ]}
+        >
+          {running ? beat : '·'}
+        </Animated.Text>
         <Text style={styles.sigLabel}>{timeSig}</Text>
       </View>
     </View>
@@ -142,6 +182,17 @@ function makeStyles(C: ThemePalette) {
       width: 24,
       height: 24,
       borderRadius: 12,
+    },
+    // v1.0.1 — dim safeMode explainer, top-left, well clear of the corner dot.
+    safeNote: {
+      position: 'absolute',
+      top: 14,
+      left: 12,
+      color: C.inkDim,
+      fontSize: 10,
+      letterSpacing: 1.5,
+      fontWeight: '700',
+      opacity: 0.75,
     },
     center: {
       position: 'absolute',

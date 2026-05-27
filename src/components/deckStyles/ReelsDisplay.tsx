@@ -128,6 +128,17 @@ export function ReelsDisplay({ spinning, clockSec, durationSec, statusLine, high
 
   return (
     <View style={styles.root}>
+      {/* v1.0.1 — DECORATIVE chip for parity with Waveform/VU. Top-left so it
+          stays clear of the spinning reels and central tape/head path; the
+          right side and center are both visually busy. pointerEvents none. */}
+      <View
+        style={styles.decorativeChip}
+        accessible
+        accessibilityLabel="Decorative visualization. Amplitude not measured from audio."
+        pointerEvents="none"
+      >
+        <Text style={styles.decorativeChipText}>DECORATIVE</Text>
+      </View>
       <View style={styles.reelsRow}>
         {renderReel('SUPPLY', supplyFillRatio)}
         {/* Tape path — two angled tape segments + central head block with
@@ -152,7 +163,26 @@ const REEL_DIAM = 100;
 
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
-    root: { alignItems: 'center', marginTop: 8, marginBottom: 8 },
+    root: { alignItems: 'center', marginTop: 8, marginBottom: 8, position: 'relative' },
+    // v1.0.1 — DECORATIVE chip styles (parity with WaveformDisplay/VuDisplay).
+    decorativeChip: {
+      position: 'absolute',
+      top: 0,
+      left: 4,
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      borderRadius: 2,
+      borderWidth: 1,
+      borderColor: C.inkDim,
+      backgroundColor: C.bg,
+      zIndex: 2,
+    },
+    decorativeChipText: {
+      color: C.inkDim,
+      fontSize: 8,
+      letterSpacing: 1.5,
+      fontWeight: '700',
+    },
     reelsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
     reelWrap: { alignItems: 'center' },
     reel: {
