@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    AudioTrack on STREAM_MUSIC requires no special permission. This module
+    intentionally adds nothing to the manifest — the SF2 is bundled as an
+    asset inside this AAR.
+  -->
+</manifest>

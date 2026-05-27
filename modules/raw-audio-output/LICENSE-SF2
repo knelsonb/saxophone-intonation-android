@@ -1,0 +1,50 @@
+GeneralUser GS SoundFont
+========================
+
+Author : S. Christian Collins (mrbumpy409)
+Version: 2.0.3 (released 2026-02-22, per upstream documentation)
+
+License
+-------
+From the upstream documentation:
+
+    "GeneralUser GS is licensed to the public free of charge. You may use it
+     in any product, commercial or non-commercial. Distribution of GeneralUser
+     GS by itself, modified or unmodified, requires that this README file
+     accompany the SoundFont. Attribution is not required, although it is
+     greatly appreciated."
+
+This is effectively CC0-equivalent for our redistribution purposes (we ship
+the file inside the @local/raw-audio-output module, which is itself private
+and not redistributed independently from the BellCurve app binary).
+
+Provenance (v1.1 — first vendoring, 2026-05-27)
+-----------------------------------------------
+Source URL: https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2
+Repo:       https://github.com/mrbumpy409/GeneralUser-GS
+Commit SHA: 684543d5e5efaef08d02be50dcda8d552478fa60
+File SHA256: 9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe
+File size:  32,319,396 bytes (~30.8 MB)
+RIFF magic: verified ('RIFF' at offset 0)
+
+To re-verify
+------------
+    sha256sum modules/raw-audio-output/android/src/main/assets/GeneralUser-GS.sf2
+    # expected: 9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe
+
+To re-fetch (if the file is ever lost / corrupted)
+--------------------------------------------------
+    curl -L -o modules/raw-audio-output/android/src/main/assets/GeneralUser-GS.sf2 \
+      "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2"
+    # or, if raw blocks:
+    git clone --depth 1 https://github.com/mrbumpy409/GeneralUser-GS.git /tmp/gug
+    cp /tmp/gug/GeneralUser-GS.sf2 modules/raw-audio-output/android/src/main/assets/
+    rm -rf /tmp/gug
+
+Note on bank version
+--------------------
+The brief originally pinned v1.471; we shipped v2.0.3 because the author's
+own repo only carries the current release. TSF (TinySoundFont) is agnostic
+to GU version; the GM patches BellCurve routes through (19=Church Organ,
+42=Cello, 48=String Ensemble, 66=Alto Sax, 89=Pad/Warm) are stable across
+both versions.

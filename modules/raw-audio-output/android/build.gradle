@@ -1,0 +1,49 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.rawaudiooutput'
+version = '0.1.0'
+
+android {
+  namespace 'expo.modules.rawaudiooutput'
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+    // AudioTrack STREAM_MUSIC + STEREO_16 is available far below this floor,
+    // but we match the rest of the project (auto-mic-claim Telecom requires API 26).
+    minSdk 26
+
+    externalNativeBuild {
+      cmake {
+        cppFlags '-std=c++17'
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path 'src/main/cpp/CMakeLists.txt'
+      version '3.22.1'
+    }
+  }
+
+  compileOptions {
+    targetCompatibility JavaVersion.VERSION_1_8
+  }
+
+  // The .sf2 sits under src/main/assets and is bundled into the AAR. The
+  // Kotlin side opens it via Context.assets and copies to cacheDir on first
+  // load (TSF needs a real filesystem path).
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation 'androidx.core:core-ktx:1.15.0'
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0'
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+}

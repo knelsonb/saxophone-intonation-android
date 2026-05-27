@@ -1,0 +1,38 @@
+{
+  "buildFiles": [
+    "/home/repro/code/bellcurve/modules/raw-audio-output/android/src/main/cpp/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/home/repro/android/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/home/repro/code/bellcurve/modules/raw-audio-output/android/.cxx/RelWithDebInfo/6h565v3i/x86_64",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/home/repro/android/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/home/repro/code/bellcurve/modules/raw-audio-output/android/.cxx/RelWithDebInfo/6h565v3i/x86_64",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "rawaudiooutput::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "x86_64",
+      "artifactName": "rawaudiooutput",
+      "output": "/home/repro/code/bellcurve/modules/raw-audio-output/android/build/intermediates/cxx/RelWithDebInfo/6h565v3i/obj/x86_64/librawaudiooutput.so",
+      "runtimeFiles": []
+    }
+  },
+  "toolchains": {
+    "toolchain": {
+      "cCompilerExecutable": "/home/repro/android/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/clang.lld",
+      "cppCompilerExecutable": "/home/repro/android/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++.lld"
+    }
+  },
+  "cFileExtensions": [],
+  "cppFileExtensions": [
+    "cpp"
+  ]
+}

@@ -1,0 +1,7 @@
+# ninja log v5
+0	30	1779903853349322014	CMakeFiles/rawaudiooutput.dir/jni_bridge.cpp.o	3e6c27adba0a21d
+0	961	1779903854266162216	CMakeFiles/rawaudiooutput.dir/synth.cpp.o	64b079febb242d41
+963	1071	1779903854384587407	/home/repro/code/bellcurve/modules/raw-audio-output/android/build/intermediates/cxx/RelWithDebInfo/6h565v3i/obj/armeabi-v7a/librawaudiooutput.so	f86d0948c8fde1e0
+4	41	1779904567707643558	CMakeFiles/rawaudiooutput.dir/jni_bridge.cpp.o	3e6c27adba0a21d
+3	990	1779904568642894530	CMakeFiles/rawaudiooutput.dir/synth.cpp.o	64b079febb242d41
+990	1058	1779904568719603318	/home/repro/code/bellcurve/modules/raw-audio-output/android/build/intermediates/cxx/RelWithDebInfo/6h565v3i/obj/armeabi-v7a/librawaudiooutput.so	f86d0948c8fde1e0

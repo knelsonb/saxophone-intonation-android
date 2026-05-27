@@ -1,0 +1,7 @@
+{
+  "name": "@local/raw-audio-output",
+  "version": "0.1.0",
+  "description": "Local Expo module: TinySoundFont-backed General MIDI synthesizer over AudioTrack.",
+  "main": "index",
+  "private": true
+}
