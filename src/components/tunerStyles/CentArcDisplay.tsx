@@ -15,8 +15,9 @@ export interface CentArcDisplayProps {
 }
 
 export function CentArcDisplay({ noteDisplay, freqHz, noteFontSize, isOutOfRange }: CentArcDisplayProps) {
+  // Own our width so the parent doesn't shrink us to NoteReadout's glyph.
   return (
-    <View>
+    <View style={{ width: '100%', maxWidth: 720, alignSelf: 'center' }}>
       <CentArc activeIndex={noteDisplay?.tickIndex ?? null} cents={noteDisplay?.cents ?? null} arcWidth="100%" />
       <NoteReadout
         noteDisplay={noteDisplay}

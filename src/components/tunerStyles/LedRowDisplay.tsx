@@ -145,7 +145,15 @@ export function LedRowDisplay({ noteDisplay, freqHz, noteFontSize, isOutOfRange 
 
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
-    root: { alignItems: 'center', paddingHorizontal: 8 },
+    // Own our width — parent `centerPortrait` no longer cross-axis-centers,
+    // so the root must stretch and self-center to match the legend's max.
+    root: {
+      width: '100%',
+      alignSelf: 'center',
+      maxWidth: (LED_DIAMETER + LED_GAP) * LED_COUNT,
+      alignItems: 'center',
+      paddingHorizontal: 8,
+    },
     bigNoteRow: { flexDirection: 'row', justifyContent: 'center' },
     bigNote: {
       color: C.ink,

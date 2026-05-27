@@ -235,7 +235,10 @@ export function makeStyles(C: ThemePalette) {
   silenceBannerBold: { fontWeight: '700' },
 
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  centerPortrait: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
+  // v0.9.9 — dropped `alignItems: 'center'`: cross-axis centering was shrinking
+  // CentArc / LedRow children to their intrinsic NoteReadout glyph width
+  // (narrow on "—", wider on "B♭ 5"). Each child now owns its own width.
+  centerPortrait: { flex: 1, justifyContent: 'center', paddingHorizontal: 20 },
 
   arc: { maxWidth: 720, alignSelf: 'center' },
   arcScaleRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
@@ -282,7 +285,8 @@ export function makeStyles(C: ThemePalette) {
   centsBig: { fontSize: 32, fontWeight: '700', letterSpacing: 1, fontVariant: ['tabular-nums'], marginTop: 6, textAlign: 'center' },
   centsBigUnit: { fontSize: 18, fontWeight: '400', color: C.inkDim, letterSpacing: 1 },
 
-  emptyHint: { marginTop: 18, paddingVertical: 12, paddingHorizontal: 24, alignItems: 'center' },
+  // alignSelf:'center' replaces what `centerPortrait`'s alignItems used to do.
+  emptyHint: { marginTop: 18, paddingVertical: 12, paddingHorizontal: 24, alignItems: 'center', alignSelf: 'center' },
   emptyHintText: { color: C.inkDim, fontSize: 14, letterSpacing: 2, textAlign: 'center' },
 
   logCtaRow: { flexDirection: 'row', gap: 10, paddingVertical: 8, paddingHorizontal: 8, alignItems: 'stretch' },
@@ -588,6 +592,9 @@ export function makeStyles(C: ThemePalette) {
   metroBpmFlankStepperTextAccent: { color: C.accent },
   // BPM tightened from 88/92 → 64/68 — the heroic display was eating ~24dp
   // that MetroScreen needed to stay inside the body budget on Pixel 9 Pro.
+  // v0.9.9 — minWidth:180 removed: with 4 flank steppers (48dp each) + gaps
+  // it pushed the row past 360dp on small phones. tabular-nums keeps the
+  // numeral steady as it counts without reserving a fixed slot.
   metroBpmDisplay: {
     color: C.ink,
     fontSize: 64,
@@ -595,7 +602,6 @@ export function makeStyles(C: ThemePalette) {
     letterSpacing: -1,
     fontVariant: ['tabular-nums'],
     lineHeight: 68,
-    minWidth: 180,
     textAlign: 'center',
   },
   metroBpmUnit: { color: C.inkDim, fontSize: 14, letterSpacing: 4, marginTop: -6 },
