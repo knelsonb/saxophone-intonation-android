@@ -4,6 +4,10 @@
  * (selected via `metroStyle`), pills for time signature, ± steppers (±1 and
  * ±5), TAP tempo, and a primary START/STOP button at the bottom.
  *
+ * **Layout rule (hard):** fits on one screen — no ScrollView. If a new
+ * control needs space, the visualisation height has to compress or the
+ * control belongs in SETUP. Don't make the user scroll a tempo control.
+ *
  * Audio + visual are dispatched together by `useMetronome` so what you see
  * matches what you hear within a single render tick.
  */
@@ -117,7 +121,12 @@ export function MetroScreen({ metro, metroStyle, outputRoute }: MetroScreenProps
           timeSig={metro.timeSig}
         />
       ) : metroStyle === 'pendulum' ? (
-        <PendulumDisplay />
+        <PendulumDisplay
+          running={metro.running}
+          beat={metro.beat}
+          pulse={metro.pulse}
+          bpm={metro.bpm}
+        />
       ) : (
         <PulseDisplay
           running={metro.running}

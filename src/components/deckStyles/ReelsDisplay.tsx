@@ -1,9 +1,18 @@
 /**
- * ReelsDisplay — twin reel-to-reel spools. Spins clockwise at a constant
- * rpm whenever the deck is recording or playing. Stops when idle/paused.
+ * ReelsDisplay — twin reel-to-reel spools.
  *
- * The "3D" feel comes from the spoke lines — three short radii inside each
- * reel rotate with the body, so the spin reads even at a glance.
+ * Two behaviours stitched together:
+ *
+ *   1. **Spinning** (recording / playing) — Animated.loop turns the reels at
+ *      a constant ~33 rpm. Native-driver: transform-only, safe.
+ *   2. **Idle / paused** (NOT spinning) — rotation is derived directly from
+ *      `clockSec` so that **scrubbing the playback bar jogs the reels**. The
+ *      angle reflects "where on the tape you are" — sweep the scrubber and
+ *      the spokes rotate to match, like the real thing.
+ *
+ * Source of truth for the idle angle is `(clockSec * RPM / 60) mod 1` — the
+ * spinAnim's interpolator already maps [0,1] → [0deg, 360deg], so a single
+ * setValue is enough to snap to the right phase.
  */
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
@@ -33,15 +42,14 @@ export function ReelsDisplay({ spinning, clockSec, statusLine, highlightClock }:
   const spinAnim = useRef(new Animated.Value(0)).current;
   const loopRef = useRef<Animated.CompositeAnimation | null>(null);
   useEffect(() => {
-    // Spin loop. Active only while `spinning` is true; otherwise hold the
-    // value where it is so the next start picks up from there.
+    // Active continuous spin while recording / playing.
     if (spinning) {
       const loop = Animated.loop(
         Animated.timing(spinAnim, {
           toValue: 1,
           duration: (60 / REEL_RPM) * 1000,
           easing: Easing.linear,
-          useNativeDriver: false,
+          useNativeDriver: true,
         }),
       );
       loopRef.current = loop;
@@ -56,6 +64,16 @@ export function ReelsDisplay({ spinning, clockSec, statusLine, highlightClock }:
     }
     return undefined;
   }, [spinning, spinAnim]);
+
+  // Jog-on-scrub: when NOT spinning, snap rotation to whatever clockSec is
+  // pointing at. The user dragging the scrubber updates clockSec, which fires
+  // this effect, which sets the spin phase — the reels appear to wind forward
+  // / backward in lockstep with the scrub.
+  useEffect(() => {
+    if (spinning) return;
+    const phase = ((clockSec * REEL_RPM) / 60) % 1;
+    spinAnim.setValue(phase < 0 ? phase + 1 : phase);
+  }, [spinning, clockSec, spinAnim]);
 
   const rotateInterp = spinAnim.interpolate({
     inputRange: [0, 1],

@@ -4,6 +4,12 @@
  * (COLLECT), TAP TO LOG bar, LIVE/COLLECT slider, optional DRONE controls,
  * BottomStrip (input meter), optional DiagnosticLine.
  *
+ * **Layout rule (hard):** the three main tabs (TUNER / METRO / DECK) MUST
+ * fit on one screen — no ScrollView, no off-screen content. If a new feature
+ * needs space it has to live elsewhere (modal, SETUP tab, collapsed by
+ * default). Vertical centring is handled by `centerStyle` (flex:1) so fixed
+ * controls along the bottom always remain visible.
+ *
  * Stateful concerns (engine, refHz, hornNameEditor, modals) stay in App.tsx
  * and are passed down via props. This screen only renders.
  */

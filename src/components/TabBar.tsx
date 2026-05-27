@@ -11,6 +11,7 @@
  */
 import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, H } from '../theme';
 import type { ThemePalette } from '../theme';
 
@@ -30,7 +31,12 @@ export interface TabBarProps {
 
 export function TabBar({ active, onChange }: TabBarProps) {
   const C = useTheme();
-  const styles = useMemo(() => makeStyles(C), [C]);
+  const insets = useSafeAreaInsets();
+  // Safe-area inset for the bottom gesture pill / nav bar, plus a small visual
+  // breathing-room minimum so even on devices with zero reported inset the
+  // tabs don't kiss the screen edge.
+  const bottomPad = Math.max(8, insets.bottom);
+  const styles = useMemo(() => makeStyles(C, bottomPad), [C, bottomPad]);
   return (
     <View style={styles.row} accessibilityRole="tablist">
       {TABS.map((t) => {
@@ -53,13 +59,14 @@ export function TabBar({ active, onChange }: TabBarProps) {
   );
 }
 
-function makeStyles(C: ThemePalette) {
+function makeStyles(C: ThemePalette, bottomPad: number) {
   return StyleSheet.create({
     row: {
       flexDirection: 'row',
       borderTopColor: C.edge,
       borderTopWidth: 1,
       backgroundColor: C.face,
+      paddingBottom: bottomPad,
     },
     tab: {
       flex: 1,

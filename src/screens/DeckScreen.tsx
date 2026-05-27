@@ -3,6 +3,12 @@
  * (style-selected), a giant record button, a playback transport, scrubber,
  * save + clear.
  *
+ * **Layout rule (hard):** fits on one screen — no ScrollView. The playback
+ * card appears below the record button only when a take exists; that's the
+ * one piece of conditional vertical content. If it pushes anything off
+ * screen on small devices, we shrink the record button — never scroll the
+ * deck.
+ *
  * State + behavior live in `useDeck` so the screen body is mostly layout.
  */
 import React, { useMemo } from 'react';
@@ -72,7 +78,11 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
           statusLine={statusLine}
         />
       ) : deckStyle === 'vu' ? (
-        <VuDisplay />
+        <VuDisplay
+          mode={deck.mode}
+          clockSec={clockSec}
+          statusLine={statusLine}
+        />
       ) : (
         <ReelsDisplay
           spinning={isRecording || isPlaying}

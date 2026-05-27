@@ -23,6 +23,9 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
 
 import { useAudioEngine } from './src/useAudioEngine';
 import type { DisplayMode } from './src/useAudioEngine';
@@ -74,6 +77,16 @@ import type { DroneVoice } from './src/audioGen';
 
 export default function App() {
   const engine = useAudioEngine();
+  // Load the bundled Ubuntu fonts before rendering anything that might use
+  // the BELLCURVE wordmark or fontFamily-targeted text. Without this gate the
+  // first frames render in the fallback (system) font and snap to Ubuntu when
+  // it loads — the wordmark visibly reflows. Returning null until ready is
+  // standard expo-font practice.
+  const [fontsLoaded] = useFonts({
+    'Ubuntu-Bold':    require('./assets/fonts/Ubuntu-Bold.ttf'),
+    'Ubuntu-Medium':  require('./assets/fonts/Ubuntu-Medium.ttf'),
+    'Ubuntu-Regular': require('./assets/fonts/Ubuntu-Regular.ttf'),
+  });
   // For the night theme only, transform the palette by the user's darken +
   // warmth sliders. Memoized on the three inputs so we don't allocate a
   // fresh palette every render.
@@ -84,10 +97,22 @@ export default function App() {
     }
     return base;
   }, [engine.theme, engine.nightDarken, engine.nightWarmth]);
+  // Pick the status-bar text/icon colour based on theme. DARK and NIGHT need
+  // light icons; LIGHT needs dark icons. expo-status-bar then communicates
+  // this to the Android system bar so it doesn't fight the theme.
+  const statusBarStyle = engine.theme === 'light' ? 'dark' : 'light';
+  if (!fontsLoaded) {
+    // Match the (eventual) palette's background so the splash → first-frame
+    // transition doesn't flash white on a dark theme.
+    return <View style={{ flex: 1, backgroundColor: palette.bg }} />;
+  }
   return (
-    <ThemeProvider value={palette}>
-      <AppInner engine={engine} />
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <ThemeProvider value={palette}>
+        <StatusBar style={statusBarStyle} />
+        <AppInner engine={engine} />
+      </ThemeProvider>
+    </SafeAreaProvider>
   );
 }
 
