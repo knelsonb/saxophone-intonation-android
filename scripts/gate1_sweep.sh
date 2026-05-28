@@ -27,10 +27,10 @@ PKG="com.knelsonb.intonationanalyzer"
 OUT="${OUT:-/home/repro/code/bellcurve/docs/captures/64-gate1}"
 
 # --- tap coords (960x2142) — CALIBRATE via `calibrate` then edit these -------
-X_M5="${X_M5:-110}";  X_M1="${X_M1:-300}";  X_P1="${X_P1:-660}";  X_P5="${X_P5:-850}"
-Y_BPM="${Y_BPM:-300}"                 # the BPM stepper row
-X_PRIMARY="${X_PRIMARY:-480}"; Y_PRIMARY="${Y_PRIMARY:-1980}"   # START/STOP
-X_METROTAB="${X_METROTAB:-170}"; Y_TABBAR="${Y_TABBAR:-2080}"   # METRO bottom tab
+X_M5="${X_M5:-150}";  X_M1="${X_M1:-305}";  X_P1="${X_P1:-720}";  X_P5="${X_P5:-805}"
+Y_BPM="${Y_BPM:-770}"                 # BPM stepper row (direct-read, native 960x2142)
+X_PRIMARY="${X_PRIMARY:-480}"; Y_PRIMARY="${Y_PRIMARY:-1875}"   # START/STOP
+X_METROTAB="${X_METROTAB:-360}"; Y_TABBAR="${Y_TABBAR:-2037}"   # METRO bottom tab (verified on-device)
 
 HOLD="${HOLD:-25}"                    # seconds per steady step (>= tens-of-sec)
 SETTLE="${SETTLE:-2}"
