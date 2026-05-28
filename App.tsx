@@ -20,6 +20,7 @@ import {
   Animated,
   AppState,
   Linking,
+  Text,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -33,6 +34,7 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 
 import { log } from './src/log';
+import appJson from './app.json';
 import { useAudioEngine } from './src/useAudioEngine';
 import type { DisplayMode } from './src/useAudioEngine';
 import { transpMap, getInstrument, rangeMap } from './src/instruments';
@@ -80,6 +82,7 @@ import { DeckScreen } from './src/screens/DeckScreen';
 import { SetupScreen } from './src/screens/SetupScreen';
 import { useMetronome } from './src/useMetronome';
 import { useMidiBus } from './src/useMidiBus';
+import synth from '@local/raw-audio-output';
 import { usePitchPipes } from './src/usePitchPipes';
 import { useUiPrefsStore } from './src/useUiPrefsStore';
 import { useDeck } from './src/useDeck';
@@ -116,7 +119,12 @@ export default function App() {
   // light icons; LIGHT needs dark icons. expo-status-bar then communicates
   // this to the Android system bar so it doesn't fight the theme.
   const statusBarStyle = engine.theme === 'light' ? 'dark' : 'light';
-  if (!fontsLoaded) {
+  // v1.4 wave-10 — L1: gate on both fonts AND prefs hydration to prevent the
+  // 1-frame theme/filter flash. `prefsLoaded` flips ~100-300 ms after mount
+  // once loadPrefs() resolves. We return the same bg-coloured blank View so
+  // the palette.bg is already correct (engine.theme is still 'dark' default
+  // here, but palette.bg is a dark colour that is safe to show).
+  if (!fontsLoaded || !engine.prefsLoaded) {
     // Match the (eventual) palette's background so the splash → first-frame
     // transition doesn't flash white on a dark theme.
     return <View style={{ flex: 1, backgroundColor: palette.bg }} />;
@@ -152,8 +160,12 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // ----- forensic logger wiring -----
 
   // Boot message — lets us correlate logcat sessions with ring-buffer tails.
+  // v1.4 wave-5 T4 — version strings sourced from app.json (resolveJsonModule)
+  // so this never drifts from the actual release version.
   useEffect(() => {
-    log.i('App', 'BellCurve v1.2.1 boot, versionCode 11');
+    const ver = appJson.expo.version;
+    const vc = appJson.expo.android.versionCode;
+    log.i('App', `BellCurve v${ver} boot, versionCode ${vc}`);
   }, []);
 
   // Recover last-session ring buffer and warn so the developer knows the
@@ -168,6 +180,8 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
 
   // Global unhandled-error hook — log fatal + non-fatal JS errors and persist
   // immediately so a hard crash leaves evidence in AsyncStorage.
+  // v1.4 wave-5 T3 — cleanup restores the previous handler so hot-reload /
+  // PermissionGate remounts don't chain handlers indefinitely.
   useEffect(() => {
     const g = globalThis as unknown as { ErrorUtils?: {
       getGlobalHandler?: () => ((err: Error, isFatal: boolean) => void) | null;
@@ -184,6 +198,11 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
         if (typeof prev === 'function') prev(err, isFatal);
       },
     );
+    return () => {
+      if (typeof prev === 'function') {
+        g.ErrorUtils?.setGlobalHandler?.(prev);
+      }
+    };
   }, []);
 
   // ----- top-level state -----
@@ -321,6 +340,22 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minN]);
 
+  // v1.4.x P4 — pin the display to its highest refresh rate while foregrounded
+  // so the Pixel's LTPO panel doesn't down-switch (120→80→60) mid-animation and
+  // judder the metronome sweep / tuner strobe. Release on background so the
+  // panel returns to its adaptive default (battery). Best-effort; the native
+  // side no-ops if the Activity isn't available.
+  useEffect(() => {
+    try { synth.setHighRefreshRate?.(true); } catch { /* ignore */ }
+    const sub = AppState.addEventListener('change', (nextState) => {
+      try { synth.setHighRefreshRate?.(nextState === 'active'); } catch { /* ignore */ }
+    });
+    return () => {
+      sub.remove();
+      try { synth.setHighRefreshRate?.(false); } catch { /* ignore */ }
+    };
+  }, []);
+
   const handleMinNChange = useCallback((n: number) => {
     setMinN(n);
     engine.savePrefsNow({ minNVisible: n }).catch(() => {});
@@ -445,6 +480,37 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // v1.3 — MIDI bus owns synth singleton + WAV fallback + per-channel reservation.
   // All synth consumers (drone, metronome, pipes) reserve their channel from this bus.
   const bus = useMidiBus();
+
+  // v1.4 wave-10 T3 — SF2 loading feedback. Show "Loading sounds…" until the
+  // bus reports ready. If it hasn't resolved after 10 s, surface a persistent
+  // "Synth unavailable" warning (error-states-are-mandatory axiom).
+  const [synthWarnShown, setSynthWarnShown] = useState(false);
+  const synthWarnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (bus.ready) {
+      // Cancel any pending 10-s timeout — synth arrived in time.
+      if (synthWarnTimerRef.current !== null) {
+        clearTimeout(synthWarnTimerRef.current);
+        synthWarnTimerRef.current = null;
+      }
+      setSynthWarnShown(false);
+      return;
+    }
+    // Arm the 10-s timeout only once (first render where ready is false).
+    if (synthWarnTimerRef.current !== null) return;
+    synthWarnTimerRef.current = setTimeout(() => {
+      setSynthWarnShown(true);
+      log.w('App', 'synth-load-timeout — SF2 did not become ready within 10 s');
+    }, 10_000);
+  }, [bus.ready]);
+  useEffect(() => {
+    // v1.4 wave-10 T3 — clear timer on unmount.
+    return () => {
+      if (synthWarnTimerRef.current !== null) {
+        clearTimeout(synthWarnTimerRef.current);
+      }
+    };
+  }, []);
   // v1.3 — UI prefs store; v1.3.0 consumes pipesVoice from here (other fields
   // still flow via engine until Wave 3.5 migrates consumers off useAudioEngine).
   const uiPrefs = useUiPrefsStore();
@@ -456,7 +522,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     clickOffsetMs: engine.metroClickOffsetMs,
     outputRoute: engine.metroOutputRoute,
   });
-  const deck = useDeck();
+  const deck = useDeck({ bus });
   const drone = useDrone({
     bus,
     incumbentMidi: engine.incumbentMidi,
@@ -631,6 +697,28 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           <Tab.Screen name="setup">{renderSetupScreen}</Tab.Screen>
         </Tab.Navigator>
       </NavigationContainer>
+
+      {/* v1.4 wave-10 T3 — SF2 loading feedback. Corner chip visible until the
+          bus reports ready; replaced by a persistent warning after 10 s.
+          `pointerEvents="none"` so it never blocks touches. */}
+      {!bus.ready && (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            bottom: 80,
+            right: 16,
+            backgroundColor: synthWarnShown ? 'rgba(200,50,50,0.88)' : 'rgba(30,30,30,0.75)',
+            borderRadius: 6,
+            paddingHorizontal: 10,
+            paddingVertical: 5,
+          }}
+        >
+          <Text style={{ color: '#fff', fontSize: 11, fontFamily: 'Ubuntu-Regular' }}>
+            {synthWarnShown ? 'Synth unavailable' : 'Loading sounds…'}
+          </Text>
+        </View>
+      )}
 
       {/* Modals — visible across tabs as overlays. */}
       <InstrumentPicker

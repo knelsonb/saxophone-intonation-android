@@ -203,10 +203,11 @@ export interface MidiBusState {
   atMsToAtFrame(atMs: number): number;
   /**
    * v1.4 wave-3 — Force a fresh frame-clock peg. The normal auto-repeg
-   * (every 5 s) rejects re-pegs whose implied drift exceeds 2 ms, which
-   * correctly holds the line under wall-clock jitter. But at known-good
-   * discontinuities (AppState background → foreground resume) the renderer
-   * paused while wall-clock advanced — the drift is huge but legitimate.
+   * (every 5 s) tracks steady clock drift but rejects re-pegs whose implied
+   * shift exceeds REPEG_DRIFT_THRESHOLD_MS (50 ms — a process-pause-sized
+   * jump). At known-good discontinuities (AppState background → foreground
+   * resume) the renderer paused while wall-clock advanced — the drift is huge
+   * but legitimate.
    * Call `repegFrameClock({ force: true })` to bypass the drift gate AND
    * pair with `clearScheduled()` to drop any stale future-scheduled commands.
    * No-op if the underlying synth port doesn't support frame counters.
@@ -241,6 +242,10 @@ export interface SynthPort {
   // v1.4 — scheduled-command surface. Optional so legacy mocks remain valid.
   noteOnAt?(channel: number, midi: number, velocity: number, atFrame: number, tickKind: number): void;
   getCurrentFrame?(): number;
+  /** Device-native output sample rate (Hz). Used to peg the frame clock at the
+   * SAME rate the render thread advances g_frame_position. Optional so legacy
+   * mocks remain valid (they fall back to the configured default). */
+  getSampleRate?(): number;
   addCommandFiredListener?(cb: (e: FiredPayload) => void): { remove(): void };
   /**
    * v1.4 — Drop all pending scheduled commands. Called from stop paths to
@@ -443,14 +448,17 @@ export function createMidiBus(cfg: BusConfig): MidiBus {
   let originFrame = 0;
   let pegged = false;
 
-  // v1.4 — silence-over-wrong: reject a re-peg whose new origin would shift
-  // atFrame math by more than this many ms relative to the prior origin.
-  // 2 ms is well below the buffer-granular firing quantum (~23 ms) so any
-  // genuine drift inside that window is still safely re-pegged; values above
-  // it signal a clock anomaly (process pause, audio thread stall, suspended
-  // tab) where extrapolating through would be worse than holding the prior
-  // peg. The next auto-repeg attempt runs `repegIntervalMs` later.
-  const REPEG_DRIFT_THRESHOLD_MS = 2;
+  // Reject a re-peg only when the implied shift looks like a real
+  // discontinuity (a process pause / audio-thread stall), NOT steady clock
+  // drift. The audio DAC crystal and the system wall clock genuinely diverge
+  // (observed ~1300 ppm on a Pixel 9 Pro → ~6.5 ms per 5 s repeg interval);
+  // that drift is LEGITIMATE and must be TRACKED, or the peg goes permanently
+  // stale and scheduling error accumulates without bound (we saw 38 ms over
+  // 30 s when the old 2 ms gate rejected every re-peg). 50 ms comfortably
+  // accepts steady drift and small GC hitches while still catching genuine
+  // multi-hundred-ms suspensions — those are also covered by the force-repeg on
+  // AppState resume / metronome start.
+  const REPEG_DRIFT_THRESHOLD_MS = 50;
 
   function repeg(): void {
     // We sample synth.getCurrentFrame() and now() as close together as we
@@ -459,6 +467,13 @@ export function createMidiBus(cfg: BusConfig): MidiBus {
     // dwarfed by the 23 ms render quantum we're already buffer-granular to.
     const f = synth.getCurrentFrame ? synth.getCurrentFrame() : 0;
     const t = now();
+    // P5/Aragorn — never RE-anchor to frame 0 (a counter reset), and never
+    // commit a backward wall-clock step (non-monotonic Date.now). Either would
+    // corrupt the origin pair; hold the prior peg. (The FIRST peg at frame 0 is
+    // legitimate — a cold start before the renderer has ticked — so only guard
+    // once already pegged.)
+    if (pegged && f <= 0) return;
+    if (pegged && t < originMs) return;
     // First-time peg has nothing to compare against — accept unconditionally.
     if (!pegged) {
       originFrame = f;
@@ -522,6 +537,10 @@ export function createMidiBus(cfg: BusConfig): MidiBus {
       noteOnAt(midi, velocity127, atMs, tick) {
         if (!synth.noteOnAt) return; // v1.4-followup: log if port lacks method.
         const atFrame = atMsToAtFrame(atMs);
+        // v1.4 wave-6 — silence-over-wrong: atMsToAtFrame returns NaN when the
+        // frame clock isn't pegged yet. Passing NaN to native code is undefined
+        // behaviour; skip silently (no logger plumbed through createMidiBus).
+        if (!Number.isFinite(atFrame)) return;
         synth.noteOnAt(ch, midi, vel127To01(velocity127), atFrame, tickToInt(tick ?? 'none'));
       },
     };
@@ -704,19 +723,48 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
   let frameClockPegged = false;
   let repegTimer: ReturnType<typeof setInterval> | null = null;
 
-  // v1.4 — silence-over-wrong: reject a re-peg whose new origin would shift
-  // atFrame math by more than this many ms relative to the prior origin.
-  // 2 ms is well below the buffer-granular firing quantum (~23 ms) so any
-  // genuine drift inside that window is still safely re-pegged; values above
-  // it signal a clock anomaly (process pause, audio thread stall, suspended
-  // tab) where extrapolating through would be worse than holding the prior
-  // peg until the next attempt. The next auto-repeg tick runs 5 s later.
-  const REPEG_DRIFT_THRESHOLD_MS = 2;
+  // Reject a re-peg only when the implied shift looks like a real
+  // discontinuity (a process pause / audio-thread stall), NOT steady clock
+  // drift. The audio DAC crystal and the system wall clock genuinely diverge
+  // (observed ~1300 ppm on a Pixel 9 Pro → ~6.5 ms per 5 s repeg interval);
+  // that drift is LEGITIMATE and must be TRACKED, or the peg goes permanently
+  // stale and scheduling error accumulates without bound (we saw 38 ms over
+  // 30 s when the old 2 ms gate rejected every re-peg). 50 ms comfortably
+  // accepts steady drift and small GC hitches while still catching genuine
+  // multi-hundred-ms suspensions — those are also covered by the force-repeg on
+  // AppState resume / metronome start.
+  const REPEG_DRIFT_THRESHOLD_MS = 50;
 
   function repegFrameClock(opts?: { force?: boolean }): void {
     if (!synthPort.getCurrentFrame) return;
-    const newFrame = synthPort.getCurrentFrame();
+    // v1.4 wave-6 — guard against synth disposed mid-call; if it throws, hold
+    // the prior peg and wait for the next auto-repeg tick.
+    let newFrame: number;
+    try {
+      newFrame = synthPort.getCurrentFrame();
+    } catch (err) {
+      log.w('Bus', 'repeg-getCurrentFrame-threw', { err: String(err) });
+      return;
+    }
     const newMs = nowFn();
+    // P5/Aragorn — never RE-anchor to frame 0: a mid-session counter reset would
+    // map wall-clock onto a counter about to jump from 0, producing wrong
+    // atFrames. Hold the prior peg instead. The FIRST peg at frame 0 is
+    // legitimate (cold start before the renderer ticks; atMsToAtFrame's
+    // frame-zero guard returns NaN until it advances), so only guard once
+    // already pegged.
+    if (frameClockPegged && newFrame <= 0) {
+      log.w('Bus', 'repeg-skipped-frame-zero');
+      return;
+    }
+    // P5/Aragorn — Date.now() is non-monotonic (NTP step, DST, manual change).
+    // If wall-clock went BACKWARD relative to the current origin, do not commit
+    // a backward peg (even on force) — hold the prior peg; the next forward tick
+    // re-pegs cleanly. Prevents a clock step from corrupting the origin pair.
+    if (frameClockPegged && newMs < frameOriginMs) {
+      log.w('Bus', 'repeg-skipped-clock-backward', { newMs, oldMs: frameOriginMs });
+      return;
+    }
     // First-time peg has nothing to compare against — accept unconditionally.
     if (!frameClockPegged) {
       frameOriginFrame = newFrame;
@@ -761,7 +809,17 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
     // port has no getCurrentFrame, or it returned 0 before render started),
     // signal "not computable" with NaN. Callers must skip the noteOnAt.
     if (!frameClockPegged) return Number.NaN;
-    if (frameOriginFrame === 0 && synthPort.getCurrentFrame && synthPort.getCurrentFrame() === 0) {
+    // v1.4 wave-6 — getCurrentFrame() can throw if synth was disposed between
+    // the frameClockPegged check above and this call. Treat as frame=0
+    // (unpegged / not-yet-rendering) → silence-over-wrong: return NaN.
+    let currentFrame: number;
+    try {
+      currentFrame = synthPort.getCurrentFrame ? synthPort.getCurrentFrame() : 0;
+    } catch (err) {
+      log.w('Bus', 'atMsToAtFrame-getCurrentFrame-threw', { err: String(err) });
+      return Number.NaN;
+    }
+    if (frameOriginFrame === 0 && currentFrame === 0) {
       // Synth not yet rendering — frame clock is frozen at 0. Computing
       // against zero would generate atFrames in the past once the renderer
       // catches up, which the C++ apply-time guard would drop anyway. Skip
@@ -799,7 +857,20 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
   let masterMuted = false;
 
   // Ready latch + warm-up window.
-  let ready = synthPort.isReady();
+  // v1.4 wave-7 — T1: wrap isReady() in case the native port throws during
+  // factory construction. Default to false (not ready) so callers see a safe
+  // initial state and the warm-up path can recover normally.
+  // v1.4 wave-10 T3 — single-shot guard: log the FIRST drum noteOn that routes
+  // to WAV fallback so future logcat sessions can confirm the fallback path was
+  // taken. No user-facing change.
+  let wavFallbackLoggedOnce = false;
+  let ready: boolean;
+  try {
+    ready = synthPort.isReady();
+  } catch (err) {
+    log.w('Bus', 'isReady-threw-at-init', { err: String(err) });
+    ready = false;
+  }
   let warmupExpired = false;
   let warmupTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -918,6 +989,16 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
       // if the channel is not currently reserved — this is intentional; the
       // fired event is audio-thread accurate and its channel field gives the
       // raw MIDI channel anyway.
+      // v1.4 wave-7 — T2: validate velocity before conversion. Native can send
+      // NaN or Infinity; propagating those to listeners violates the
+      // silence-over-wrong contract. Mirror the guards already on lines ~353
+      // and ~677. Drop the event entirely on bad velocity — don't emit silence.
+      // v1.4 wave-9 — T2: guard upper bound too; > 1 would cause
+      // Math.round(raw.velocity * 127) to exceed 127 (contract violation).
+      if (!Number.isFinite(raw.velocity) || raw.velocity < 0 || raw.velocity > 1) {
+        log.w('Bus', 'commandFired-velocity-invalid', { raw });
+        return;
+      }
       const role = resolveRole(raw.channel);
       emit('noteOn', {
         channel: role,
@@ -996,6 +1077,13 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
             } catch (err) {
               log.e('Bus', 'drumFallback-threw', { err: String(err) });
             }
+            // v1.4 wave-10 T3 — one-shot forensic entry so logcat for future
+            // tablet sessions shows whether the WAV fallback path was ever hit.
+            // No user-facing change; purely a debugging aid.
+            if (!wavFallbackLoggedOnce) {
+              wavFallbackLoggedOnce = true;
+              log.w('Bus', 'wav-fallback-activated — SF2 not ready at first drum noteOn; routing to WAV click');
+            }
             log.d('Bus', 'noteOn-wav', { midi: m, velocity: v127 });
           } else {
             log.w('Bus', 'noteOn-dropped-warmup', { role, midi: m });
@@ -1015,7 +1103,9 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
           log.e('Bus', 'noteOn-threw', { role, err: String(err) });
         }
         recordNoteOn(ch, m);
-        log.d('Bus', 'noteOn', { role, ch, midi: m, velocity: v127 });
+        // No per-note log here — this is the audio hot path (per beat + sub).
+        // A debug log every note crosses the JS→native/AsyncStorage bridge and
+        // taxes the timing thread; warnings/errors above carry the diagnostics.
         emit('noteOn', { channel: role, midi: m, velocity: v127, tick });
       },
 
@@ -1075,12 +1165,23 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
           log.w('Bus', 'noteOnAt-unsupported', { role });
           return;
         }
-        // v1.4 — silence-over-wrong: if the synth port reports not-ready
-        // we drop rather than queue. The timing window is gone by the time
-        // ready flips; firing late is worse than firing not at all.
-        if (synthPort.isReady && !synthPort.isReady()) {
-          log.w('Bus', 'noteOnAt-not-ready', { role, midi });
-          return;
+        // v1.4 wave-8 — T1: silence-over-wrong: if the synth port reports
+        // not-ready we drop rather than queue. The timing window is gone by
+        // the time ready flips; firing late is worse than firing not at all.
+        // Wrap isReady() in try/catch — if it throws the port is in an
+        // undefined state; drop the schedule entirely (same policy as init).
+        if (synthPort.isReady) {
+          let portReady = true;
+          try {
+            portReady = synthPort.isReady();
+          } catch (err) {
+            log.w('Bus', 'isReady-threw-at-noteOnAt', { role, err: String(err) });
+            return; // drop the schedule — synth port is in undefined state
+          }
+          if (!portReady) {
+            log.w('Bus', 'noteOnAt-not-ready', { role, midi });
+            return;
+          }
         }
         const m = clampMidi(midi);
         const v127 = clampVelocity127(velocity);
@@ -1099,7 +1200,7 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
         } catch (err) {
           log.e('Bus', 'noteOnAt-threw', { role, err: String(err) });
         }
-        log.d('Bus', 'noteOnAt', { role, ch, midi: m, velocity: v127, atMs, atFrame });
+        // No per-note log — audio hot path (per beat + sub). See noteOn above.
       },
 
       release() {

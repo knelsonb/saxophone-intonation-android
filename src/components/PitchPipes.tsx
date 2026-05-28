@@ -12,9 +12,16 @@
  * the tap handler and the "is playing" highlight bind through the hook.
  * The legacy WAV synth (pitchTones.buildWavBase64) is retained for now
  * per G15 (`@deprecated` one release, delete in v1.4).
+ *
+ * v1.4 wave-9 — T1: close button calls sheetRef.current?.dismiss() instead
+ * of onClose() directly. onDismiss is now the sole entry point for every
+ * dismiss path (button, drag, backdrop, programmatic visible=false). This
+ * eliminates the double-onClose that fired when the button called onClose →
+ * parent set visible=false → useEffect issued dismiss() → onDismiss fired
+ * onClose() again.
  */
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { type DimensionValue, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -38,9 +45,18 @@ interface PitchPipesProps {
   pipes: PipesState;
 }
 
+// v1.4 wave-11 — L1: column count by viewport width for narrow-phone support.
+function colCount(width: number): 3 | 4 | 6 {
+  if (width < 380) return 3;
+  if (width < 600) return 4;
+  return 6;
+}
+
 export function PitchPipes({ visible, onClose, refHz, instrumentKey, pipes }: PitchPipesProps) {
   const C = useTheme();
-  const s = useMemo(() => makeStyles(C), [C]);
+  const { width } = useWindowDimensions();
+  const cols = colCount(width);
+  const s = useMemo(() => makeStyles(C, cols), [C, cols]);
   void refHz; // a4Hz is consumed inside the App-level usePitchPipes call.
 
   const playingMidi = pipes.currentMidi;
@@ -84,7 +100,9 @@ export function PitchPipes({ visible, onClose, refHz, instrumentKey, pipes }: Pi
           <Text style={s.title}>PITCH PIPES</Text>
           <Text style={s.subtitle}>A = {refHz} Hz  ·  concert pitch</Text>
         </View>
-        <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close pitch pipes"
+        {/* v1.4 wave-9 — T1: dismiss via sheetRef so onDismiss is the sole
+            onClose entry point for ALL paths (button, drag, backdrop, programmatic). */}
+        <Pressable onPress={() => sheetRef.current?.dismiss()} accessibilityRole="button" accessibilityLabel="Close pitch pipes"
           style={({ pressed }) => [s.closeBtn, pressed && s.closeBtnPressed]}>
           <Text style={s.closeBtnText}>✕</Text>
         </Pressable>
@@ -117,7 +135,13 @@ export function PitchPipes({ visible, onClose, refHz, instrumentKey, pipes }: Pi
   );
 }
 
-function makeStyles(C: ThemePalette) {
+// v1.4 wave-11 — L1: makeStyles accepts cols (3 | 4 | 6) to set pad flex-basis.
+// Gap is 12dp between pads; container has paddingHorizontal:16.
+// Width percentage leaves ~1% slack per pad so rounding never causes an extra
+// wrap row. Gap spacing is handled by the `gap:12` on the container.
+function makeStyles(C: ThemePalette, cols: 3 | 4 | 6) {
+  // e.g. cols=3 → '32%', cols=4 → '24%', cols=6 → '15%'
+  const padWidthPct = `${Math.floor(100 / cols) - 1}%` as DimensionValue;
   return StyleSheet.create({
     header:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingVertical: 16, borderBottomColor: C.edge, borderBottomWidth: 1 },
     headerLeft:     { flex: 1 },
@@ -127,7 +151,7 @@ function makeStyles(C: ThemePalette) {
     closeBtnPressed:{ backgroundColor: C.edge },
     closeBtnText:   { color: C.inkMid, fontSize: 18, fontWeight: '700' },
     pads:           { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingVertical: 24, gap: 12, justifyContent: 'center' },
-    pad:            { width: '21%', minHeight: 96, paddingVertical: 14, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bg, borderColor: C.edge, borderWidth: 1, borderRadius: 4 },
+    pad:            { width: padWidthPct, minHeight: 96, paddingVertical: 14, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bg, borderColor: C.edge, borderWidth: 1, borderRadius: 4 },
     padTuning:      { borderColor: C.accent, borderWidth: 2 },
     padPlaying:     { backgroundColor: C.successTint, borderColor: C.inTune, borderWidth: 2 },
     padPressed:     { opacity: 0.7 },

@@ -544,6 +544,29 @@ function bucketAddSample(accum: BucketAccum, cents: number): void {
   if (accum.samples.length > BUCKET_SAMPLE_CAP) accum.samples.shift();
 }
 
+// v1.4 wave-12 — shared eviction helper used by all three bucket-insert call
+// sites (tap-to-log, COLLECT auto-accum, session auto-log). Returns the accum
+// for midiFing, creating it if absent and evicting the oldest entry when the
+// Map would exceed MAX_BUCKETS. Saxophone range is ~50 distinct fingerings;
+// 200 is generous for any real session.
+const MAX_BUCKETS = 200;
+function getOrCreateBucketAccum(
+  map: Map<number, BucketAccum>,
+  midiFing: number,
+  midiSound: number,
+): BucketAccum {
+  let accum = map.get(midiFing);
+  if (!accum) {
+    if (map.size >= MAX_BUCKETS) {
+      const oldestKey = map.keys().next().value;
+      if (oldestKey !== undefined) map.delete(oldestKey);
+    }
+    accum = newBucketAccum(midiFing, midiSound);
+    map.set(midiFing, accum);
+  }
+  return accum;
+}
+
 function computeBucketStats(accum: BucketAccum): BucketStats {
   const samples = accum.samples;
   const n = samples.length;
@@ -1018,11 +1041,8 @@ export function useAudioEngine(): AudioEngineState {
       return null;
     }
 
-    let accum = bucketAccumsRef.current.get(midiFing);
-    if (!accum) {
-      accum = newBucketAccum(midiFing, midiSound);
-      bucketAccumsRef.current.set(midiFing, accum);
-    }
+    // v1.4 wave-12 — use shared helper (eviction logic consolidated there).
+    const accum = getOrCreateBucketAccum(bucketAccumsRef.current, midiFing, midiSound);
     bucketAddSample(accum, cents);
     activeBucketKeyRef.current = midiFing;
 
@@ -1159,6 +1179,15 @@ export function useAudioEngine(): AudioEngineState {
     prevInstrumentKeyRef.current = instrumentKey;
     // Don't open a second initial run on the same tick as mount.
     if (runIdRef.current === null) return;
+    // v1.4 wave-11 T1 — reset YIN/filter state so the previous instrument's
+    // pitch history doesn't poison the new instrument's first note (stale
+    // octave-jump guard, stale filter decisions).
+    lastStablePitch.current = null;
+    filterStateRef.current = null;
+    qualityHistoryRef.current = newQualityHistory();
+    // v1.4 wave-11 T2 — clear bucket accumulator: transposition changed, so
+    // old midiFing keys are unreachable and count toward the 200-entry cap.
+    bucketAccumsRef.current.clear();
     (async () => {
       try {
         const id = await startRun({
@@ -1480,7 +1509,16 @@ export function useAudioEngine(): AudioEngineState {
     } else {
       const keep = RING_BUFFER_CAPACITY - n;
       const srcStart = ringFilled.current - keep;
-      r.copyWithin(0, srcStart, ringFilled.current);
+      // v1.4 wave-7 — T3 (option a): guard against negative srcStart. In
+      // practice the else-branch condition (ringFilled + n > RING_BUFFER_CAPACITY)
+      // guarantees srcStart = ringFilled - (RING_BUFFER_CAPACITY - n) > 0, so
+      // this should never fire. But TypedArray.copyWithin treats negative indices
+      // as offsets-from-end and would silently corrupt the buffer, so we skip
+      // the eviction when srcStart is non-positive rather than trust the
+      // invariant unconditionally.
+      if (srcStart > 0) {
+        r.copyWithin(0, srcStart, ringFilled.current);
+      }
       r.set(incoming, keep);
       ringFilled.current = RING_BUFFER_CAPACITY;
     }
@@ -1492,7 +1530,13 @@ export function useAudioEngine(): AudioEngineState {
     const fill = dbToMeterFill(db, gainModeRef.current);
 
     // --- Pitch detection ---
-    let nextFreq: number | null = freqHzRef.current;
+    // v1.4 wave-5 — L1: init to null, not stale freqHzRef.current.
+    // If YIN returns null (silence, RMS floor, YIN failure) the yinFired
+    // block is skipped entirely, so nextFreq would retain any stale init
+    // value and leak into the display ring as a phantom Hz rather than NaN.
+    // Initialising to null ensures the ring always writes NaN on silent
+    // frames, satisfying the silence-over-wrong invariant on all YIN-null paths.
+    let nextFreq: number | null = null;
     let nextRaw: number | null = null;
     let yinFired = false;
 
@@ -1576,12 +1620,14 @@ export function useAudioEngine(): AudioEngineState {
       // (`processed`); that was the bug — the filter is too strict for
       // Android UNPROCESSED mic levels and rarely emits.
       void processed; // kept for now in case we want a "show only confirmed" toggle later
-      nextFreq = nextRaw;
 
-      // Quality gate evaluation. Runs once per YIN frame; the result is
-      // shared by COLLECT auto-accumulation, session auto-log, and the
-      // diagnostic counter. logCurrentReading runs its own gate with a
-      // looser opts (skipSteadyAndOnset=true).
+      // v1.4 wave-4 — L1: quality gate (silence-over-wrong invariant).
+      // Per [[feedback-bellcurve-silence-over-wrong]] — reject means don't
+      // display, not display-stale. nextFreq is only set to nextRaw AFTER the
+      // gate accepts the frame. A rejected frame leaves nextFreq null so the
+      // display ring writes NaN and the vote pool sees no entry for that frame.
+      // This prevents a low-confidence or transient YIN output from locking
+      // the wrong note in the display or the accumulation buckets.
       let gateDecision: QualityDecision | null = null;
       if (nextRaw !== null && nextRaw > 0) {
         const a4 = a4HzRef.current;
@@ -1601,7 +1647,15 @@ export function useAudioEngine(): AudioEngineState {
           },
           { skipSteadyAndOnset: false },
         );
-        if (!gateDecision.accept) {
+        if (gateDecision.accept) {
+          // Gate passed — this frame is safe to display and vote on.
+          nextFreq = nextRaw;
+        } else {
+          // Gate rejected — silence-over-wrong: do NOT promote nextRaw to the
+          // display ring. nextFreq remains null (no-display sentinel), ensuring
+          // NaN is written to displayFreqRing and this frame is excluded from
+          // the median vote.
+          nextFreq = null;
           droppedFrameCountRef.current = (droppedFrameCountRef.current + 1) % 100000;
           setDroppedFrameCount(droppedFrameCountRef.current);
           setLastDropReason(gateDecision.reason);
@@ -1623,11 +1677,8 @@ export function useAudioEngine(): AudioEngineState {
         const transp = transpMap[instrumentKeyRef.current] ?? 0;
         const midiFing = midiSound - transp;
         const cents = exactCentsFromHz(nextRaw, a4, midiSound);
-        let accum = bucketAccumsRef.current.get(midiFing);
-        if (!accum) {
-          accum = newBucketAccum(midiFing, midiSound);
-          bucketAccumsRef.current.set(midiFing, accum);
-        }
+        // v1.4 wave-12 — use shared helper; applies MAX_BUCKETS eviction cap.
+        const accum = getOrCreateBucketAccum(bucketAccumsRef.current, midiFing, midiSound);
         bucketAddSample(accum, cents);
         activeBucketKeyRef.current = midiFing;
       }
@@ -1659,11 +1710,8 @@ export function useAudioEngine(): AudioEngineState {
         ) {
           // Streak crossed the threshold — log one sample.
           const cents = exactCentsFromHz(nextRaw, a4, midiSound);
-          let accum = bucketAccumsRef.current.get(midiFing);
-          if (!accum) {
-            accum = newBucketAccum(midiFing, midiSound);
-            bucketAccumsRef.current.set(midiFing, accum);
-          }
+          // v1.4 wave-12 — use shared helper; applies MAX_BUCKETS eviction cap.
+          const accum = getOrCreateBucketAccum(bucketAccumsRef.current, midiFing, midiSound);
           bucketAddSample(accum, cents);
           activeBucketKeyRef.current = midiFing;
           sessionLastAutoLogMsRef.current = now;

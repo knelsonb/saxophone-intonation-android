@@ -20,6 +20,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import { Animated, Pressable, ScrollView, Text, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../theme';
 import { makeStyles, DRAG_FRIENDLY_PRESS_DELAY_MS } from '../uiShared';
 import {
@@ -105,6 +106,13 @@ export function TunerScreen(props: TunerScreenProps) {
 
   // v1.3 — sub-page state. Local-only; tab return lands on TUNER.
   const [subPage, setSubPage] = useState<SubPage>('tuner');
+  // v1.4 wave-4 — reset sub-page to TUNER whenever this tab gains focus so
+  // tab return always lands on TUNER regardless of navigation mount state.
+  useFocusEffect(
+    React.useCallback(() => {
+      setSubPage('tuner');
+    }, []),
+  );
 
   const isListening = engine.status === 'listening';
   const centerStyle = styles.centerPortrait;

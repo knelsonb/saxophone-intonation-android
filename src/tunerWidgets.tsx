@@ -113,7 +113,7 @@ export function SilenceBanner({ onDismiss }: { onDismiss: () => void }) {
       onPress={onDismiss}
       accessibilityRole="alert"
       accessibilityLabel="Microphone signal is silent. Tap to dismiss."
-      style={styles.silenceBanner}
+      style={({ pressed }) => [styles.silenceBanner, pressed && { opacity: 0.7 }]}
     >
       <Text style={styles.silenceBannerText}>
         <Text style={styles.silenceBannerBold}>Microphone signal is silent.</Text>
@@ -438,12 +438,23 @@ export function NoteReadout({
                             C.sharp;
 
   // v1.1 — reserve fixed vertical space so the layout below never reflows
-  // when the note letter appears or disappears. minHeight covers the tallest
-  // possible rendering: note line-height + centsBig + hzRow + spacing.
-  const noteBlockMinHeight = noteFontSize + 60;
+  // when the note letter appears or disappears.
+  //
+  // v1.4 wave-5 — use a FIXED `height`, not `minHeight`. The two render
+  // branches below differ in height (normal: note + centsBig + hzRow ≈
+  // fontSize+66; out-of-range: note + short oorPill ≈ fontSize+35). With
+  // `minHeight` the normal/empty branch OVERFLOWED the reservation while the
+  // out-of-range branch sat at the floor, so the block's outer height changed
+  // between states. Because the parent (`centerPortrait`) vertically CENTERS
+  // the whole CentArc + NoteReadout stack, that height delta shoved the arc
+  // up/down intermittently. A fixed height pins the outer box so the arc's
+  // vertical position is stable across note-present / silence / out-of-range.
+  // The reserve covers the tallest branch with headroom for line-height
+  // variance; inner content top-anchors via noteBlock's default flex-start.
+  const noteBlockHeight = noteFontSize + 72;
 
   return (
-    <View style={[styles.noteBlock, { minHeight: noteBlockMinHeight }]}>
+    <View style={[styles.noteBlock, { height: noteBlockHeight }]}>
       <View style={styles.noteRow}>
         <View style={styles.noteSlot}>
           <Text
@@ -768,7 +779,7 @@ export function PeakSlideToggle({ value, onChange }: { value: boolean; onChange:
       accessibilityRole="switch"
       accessibilityState={{ checked: value }}
       accessibilityLabel={value ? 'Mode: LIVE — continuous pitch readout' : 'Mode: COLLECT — bucket samples per note and show stats'}
-      style={styles.peakSlideHit}
+      style={({ pressed }) => [styles.peakSlideHit, pressed && { opacity: 0.7 }]}
     >
       <View style={styles.peakSlideTrack}>
         <Text style={[styles.peakSlideEndOff, !value && styles.peakSlideEndOffActive]}>COLLECT</Text>
@@ -809,6 +820,16 @@ export function TapToLogCta({
   const [flash, setFlash] = useState<FlashState>('idle');
   const [flashMsg, setFlashMsg] = useState<string>('');
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // v1.4 wave-11 T5 — cancel in-flight flash timer on unmount to avoid
+  // setState on an unmounted component (React warning + memory leak).
+  useEffect(() => {
+    return () => {
+      if (flashTimer.current) {
+        clearTimeout(flashTimer.current);
+        flashTimer.current = null;
+      }
+    };
+  }, []);
   const [undoExpiresAt, setUndoExpiresAt] = useState<number | null>(null);
   const [, setNowTick] = useState(0);
   useEffect(() => {

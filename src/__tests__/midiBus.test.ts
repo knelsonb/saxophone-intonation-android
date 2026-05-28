@@ -317,4 +317,102 @@ function makeMockSynth(initialFrame: number = 0): {
   bus.dispose();
 }
 
+// ---------------------------------------------------------------------------
+// 9. Drift gate — steady clock drift is ACCEPTED and tracked.
+//
+// Regression test for the bug that shipped a dead/late metronome: the audio
+// DAC crystal vs system wall clock drift (~1300 ppm observed on a Pixel 9 Pro,
+// ~6.5ms per 5s interval). The old 2ms gate rejected EVERY auto-repeg → peg
+// went permanently stale → unbounded scheduling error. The gate (now 50ms)
+// must ACCEPT steady drift and keep tracking it across intervals.
+//
+// We detect accept-vs-reject by observing the origin through atMsToAtFrame:
+// an accepted repeg moves the origin; a rejected one holds the prior origin.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(0);
+  let nowMs = 1_000;
+  const bus = createMidiBus({ synth: mock.port, sampleRate: 44100, now: () => nowMs, repegIntervalMs: 0 });
+  bus.repeg(); // peg (1000ms, frame 0)
+
+  // 5s later the frame counter advanced at ~44044/s (vs nominal 44100) → ~6.35ms
+  // behind the nominal projection. Legitimate drift; must be accepted.
+  nowMs = 6_000;
+  mock.setFrame(220_220); // 44044 * 5
+  bus.repeg();
+  assertEqual(bus.atMsToAtFrame(6_000), 220_220, 'drift gate: steady ~1300ppm drift ACCEPTED (peg tracks)');
+
+  // Another interval — still < 50ms per step, so it keeps tracking (no
+  // permanent staleness — exactly the bug we fixed).
+  nowMs = 11_000;
+  mock.setFrame(440_440);
+  bus.repeg();
+  assertEqual(bus.atMsToAtFrame(11_000), 440_440, 'drift gate: steady drift keeps tracking across intervals');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 10. Drift gate — a process-pause-sized step is REJECTED, prior peg held.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(0);
+  let nowMs = 1_000;
+  const bus = createMidiBus({ synth: mock.port, sampleRate: 44100, now: () => nowMs, repegIntervalMs: 0 });
+  bus.repeg(); // peg (1000ms, 0)
+
+  // 5s of wall time pass but the renderer froze ~4s (only 1s of frames): implied
+  // shift ~4000ms ≫ 50ms → REJECTED. The OLD origin is held, so atMsToAtFrame
+  // projects from (1000, 0): 0 + round(5000·44.1) = 220500 (NOT the new 44100).
+  nowMs = 6_000;
+  mock.setFrame(44_100);
+  bus.repeg();
+  assertEqual(bus.atMsToAtFrame(6_000), 220_500, 'drift gate: process-pause step REJECTED (prior peg held)');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 11. Peg guard — never anchor to frame 0 (renderer not ticked / just reset).
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(100_000);
+  let nowMs = 1_000;
+  const bus = createMidiBus({ synth: mock.port, sampleRate: 44100, now: () => nowMs, repegIntervalMs: 0 });
+  bus.repeg(); // peg (1000ms, 100000)
+
+  // getCurrentFrame returns 0 (e.g. just after a track re-init). Pegging here
+  // would map wall-clock onto a counter about to jump from 0. Must be skipped;
+  // old origin held → atMsToAtFrame(2000) = 100000 + round(1000·44.1) = 144100.
+  nowMs = 2_000;
+  mock.setFrame(0);
+  bus.repeg();
+  assertEqual(bus.atMsToAtFrame(2_000), 144_100, 'peg guard: newFrame<=0 SKIPPED (never anchor to frame 0)');
+
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 12. Peg guard — a backward wall-clock step (NTP/DST) is skipped.
+// ---------------------------------------------------------------------------
+
+{
+  const mock = makeMockSynth(220_500);
+  let nowMs = 5_000;
+  const bus = createMidiBus({ synth: mock.port, sampleRate: 44100, now: () => nowMs, repegIntervalMs: 0 });
+  bus.repeg(); // peg (5000ms, 220500)
+
+  // now() jumps backward (clock correction). Committing it would corrupt the
+  // origin pair. Must be skipped; old origin held → atMsToAtFrame(5000) = 220500.
+  nowMs = 4_000;
+  mock.setFrame(264_600);
+  bus.repeg();
+  assertEqual(bus.atMsToAtFrame(5_000), 220_500, 'peg guard: backward wall-clock step SKIPPED');
+
+  bus.dispose();
+}
+
 console.log('ALL PASS: midiBus.test.ts');

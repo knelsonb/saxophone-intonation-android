@@ -16,7 +16,7 @@
  * `src/__tests__/useMidiBus.test.ts`.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import synth from '@local/raw-audio-output';
 import { log } from './log';
 import {
@@ -65,10 +65,23 @@ export function useMidiBus(): MidiBusState {
   // below tears it down explicitly so we don't rely on useMemo's "may
   // forget" semantics for cleanup.
   const core = useMemo<MidiBusCore>(() => {
+    // Peg the frame clock at the device-native output rate the synth actually
+    // renders at (queried from the native module). If we render at 48 kHz but
+    // peg at 44.1 kHz, every scheduled atFrame is off by 8.8%. Read once at
+    // construction (synchronous native Function, same as isReady() above);
+    // falls back to the core's default if the port doesn't expose it (tests).
+    let nativeSampleRate: number | undefined;
+    try {
+      nativeSampleRate = synth.getSampleRate?.();
+    } catch {
+      nativeSampleRate = undefined;
+    }
+    log.i('Bus', 'frame-clock sampleRate', { nativeSampleRate: nativeSampleRate ?? 'default(44100)' });
     return createMidiBusCore({
       synth: synth as SynthPort,
       drumFallback: null, // Wave 1C — useMetronome migration owns this wiring.
       logger: log,
+      sampleRate: nativeSampleRate,
       onReadyChange: (next) => {
         // The ready-edge fires from inside the prepareAsync resolution path,
         // well outside any noteOn call stack, so a microtask hop here is
@@ -84,6 +97,44 @@ export function useMidiBus(): MidiBusState {
   useEffect(() => {
     return () => {
       core.dispose();
+    };
+  }, [core]);
+
+  // v1.4.x P3 — audio route recovery. Two failure modes after a headphone /
+  // Bluetooth / USB plug or unplug:
+  //   (a) the AudioTrack keeps running but briefly pauses → the render-frame
+  //       counter stalls → the bus's frame-clock peg goes stale and the drift
+  //       gate refuses to re-peg → scheduled noteOnAt commands land out-of-
+  //       window and drop (silent + still). Fix: force-repeg on the native
+  //       `audioRouteChanged` signal so the next beats anchor to the live clock.
+  //   (b) the track dies (ERROR_DEAD_OBJECT / INVALID_OPERATION) → the render
+  //       thread exits and the counter freezes forever. Fix: rebuild via the
+  //       existing, tested stop()/start() path, then drop the stale queue and
+  //       force-repeg. Throttled to avoid restart storms on a flapping device.
+  const lastRecoveryRef = useRef(0);
+  useEffect(() => {
+    const routeSub = synth.addRouteChangeListener?.((e) => {
+      log.d('Bus', 'audioRouteChanged — force-repeg frame clock', e);
+      try { core.repegFrameClock({ force: true }); } catch { /* ignore */ }
+    });
+    const errSub = synth.addErrorListener((e) => {
+      const reason = e?.reason ?? '';
+      if (!/DEAD_OBJECT|INVALID_OPERATION/.test(reason)) return;
+      const now = Date.now();
+      if (now - lastRecoveryRef.current < 3000) {
+        log.w('Bus', 'render-error recovery throttled', { reason });
+        return;
+      }
+      lastRecoveryRef.current = now;
+      log.w('Bus', 'render thread died — rebuilding AudioTrack + re-peg', { reason });
+      try { synth.stop(); } catch { /* ignore */ }
+      try { synth.start(); } catch { /* ignore */ }
+      try { core.clearScheduled(); } catch { /* ignore */ }
+      try { core.repegFrameClock({ force: true }); } catch { /* ignore */ }
+    });
+    return () => {
+      try { routeSub?.remove(); } catch { /* ignore */ }
+      try { errSub.remove(); } catch { /* ignore */ }
     };
   }, [core]);
 

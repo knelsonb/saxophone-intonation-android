@@ -52,6 +52,14 @@ export function FlashDisplay({ running, beat, bpm, timeSig, bus }: FlashDisplayP
   const bpmRef = useRef(bpm);
   useEffect(() => { bpmRef.current = bpm; }, [bpm]);
 
+  // v1.4 wave-5 T5 — colorsRef keeps theme colors fresh inside the listener
+  // without including C.inTune / C.accent in the subscription effect's dep
+  // list. Previously those colors were in deps, so every theme change tore
+  // down and rebuilt the bus.on('noteOn') subscription — a beat firing during
+  // that gap was missed. Pattern mirrors bpmRef above.
+  const colorsRef = useRef({ inTune: C.inTune, accent: C.accent });
+  useEffect(() => { colorsRef.current = { inTune: C.inTune, accent: C.accent }; }, [C.inTune, C.accent]);
+
   // v1.0 — read system reduce-motion preference. Re-read on mount and on
   // subscription change. If RN's listener isn't available we fall back to
   // the initial read.
@@ -117,8 +125,10 @@ export function FlashDisplay({ running, beat, bpm, timeSig, bus }: FlashDisplayP
       if ((evt.velocity ?? 0) <= 0) return;
       if (evt.tick === 'sub') return;
       animRef.current?.stop();
-      // Snapshot color based on the current beat at the moment of the noteOn.
-      const color = beatRef.current === 1 ? C.inTune : C.accent;
+      // v1.4 wave-5 T5 — read colors via colorsRef so theme changes don't
+      // force a subscription rebuild (which would drop beats firing during
+      // the gap). colorsRef.current is always the latest palette values.
+      const color = beatRef.current === 1 ? colorsRef.current.inTune : colorsRef.current.accent;
       flashColorRef.current = color;
       setFlashBg(color);
       flashAnim.setValue(1);
@@ -136,7 +146,9 @@ export function FlashDisplay({ running, beat, bpm, timeSig, bus }: FlashDisplayP
       off();
       animRef.current?.stop();
     };
-  }, [running, bus, flashAnim, C.inTune, C.accent]);
+  // C.inTune / C.accent removed from deps — read via colorsRef (wave-5 T5).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, bus, flashAnim]);
 
   const opacityInterp = flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
@@ -201,7 +213,12 @@ export function FlashDisplay({ running, beat, bpm, timeSig, bus }: FlashDisplayP
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
     root: {
-      height: 240,
+      // v1.4 wave-11 — L4: flex:1 absorbs available height instead of a
+      // fixed 240dp that overflows 640dp portrait phones. minHeight keeps
+      // the display legible; maxHeight caps it on tablets (896dp+).
+      flex: 1,
+      minHeight: 120,
+      maxHeight: 240,
       borderRadius: 6,
       backgroundColor: C.face,
       borderColor: C.edge,

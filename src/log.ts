@@ -80,6 +80,35 @@ function push(level: LogLevel, tag: string, msg: string): void {
   }
 }
 
+// v1.4.x P1 — native logcat passthrough. RN release builds do NOT pipe
+// console.* to logcat (that routing is __DEV__-gated), so on-device forensics
+// were invisible to `adb logcat`. Mirror entries into Android's native log via
+// the synth module's nativeLog Function. Resolved lazily + guarded so the Node
+// test runner (no native module) never breaks on import. Debug level is NOT
+// mirrored — it fires per audio op (per-beat or more) and would flood logcat;
+// warn/info/error carry the diagnostics worth surfacing in the field.
+let nativeLogFn: ((level: string, tag: string, msg: string) => void) | null | undefined;
+function nativeLog(level: LogLevel, tag: string, msg: string): void {
+  if (level === 'debug') return; // gentle: skip per-op spam
+  if (nativeLogFn === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require('@local/raw-audio-output');
+      const s = (mod && (mod.default ?? mod)) as
+        | { nativeLog?: (l: string, t: string, m: string) => void }
+        | undefined;
+      nativeLogFn = typeof s?.nativeLog === 'function'
+        ? (l, t, m) => s.nativeLog!(l, t, m)
+        : null;
+    } catch {
+      nativeLogFn = null;
+    }
+  }
+  if (nativeLogFn) {
+    try { nativeLogFn(level, tag, msg); } catch { /* best-effort */ }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -96,18 +125,21 @@ export const log = {
     const full = msg + formatArgs(args);
     push('info', tag, full);
     console.log(`[${tag}] ${full}`);
+    nativeLog('info', tag, full);
   },
 
   w(tag: string, msg: string, ...args: unknown[]): void {
     const full = msg + formatArgs(args);
     push('warn', tag, full);
     console.warn(`[${tag}] ${full}`);
+    nativeLog('warn', tag, full);
   },
 
   e(tag: string, msg: string, ...args: unknown[]): void {
     const full = msg + formatArgs(args);
     push('error', tag, full);
     console.error(`[${tag}] ${full}`);
+    nativeLog('error', tag, full);
     // Fire-and-forget persist — crash leaves persisted tail.
     log.flushAsync().catch(() => {});
   },

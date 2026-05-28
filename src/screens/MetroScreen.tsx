@@ -20,6 +20,7 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import type { BottomSheetModal } from '@gorhom/bottom-sheet';
+import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
 import type {
@@ -138,6 +139,13 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
   // v1.3 — sub-page state lives on the screen, not persisted. Tab return
   // always lands on METRONOME (per §2 + locked decisions).
   const [subPage, setSubPage] = useState<SubPage>('metronome');
+  // v1.4 wave-4 — reset sub-page to METRONOME whenever this tab gains focus so
+  // tab return always lands on METRONOME regardless of navigation mount state.
+  useFocusEffect(
+    React.useCallback(() => {
+      setSubPage('metronome');
+    }, []),
+  );
 
   // v1.3 — mock profile slot state. TODO(Wave 3.5): replace with
   // metro.profiles / metro.activeProfileSlot / metro.loadProfile /

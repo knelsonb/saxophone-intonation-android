@@ -152,7 +152,7 @@ export function RangeEditor({
         </View>
 
         <View style={s.defaultRow}>
-          <Text style={s.defaultLabel}>DEFAULT</Text>
+          <Text style={s.defaultLabel} numberOfLines={1}>DEFAULT</Text>
           <Text style={s.defaultValue}>
             {midiLabel(baked[0], displayMode, instrumentKey)}
             {'  —  '}
@@ -193,8 +193,10 @@ function makeStyles(C: ThemePalette) {
     closeBtnPressed: { backgroundColor: C.edge },
     closeBtnText: { color: C.inkMid, fontSize: 16, fontWeight: '700' },
     defaultRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 12, borderBottomColor: C.edgeSoft, borderBottomWidth: 1 },
-    defaultLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, width: 60, fontWeight: '700' },
-    defaultValue: { color: C.inkMid, fontSize: 13, letterSpacing: 1 },
+    // v1.4 wave-11 — L3: flex:0 + numberOfLines instead of fixed width:60.
+    // Fixed width clipped on narrow phones; label is always short ("DEFAULT").
+    defaultLabel: { color: C.inkDim, fontSize: 10, letterSpacing: 3, fontWeight: '700', flexShrink: 0 },
+    defaultValue: { color: C.inkMid, fontSize: 13, letterSpacing: 1, flex: 1 },
     defaultMidi: { color: C.inkDim, fontSize: 11 },
     steppers: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 28, paddingHorizontal: 20 },
     validationError: { color: C.sharp, fontSize: 12, letterSpacing: 1, textAlign: 'center', marginBottom: 8, paddingHorizontal: 20, fontWeight: '700' },

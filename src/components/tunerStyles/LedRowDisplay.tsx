@@ -15,15 +15,22 @@
  *  |c| > 9¢ .......... red LED on side of error, position scales with magnitude
  */
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
 import type { NoteDisplay } from '../../tunerWidgets';
 
 const LED_COUNT = 11;
 const LED_RANGE_CENTS = 25;
-const LED_DIAMETER = 24;
-const LED_GAP = 18;
+// v1.4 wave-10 — L4: base sizes for wide screens (tablet / landscape).
+// Narrow phones (< 500 dp) get smaller LEDs so 11 × (LED+gap) fits in ~320 dp.
+const LED_DIAMETER_WIDE = 24;
+const LED_GAP_WIDE = 18;
+const LED_DIAMETER_NARROW = 16;
+const LED_GAP_NARROW = 8;
+// Back-compat alias — makeStyles now receives dynamic sizes from the hook.
+const LED_DIAMETER = LED_DIAMETER_WIDE;
+const LED_GAP = LED_GAP_WIDE;
 const CENTER_INDEX = Math.floor(LED_COUNT / 2); // 5
 
 // v1.3.2 zone-map bands. Each band lists the LED-color decisions for a
@@ -88,7 +95,14 @@ export interface LedRowDisplayProps {
 
 export function LedRowDisplay({ noteDisplay, freqHz, noteFontSize, isOutOfRange }: LedRowDisplayProps) {
   const C = useTheme();
-  const styles = useMemo(() => makeStyles(C), [C]);
+  // v1.4 wave-10 — L4: responsive LED sizing. On screens narrower than 500 dp
+  // (common 360 dp portrait phones) the original 24/18 constants overflow the
+  // container. Below the threshold use 16/8 → 11×24 = 264 dp which fits easily.
+  // Above 500 dp (tablet, landscape) the original sizes are restored.
+  const { width: screenWidth } = useWindowDimensions();
+  const ledDiameter = screenWidth < 500 ? LED_DIAMETER_NARROW : LED_DIAMETER_WIDE;
+  const ledGap      = screenWidth < 500 ? LED_GAP_NARROW      : LED_GAP_WIDE;
+  const styles = useMemo(() => makeStyles(C, ledDiameter, ledGap), [C, ledDiameter, ledGap]);
 
   const hasNote = noteDisplay !== null;
   const oor = isOutOfRange && hasNote;
@@ -123,6 +137,15 @@ export function LedRowDisplay({ noteDisplay, freqHz, noteFontSize, isOutOfRange 
       animRefsRef.current[i] = anim;
       anim.start();
     });
+    // v1.4 wave-7 — T4: stop in-flight animations on unmount so they don't
+    // continue ticking after the component is gone. Mirrors PendulumDisplay's
+    // animRef.current?.stop() cleanup pattern.
+    return () => {
+      for (const a of animRefsRef.current) {
+        a?.stop();
+      }
+      animRefsRef.current = animRefsRef.current.map(() => null);
+    };
   }, [ledColors]);
 
   const letter = noteDisplay?.letter ?? '—';
@@ -207,14 +230,15 @@ export function LedRowDisplay({ noteDisplay, freqHz, noteFontSize, isOutOfRange 
   );
 }
 
-function makeStyles(C: ThemePalette) {
+// v1.4 wave-10 — L4: accepts dynamic ledDiameter/ledGap computed from screen width.
+function makeStyles(C: ThemePalette, ledDiameter: number, ledGap: number) {
   return StyleSheet.create({
     // Own our width — parent `centerPortrait` no longer cross-axis-centers,
     // so the root must stretch and self-center to match the legend's max.
     root: {
       width: '100%',
       alignSelf: 'center',
-      maxWidth: (LED_DIAMETER + LED_GAP) * LED_COUNT,
+      maxWidth: (ledDiameter + ledGap) * LED_COUNT,
       alignItems: 'center',
       paddingHorizontal: 8,
     },
@@ -235,32 +259,32 @@ function makeStyles(C: ThemePalette) {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: LED_GAP,
+      gap: ledGap,
       marginTop: 4,
     },
     ledSlot: {
-      width: LED_DIAMETER,
-      height: LED_DIAMETER,
+      width: ledDiameter,
+      height: ledDiameter,
       position: 'relative',
     },
     ledWell: {
       position: 'absolute',
-      width: LED_DIAMETER,
-      height: LED_DIAMETER,
-      borderRadius: LED_DIAMETER / 2,
+      width: ledDiameter,
+      height: ledDiameter,
+      borderRadius: ledDiameter / 2,
       borderColor: C.edge,
       borderWidth: 1,
       backgroundColor: C.bg,
     },
     led: {
       position: 'absolute',
-      width: LED_DIAMETER,
-      height: LED_DIAMETER,
-      borderRadius: LED_DIAMETER / 2,
+      width: ledDiameter,
+      height: ledDiameter,
+      borderRadius: ledDiameter / 2,
     },
     baselineWrap: {
       width: '100%',
-      maxWidth: (LED_DIAMETER + LED_GAP) * LED_COUNT,
+      maxWidth: (ledDiameter + ledGap) * LED_COUNT,
       marginTop: 8,
       height: 6,
       position: 'relative',
@@ -285,7 +309,7 @@ function makeStyles(C: ThemePalette) {
       flexDirection: 'row',
       justifyContent: 'space-between',
       width: '100%',
-      maxWidth: (LED_DIAMETER + LED_GAP) * LED_COUNT,
+      maxWidth: (ledDiameter + ledGap) * LED_COUNT,
       marginTop: 6,
       paddingHorizontal: 4,
     },

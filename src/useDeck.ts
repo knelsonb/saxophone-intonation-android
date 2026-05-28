@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { File, Directory, Paths } from 'expo-file-system';
+import { log } from './log';
 import {
   useAudioRecorder,
   useAudioRecorderState,
@@ -32,6 +33,7 @@ import {
   RecordingPresets,
 } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
+import type { MidiBusState } from './useMidiBusCore';
 
 const MAX_RECORDING_SECONDS = 5 * 60; // 5 minutes
 
@@ -86,7 +88,16 @@ export interface DeckState {
   cancelClearTake: () => void;
 }
 
-export function useDeck(): DeckState {
+export interface UseDeckArgs {
+  /**
+   * v1.4 wave-5 T2 — bus reference so useDeck can mute the synth master
+   * BEFORE recorder.record() starts capture (eliminates the 0-200 ms drone/synth
+   * bleed that the prior useEffect-based mute path allowed).
+   */
+  bus: MidiBusState;
+}
+
+export function useDeck({ bus }: UseDeckArgs): DeckState {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recState = useAudioRecorderState(recorder, 200);
 
@@ -101,21 +112,32 @@ export function useDeck(): DeckState {
   const [playing, setPlaying] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<DeckState['pendingConfirm']>(null);
   const [toast, setToast] = useState<DeckToast | null>(null);
+  // v1.4 wave-10 T1 — ref so the AppState listener always reads the freshest
+  // durationMillis without being listed as a dep (which caused listener
+  // re-creation on every 200 ms recorder poll and introduced ~200 ms staleness).
+  const durationMillisRef = useRef<number | undefined>(undefined);
   const toastIdRef = useRef(0);
   // v1.3.4 B8 — track pending toast timers so unmount can clear them and
   // avoid setState-on-unmounted-component warnings.
   const toastTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
+  // v1.4 wave-10 T2 — duration split: errors stay up 5000 ms so users can
+  // actually read them; success toasts keep the original 2500 ms.
   const flashToast = useCallback((text: string, kind: 'ok' | 'error') => {
     toastIdRef.current += 1;
     const id = toastIdRef.current;
     setToast({ text, kind, id });
+    const durationMs = kind === 'error' ? 5000 : 2500;
     const t = setTimeout(() => {
       toastTimersRef.current.delete(t);
       setToast((prev) => (prev && prev.id === id ? null : prev));
-    }, 2500);
+    }, durationMs);
     toastTimersRef.current.add(t);
   }, []);
+
+  // v1.4 wave-10 T1 — keep the ref in sync every render so the AppState
+  // background listener always reads a fresh durationMillis value at fire-time.
+  useEffect(() => { durationMillisRef.current = recState.durationMillis; }, [recState.durationMillis]);
 
   // Disposes the active player if any.
   const disposePlayer = useCallback(() => {
@@ -172,6 +194,9 @@ export function useDeck(): DeckState {
         recordingClosingRef.current = true;
         try {
           try { await recorder.stop(); } catch { /* ignore */ }
+          // v1.4 wave-6 T3 — unmute after auto-stop so mute doesn't persist
+          // for the remainder of the session (prior code left it silenced).
+          try { bus.setMasterMute(false); } catch { /* ignore */ }
           const uri = recorder.uri;
           if (uri) {
             // v1.0.1 BUG-4 — mirror manual stopRecord ordering: dispose any
@@ -195,6 +220,12 @@ export function useDeck(): DeckState {
   // ---------- actions ----------
 
   const startRecord = useCallback(() => {
+    // v1.4 closeout — bail if a prior stopRecord is still draining so we don't
+    // start a new capture alongside the one that's still closing.
+    if (recordingClosingRef.current) {
+      flashToast('Wait — finishing previous take', 'error');
+      return;
+    }
     if (take !== null) {
       // Confirm before overwriting an unsaved take.
       setPendingConfirm('discard-and-record');
@@ -202,13 +233,21 @@ export function useDeck(): DeckState {
     }
     (async () => {
       try {
+        // v1.4 wave-5 T2 — mute BEFORE capture starts. The useEffect in
+        // App.tsx fires after React reconciliation (0-200 ms later); by then
+        // the recorder is already capturing and synth/drone sound bleeds in.
+        // Imperative call here eliminates that window entirely.
+        bus.setMasterMute(true);
         await recorder.prepareToRecordAsync();
         recorder.record();
       } catch (e) {
+        // v1.4 wave-6 T1 — unmute on error so mute doesn't leak when
+        // prepareToRecordAsync or record() throws before recording started.
+        try { bus.setMasterMute(false); } catch { /* ignore */ }
         flashToast('Could not start recording', 'error');
       }
     })();
-  }, [recorder, take, flashToast]);
+  }, [recorder, take, flashToast, bus]);
 
   const stopRecord = useCallback(async () => {
     // v1.0.1 BUG-5 — race-guard against AppState background / 5-min cap that
@@ -219,8 +258,18 @@ export function useDeck(): DeckState {
       try {
         await recorder.stop();
       } catch {
-        flashToast('Stop failed — recording may be incomplete', 'error');
+        // v1.4 wave-10 T4 — inform the user so they know the take may be
+        // incomplete; suggest DECK CLEAR as a recovery path. Does NOT crash
+        // or propagate — the rest of the stop path runs normally.
+        flashToast('Stop failed — recording may be incomplete (try DECK CLEAR)', 'error');
       }
+      // v1.4 wave-5 T2 — unmute AFTER stop resolves so no synth tail leaks
+      // into the tail of the take. The useEffect in App.tsx will also fire
+      // on the next reconciler pass but this imperative call is immediate.
+      // v1.4 wave-7 — guarded so a bus throw can't strand both the mute AND
+      // recordingClosingRef (the finally below was unreachable on a thrown
+      // setMasterMute, blocking all future record starts).
+      try { bus.setMasterMute(false); } catch { /* ignore */ }
       const uri = recorder.uri;
       if (!uri) {
         flashToast('No audio captured', 'error');
@@ -236,21 +285,30 @@ export function useDeck(): DeckState {
     } finally {
       recordingClosingRef.current = false;
     }
-  }, [recorder, recState.durationMillis, disposePlayer, flashToast]);
+  }, [recorder, recState.durationMillis, disposePlayer, flashToast, bus]);
 
   const confirmDiscardAndRecord = useCallback(() => {
+    // v1.4 closeout — same in-flight-close guard as startRecord.
+    if (recordingClosingRef.current) {
+      flashToast('Wait — finishing previous take', 'error');
+      return;
+    }
     setPendingConfirm(null);
     disposePlayer();
     setTake(null);
     (async () => {
       try {
+        // v1.4 wave-5 T2 — same imperative mute guard as startRecord.
+        bus.setMasterMute(true);
         await recorder.prepareToRecordAsync();
         recorder.record();
       } catch {
+        // v1.4 wave-6 T2 — unmute on error; mirrors T1 fix in startRecord.
+        try { bus.setMasterMute(false); } catch { /* ignore */ }
         flashToast('Could not start recording', 'error');
       }
     })();
-  }, [recorder, disposePlayer, flashToast]);
+  }, [recorder, disposePlayer, flashToast, bus]);
 
   const cancelDiscardAndRecord = useCallback(() => {
     setPendingConfirm(null);
@@ -322,7 +380,17 @@ export function useDeck(): DeckState {
       // API (v56+); do NOT swap this import for `expo-file-system/legacy` — the
       // legacy module has no Directory class and this would silently break save.
       const dir = new Directory(Paths.document, SAVED_DIRNAME);
-      if (!dir.exists) dir.create();
+      // v1.4 wave-4 — await dir.create() so the directory exists before we
+      // attempt to create a File inside it (prevents save failure on first run).
+      if (!dir.exists) {
+        try {
+          await dir.create();
+        } catch (e) {
+          log.e('Deck', 'saveTake: dir.create() failed', e);
+          flashToast('Save failed — could not create recordings folder', 'error');
+          return;
+        }
+      }
       const ts = take.capturedAtMs;
       const src = new File(take.uri);
       // Mirror the recorder's extension so the saved file plays back natively
@@ -332,7 +400,17 @@ export function useDeck(): DeckState {
         return m ? `.${m[1].toLowerCase()}` : '.m4a';
       })();
       const dest = new File(dir, `recording-${ts}${ext}`);
-      if (dest.exists) dest.delete();
+      // v1.4 wave-4 — await dest.delete() so the file is gone before we copy
+      // into its slot (prevents copy failure or stale-file collision).
+      if (dest.exists) {
+        try {
+          await dest.delete();
+        } catch (e) {
+          log.e('Deck', 'saveTake: dest.delete() failed', e);
+          flashToast('Save failed — could not overwrite existing recording', 'error');
+          return;
+        }
+      }
       // expo-file-system copy: source file → destination file. async variant
       // so errors surface cleanly.
       await src.copy(dest);
@@ -364,14 +442,23 @@ export function useDeck(): DeckState {
                 await recorder.stop();
               } catch {
                 // If stop itself blew up there's nothing to salvage.
+                // v1.4 wave-6 T4 — still unmute so mute doesn't leak even
+                // when the stop call itself throws.
+                try { bus.setMasterMute(false); } catch { /* ignore */ }
                 return;
               }
+              // v1.4 wave-6 T4 — unmute after background-forced stop so mute
+              // doesn't persist when the user returns to the foreground.
+              try { bus.setMasterMute(false); } catch { /* ignore */ }
               // v1.0.1 BUG-5 — capture URI + duration AFTER stop resolves
               // (mirrors stopRecord). Old code snapshotted durSec pre-stop
               // which could be stale by tens of ms.
+              // v1.4 wave-10 T1 — read via ref so the listener is not re-created
+              // on every 200 ms recorder poll (recState.durationMillis is NOT in
+              // this effect's deps; the ref is always current at fire-time).
               const uri = recorder.uri;
               if (!uri) return;
-              const durSec = (recState.durationMillis ?? 0) / 1000;
+              const durSec = (durationMillisRef.current ?? 0) / 1000;
               if (durSec < MIN_VALID_TAKE_SEC) return; // drop orphan silently
               disposePlayer();
               setTake({
@@ -392,7 +479,10 @@ export function useDeck(): DeckState {
       }
     });
     return () => sub.remove();
-  }, [recorder, recState.isRecording, recState.durationMillis, playing, disposePlayer]);
+  // v1.4 wave-10 T1 — recState.durationMillis removed from deps; the ref
+  // (durationMillisRef) is always current so the listener never reads stale
+  // duration and is not re-created on every 200 ms recorder poll.
+  }, [recorder, recState.isRecording, playing, disposePlayer]);
 
   useEffect(() => {
     return () => disposePlayer();

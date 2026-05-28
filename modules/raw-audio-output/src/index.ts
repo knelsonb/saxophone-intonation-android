@@ -5,6 +5,7 @@ import type {
   SynthCommandFiredEvent,
   SynthErrorEvent,
   SynthReadyEvent,
+  SynthRouteChangedEvent,
   SynthUnderrunEvent,
 } from './RawAudioOutput.types';
 
@@ -17,6 +18,7 @@ type RawAudioOutputEvents = {
   audioOutputUnderrun: (payload: SynthUnderrunEvent) => void;
   audioOutputError: (payload: SynthErrorEvent) => void;
   commandFired: (payload: SynthCommandFiredEvent) => void;
+  audioRouteChanged: (payload: SynthRouteChangedEvent) => void;
 };
 
 declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEvents> {
@@ -30,6 +32,9 @@ declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEven
   allNotesOff(channel: number): void;
   setMasterGain(gain: number): void;
   isReady(): boolean;
+  getSampleRate(): number; // device-native output rate (Hz) — JS pegs frame clock at this
+  nativeLog(level: string, tag: string, msg: string): void; // v1.4.x P1
+  setHighRefreshRate(enable: boolean): void; // v1.4.x P4
   // v1.4
   noteOnAt(channel: number, midi: number, velocity: number, atFrame: number, tickKind: number): void;
   getCurrentFrame(): number;
@@ -67,6 +72,12 @@ const synth: RawAudioOutput = {
   setMasterGain: (gain) => NativeRawAudioOutput.setMasterGain(gain),
 
   isReady: () => NativeRawAudioOutput.isReady(),
+
+  getSampleRate: () => NativeRawAudioOutput.getSampleRate(),
+
+  nativeLog: (level, tag, msg) => NativeRawAudioOutput.nativeLog(level, tag, msg), // v1.4.x P1
+
+  setHighRefreshRate: (enable) => NativeRawAudioOutput.setHighRefreshRate(enable), // v1.4.x P4
 
   // v1.4
   noteOnAt: (channel, midi, velocity, atFrame, tickKind) =>
@@ -107,6 +118,14 @@ const synth: RawAudioOutput = {
     );
     return sub;
   },
+
+  addRouteChangeListener: (cb) => {
+    const sub: EventSubscription = NativeRawAudioOutput.addListener(
+      'audioRouteChanged',
+      cb,
+    );
+    return sub;
+  },
 };
 
 export default synth;
@@ -116,5 +135,6 @@ export type {
   SynthCommandFiredEvent,
   SynthErrorEvent,
   SynthReadyEvent,
+  SynthRouteChangedEvent,
   SynthUnderrunEvent,
 };

@@ -2,35 +2,22 @@
  * useDrone — sustained reference-tone player that tracks the user's detected
  * pitch ± a semitone offset. TUNER screen only.
  *
+ * v1.4 wave-4 — drone dead-on refactor (axiom: feedback-bellcurve-drone-dead-on)
+ *
+ * Every pitch change is a re-anchor (noteOff + noteOn + pitchBend(a4Bend)).
+ * The pitchBend value is ONLY ever a4BendSemitones(a4Hz) — near zero,
+ * always sub-semitone. There is no chase/slide path.
+ *
+ * Three pitch-change triggers:
+ *   1. Semitone offset / incumbentMidi change → full re-anchor (Effect A).
+ *   2. Voice change → noteOff + setProgram + noteOn + pitchBend(a4Bend).
+ *   3. a4Hz change mid-sustain → pitchBend(a4BendSemitones) ONLY (Effect B).
+ *      No noteOff/noteOn; the base note doesn't change.
+ *
  * v1.3 Wave 2A — bus migration. useDrone no longer imports `@local/raw-audio-
  * output`; all MIDI traffic flows through a `MidiBusState` handle reserved
  * for the `'drone'` role on mount. The hook is now a pure consumer of the
  * v1.3 MIDI bus (see `useMidiBus.ts`, `useMidiBusCore.ts`).
- *
- * Behaviour preserved from v1.1:
- *   - One indefinitely-sustained note per anchor.
- *   - Pitch chase via per-channel pitch-bend (±12 semitone envelope).
- *   - Re-anchor (noteOff → noteOn) when bend would exceed ±12.
- *   - Voice change → noteOff → programChange → noteOn re-attack so TSF picks
- *     up the new patch immediately rather than waiting for the next note-on.
- *   - A4 baseline pitch-bend so a drone tracking 442 Hz reference sounds at
- *     442, not TSF-default 440. Formula:
- *         1200 * log2(a4Hz / 440) / 100   semitones
- *
- * Removed in v1.3 Wave 2A (G12 + bus migration):
- *   - `mutedRef`, `setMuted`, background/foreground gain juggling. The bus
- *     owns master-mute (useDeck calls `bus.setMasterMute` directly during
- *     recording) and AppState gain handling at the synth singleton level.
- *     v1.0.1 BUG-4 (drone-bleed-during-record) is now bus-layer coordination,
- *     not this hook's concern.
- *   - `applyGain` / `targetVolumeRef` flowing into `synth.setMasterGain`.
- *     `setMasterGain` on the bus is GLOBAL — useDrone cannot use it for a
- *     per-channel slider without clobbering the metronome / pipes. Drone
- *     volume is now applied as a per-noteOn velocity scalar (vel * volume),
- *     so each consumer keeps its own gain envelope without fighting siblings.
- *   - Direct synth lifecycle (`prepareAsync`, `start`, `addReadyListener`).
- *     The bus owns the singleton; useDrone reserves a channel and trusts
- *     bus dispatch to drop ops issued before `bus.ready`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { midiToFrequency } from './audioGen';
@@ -126,10 +113,8 @@ export function useDrone({
   // Held MIDI — drone pitch sticks to this even when incumbentMidi goes null.
   const heldMidiRef = useRef<number | null>(null);
 
-  // The MIDI note we actually issued noteOn for. Pitch-bend slides relative
-  // to this anchor. When the chase target drifts outside ±12 of the anchor
-  // (combined with the A4 baseline bend), we re-anchor: noteOff old; noteOn
-  // new; reset bend.
+  // The MIDI note we actually issued noteOn for. anchorOn updates this on
+  // every re-anchor. The only pitch-bend ever applied is a4BendSemitones.
   const sustainedMidiRef = useRef<number | null>(null);
 
   // Bus channel handle. Reserved on mount, released on unmount. May be null
@@ -154,6 +139,12 @@ export function useDrone({
   // when a throttled call was dropped.
   const lastVolApplyAtRef = useRef(0);
   const volTrailingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // v1.4 wave-9 — T3: trailing-throttle state for the a4Hz pitch-bend effect.
+  // Same 50 ms / 20 Hz gate as the volume throttle. Prevents flooding the
+  // native queue during 60 Hz slider drags while still landing the final value.
+  const lastA4ApplyAtRef = useRef(0);
+  const a4TrailingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Duck timers (chase-guard suspicion). Drop velocity to DUCK_DEPTH for
   // `holdMs`, then restore. Implemented by re-issuing noteOn at the ducked
@@ -206,9 +197,8 @@ export function useDrone({
   }, []);
 
   // Re-anchor: noteOff the previously sustained MIDI (if any), noteOn the
-  // new one, reset the chase delta. Caller is responsible for any subsequent
-  // pitch-bend (e.g. the A4 baseline). Updates currentMidi state + publishes
-  // to the engine.
+  // new target, apply the A4 baseline pitch-bend. This is the ONLY way the
+  // drone changes pitch — no chase, no glissando.
   const anchorOn = useCallback(
     (midi: number) => {
       const ch = channelRef.current;
@@ -231,44 +221,6 @@ export function useDrone({
     [effectiveVelocity],
   );
 
-  // Slide to a new effective target MIDI. Uses pitch-bend if the (delta + A4
-  // baseline) fits inside ±12; otherwise re-anchors (noteOff + noteOn).
-  const slideTo = useCallback(
-    (targetMidi: number) => {
-      const ch = channelRef.current;
-      if (!ch) return;
-      const anchor = sustainedMidiRef.current;
-      const a4Bend = a4BendSemitones(a4Ref.current);
-
-      if (anchor === null) {
-        // Cold start — pick the target as the new anchor, apply A4 bend.
-        anchorOn(targetMidi);
-        ch.pitchBend(a4Bend);
-        return;
-      }
-
-      const chaseDelta = targetMidi - anchor;
-      const totalBend = chaseDelta + a4Bend;
-      if (totalBend > 12 || totalBend < -12) {
-        // Outside ±12 — re-anchor to the new target and apply just the A4 bend.
-        anchorOn(targetMidi);
-        ch.pitchBend(a4Bend);
-        return;
-      }
-
-      // Smooth slide. The anchor MIDI stays put; we just bend the channel.
-      ch.pitchBend(totalBend);
-      // currentMidi reflects what the LISTENER hears — i.e. the bent target.
-      setCurrentMidi(targetMidi);
-      try {
-        setDroneCurrentMidiRef.current?.(targetMidi);
-      } catch {
-        /* ignore */
-      }
-    },
-    [anchorOn],
-  );
-
   // ---------- duck-on-suspicion envelope ----------
   // Re-issue noteOn at DUCK_DEPTH * normal velocity for `holdMs`, then restore.
   // The bus has no per-channel volume scalar (master-gain is global and would
@@ -283,8 +235,8 @@ export function useDrone({
       cancelDuckTimers();
       // v1.3.4 — capture our duck epoch AFTER cancelDuckTimers bumps it; any
       // restore callback below is valid only while duckEpochRef matches this
-      // value. A subsequent cancelDuckTimers (e.g. voice-change effect at
-      // useDrone.ts:371) bumps the epoch and the in-flight callback bails.
+      // value. A subsequent cancelDuckTimers (e.g. voice-change effect) bumps
+      // the epoch and the in-flight callback bails.
       const myEpoch = duckEpochRef.current;
       // Drop in. The re-noteOn retriggers TSF but the previous voice releases
       // naturally, giving a soft duck rather than a click.
@@ -352,7 +304,7 @@ export function useDrone({
           /* ignore */
         }
       }
-      // The follow-up effect (incumbent/semitones/voice/a4) will spin the
+      // The follow-up effect (incumbent/semitones/voice) will spin the
       // note up if v=true and a held pitch exists.
     },
     [cancelDuckTimers],
@@ -367,31 +319,78 @@ export function useDrone({
     if (incumbentMidi !== null) heldMidiRef.current = incumbentMidi;
   }, [incumbentMidi]);
 
-  // Apply pitch (chase). Runs on every incumbentMidi/semitones/a4/enabled
-  // change. The bus drops dispatch silently when synth isn't ready yet, so
-  // we don't need to gate on a ready latch here — once the bus flips ready,
-  // any subsequent effect run (e.g. from a refHz tweak) will land audibly.
+  // Effect A: pitch re-anchor. Runs on incumbentMidi/semitones/enabled changes.
+  // Always performs a full re-anchor (noteOff + noteOn + pitchBend(a4Bend)).
+  // Does NOT run on a4Hz changes — those are handled by Effect B below so a
+  // calibration tweak doesn't re-attack the note.
   useEffect(() => {
     if (!enabled) return;
     const ch = channelRef.current;
     if (!ch) return;
+    // v1.4 wave-6 T5 — bump duck epoch before anchorOn. If an engine-triggered
+    // duck is in progress, its restore timer fires ~100-200 ms later and would
+    // re-attack the NEW anchor's noteOn velocity after the pitch change. Cancelling
+    // here invalidates any in-flight restore callback (matches voice-change effect).
+    cancelDuckTimers();
     const heldRaw = heldMidiRef.current;
     if (heldRaw === null) return;
-    // First spin-up: push the program so the right patch is loaded before
-    // the noteOn lands.
+    // Ensure the correct patch is loaded before the noteOn lands.
     const vRec = resolveDroneVoice(voiceIdRef.current);
     if (lastProgramRef.current !== vRec.program) {
       ch.setProgram(vRec.program);
       lastProgramRef.current = vRec.program;
     }
     const target = Math.max(0, Math.min(127, heldRaw + semitones));
-    slideTo(target);
-  }, [enabled, incumbentMidi, semitones, a4Hz, slideTo]);
+    anchorOn(target);
+    ch.pitchBend(a4BendSemitones(a4Ref.current));
+  }, [enabled, incumbentMidi, semitones, anchorOn, cancelDuckTimers]);
 
-  // Voice change. noteOff → programChange → noteOn for a clean re-attack.
-  // (See file header for rationale on morph-vs-reattack — TSF's mid-note
-  // programChange leaves the prior sample playing through its release tail,
-  // so the user wouldn't hear the new timbre until the next note-on.)
+  // Effect B: a4Hz-only pitch-bend. Runs ONLY when the A4 calibration changes.
+  // Applies pitchBend without re-attacking the note (no noteOff/noteOn).
+  // This is the sole place where pitchBend is issued without a preceding
+  // re-anchor, per the dead-on axiom (user adjusts reference Hz mid-sustain).
+  //
+  // v1.4 wave-9 — T3: throttled to 20 Hz (50 ms gate) with trailing-edge
+  // one-shot so the final slider position always lands. Mirrors the volume
+  // throttle (see lines ~392–428). At 60 Hz slider drag this cuts native
+  // pitchBend commands from 60/s to ≤ 20/s.
+  useEffect(() => {
+    if (!enabledRef.current) return;
+    const ch = channelRef.current;
+    if (!ch) return;
+    if (sustainedMidiRef.current === null) return;
+
+    const THROTTLE_MS = 50;
+    const now = Date.now();
+    const sinceLast = now - lastA4ApplyAtRef.current;
+
+    if (a4TrailingTimerRef.current !== null) {
+      clearTimeout(a4TrailingTimerRef.current);
+      a4TrailingTimerRef.current = null;
+    }
+
+    if (sinceLast >= THROTTLE_MS) {
+      lastA4ApplyAtRef.current = now;
+      ch.pitchBend(a4BendSemitones(a4Hz));
+    } else {
+      const remaining = THROTTLE_MS - sinceLast;
+      a4TrailingTimerRef.current = setTimeout(() => {
+        a4TrailingTimerRef.current = null;
+        if (!enabledRef.current) return;
+        const liveCh = channelRef.current;
+        if (!liveCh) return;
+        if (sustainedMidiRef.current === null) return;
+        lastA4ApplyAtRef.current = Date.now();
+        liveCh.pitchBend(a4BendSemitones(a4Hz));
+      }, remaining);
+    }
+  }, [a4Hz]);
+
+  // Voice change. noteOff → programChange → noteOn + pitchBend(a4Bend) for a
+  // clean re-attack. Every voice change is a full re-anchor — no partial-bend
+  // path. (TSF's mid-note programChange leaves the prior sample playing through
+  // its release tail, so the user wouldn't hear the new timbre until the next
+  // note-on.)
   useEffect(() => {
     if (!enabled) return;
     const ch = channelRef.current;
@@ -402,8 +401,8 @@ export function useDrone({
     const vRec = resolveDroneVoice(voice);
     if (lastProgramRef.current === vRec.program) {
       // Same patch as last apply — nothing to do (this effect re-runs when
-      // `enabled` flips true and the pitch effect above already issued the
-      // initial programChange + noteOn).
+      // `enabled` flips true and Effect A already issued the initial
+      // programChange + noteOn).
       return;
     }
     const sus = sustainedMidiRef.current;
@@ -412,13 +411,7 @@ export function useDrone({
     lastProgramRef.current = vRec.program;
     if (sus !== null) {
       ch.noteOn(sus, effectiveVelocity(1));
-      // sustainedMidiRef.current stays the same; re-apply A4 bend + chase.
-      const heldRaw = heldMidiRef.current;
-      if (heldRaw !== null) {
-        const target = Math.max(0, Math.min(127, heldRaw + semitoneRef.current));
-        const totalBend = target - sus + a4BendSemitones(a4Ref.current);
-        ch.pitchBend(totalBend);
-      }
+      ch.pitchBend(a4BendSemitones(a4Ref.current));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voice, enabled]);
@@ -479,6 +472,11 @@ export function useDrone({
       if (volTrailingTimerRef.current !== null) {
         clearTimeout(volTrailingTimerRef.current);
         volTrailingTimerRef.current = null;
+      }
+      // v1.4 wave-9 — T3: cancel any pending a4 trailing-edge timer.
+      if (a4TrailingTimerRef.current !== null) {
+        clearTimeout(a4TrailingTimerRef.current);
+        a4TrailingTimerRef.current = null;
       }
       // Channel release (in the reserve-effect cleanup) calls allNotesOff
       // and frees the channel atomically — no per-op teardown needed here.

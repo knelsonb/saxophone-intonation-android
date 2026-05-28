@@ -105,6 +105,13 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
   const rPrev = useRef(0);
   const [, setTick] = useState(0); // forces re-eval of statusLine etc — not strictly needed
 
+  // v1.4 wave-10 — L3: keep clockSec in a ref so the setInterval callback can
+  // read the latest value without being in the effect's dep array. Previously
+  // clockSec was a dep, causing the interval to be torn down and recreated
+  // every 200 ms (deck polling cadence) — thrashing the 60 ms heartbeat.
+  const clockSecRef = useRef(clockSec);
+  useEffect(() => { clockSecRef.current = clockSec; }, [clockSec]);
+
   useEffect(() => {
     if (mode === 'idle' || mode === 'have-take') {
       // Settle both needles to rest.
@@ -115,9 +122,12 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
       return;
     }
     // Active: drive the needles toward fresh synth targets every TICK_MS.
+    // lAnim / rAnim are stable Animated.Value instances (useRef().current) —
+    // they never change identity, so they are not deps.
     const id = setInterval(() => {
-      const lNext = synthEnvelope(mode, -0.04, clockSec, lPrev.current);
-      const rNext = synthEnvelope(mode, +0.04, clockSec, rPrev.current);
+      const t = clockSecRef.current;
+      const lNext = synthEnvelope(mode, -0.04, t, lPrev.current);
+      const rNext = synthEnvelope(mode, +0.04, t, rPrev.current);
       const lAttacking = lNext > lPrev.current;
       const rAttacking = rNext > rPrev.current;
       lPrev.current = lNext;
@@ -145,7 +155,8 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
       setTick((t) => t + 1);
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [mode, clockSec, lAnim, rAnim]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]); // clockSec handled via ref above; lAnim/rAnim are stable instances
 
   const needleRotation = (anim: Animated.Value) => anim.interpolate({
     inputRange: [0, 1],

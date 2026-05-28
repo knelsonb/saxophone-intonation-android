@@ -75,6 +75,7 @@ class RawAudioInputModule : Module() {
                 desiredSampleRate  = requestedRate,
                 bufferDurationMs   = bufDurationMs,
                 preferredSource    = preferredSource,
+                context            = context, // v1.4 wave-11 N1 — for PROPERTY_OUTPUT_SAMPLE_RATE
                 emitCallback       = { data, rate ->
                     // Called from the capture thread. sendEvent is thread-safe.
                     sendEvent(

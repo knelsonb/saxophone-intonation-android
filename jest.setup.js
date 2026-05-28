@@ -119,10 +119,26 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 // ---------------------------------------------------------------------------
 // react-native-reanimated — animated values used in metroStyles
 // ---------------------------------------------------------------------------
-// jest-expo preset includes its own Reanimated mock, but make it explicit.
-jest.mock('react-native-reanimated', () =>
-  require('react-native-reanimated/mock'),
-);
+// Reanimated 4's bundled `/mock` eagerly initialises the native Worklets
+// module, which throws under Jest ("Native part of Worklets doesn't seem to be
+// initialized"). Provide a minimal hand-rolled mock covering exactly the APIs
+// the component tree uses (PendulumDisplay's clock-driven worklet): a
+// passthrough Animated.View plus no-op hook stubs. Animation behaviour isn't
+// exercised in the render-count tests — only that the tree mounts/renders.
+jest.mock('react-native-reanimated', () => {
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: {
+      View,
+      createAnimatedComponent: (c) => c,
+    },
+    useSharedValue: (init) => ({ value: init }),
+    useFrameCallback: () => ({ setActive: () => {}, isActive: false, callbackId: 0 }),
+    useAnimatedStyle: () => ({}),
+    withTiming: (toValue) => toValue,
+  };
+});
 
 // ---------------------------------------------------------------------------
 // @gorhom/bottom-sheet — DrumPicker host

@@ -1,6 +1,8 @@
 package expo.modules.rawaudioinput
 
+import android.content.Context
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
@@ -36,6 +38,7 @@ internal class AudioCapture(
     private val preferredSource: Int,
     private val emitCallback: (floatData: ByteArray, actualSampleRate: Int) -> Unit,
     private val errorCallback: (reason: String) -> Unit,
+    private val context: Context? = null, // v1.4 wave-11 — used for PROPERTY_OUTPUT_SAMPLE_RATE query
 ) {
 
     // Written by start(), read by stop() and the capture thread.
@@ -144,13 +147,36 @@ internal class AudioCapture(
             }
         }.distinct()
 
-        // Rate fallback chain. We try the hardware-native rate last as a
-        // catch-all because getNativeSampleRate() may already equal one of the
-        // earlier candidates — distinct() removes the duplicate.
-        val rates = listOf(desiredSampleRate, 44100, 48000).distinct()
+        // v1.4 wave-11 N1 — exhaustive rate fallback chain.
+        // Query PROPERTY_OUTPUT_SAMPLE_RATE first: it reflects the device's
+        // hardware mixer rate and succeeds on BT SCO (16 000 Hz), USB audio,
+        // and unusual OEM HALs where 44100/48000 both fail. We put it ahead of
+        // the standard rates so AudioRecord opens at native cost (no SRC).
+        // All candidates are logged so device-specific failures are diagnosable
+        // in logcat without needing a repro device.
+        val nativeRate: Int? = context?.let { ctx ->
+            try {
+                val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull()
+            } catch (e: Exception) {
+                Log.w(TAG, "PROPERTY_OUTPUT_SAMPLE_RATE query failed: ${e.message}")
+                null
+            }
+        }
+        Log.d(TAG, "rate fallback: desired=$desiredSampleRate nativeRate=$nativeRate")
+        val rates = listOfNotNull(
+            desiredSampleRate,
+            nativeRate,
+            44100,
+            48000,
+            22050,
+            16000,  // BT SCO
+            8000,   // edge-case HW
+        ).distinct()
 
         for (source in sources) {
             for (rate in rates) {
+                Log.d(TAG, "trying source=$source rate=$rate") // v1.4 wave-11 N1
                 val minBytes = AudioRecord.getMinBufferSize(
                     rate,
                     AudioFormat.CHANNEL_IN_MONO,

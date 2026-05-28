@@ -28,6 +28,18 @@ export interface SynthErrorEvent {
 }
 
 /**
+ * v1.4.x P3 — fires when the audio output route changes mid-playback
+ * (headphone / Bluetooth / USB plug or unplug). A route change can briefly
+ * pause the AudioTrack, freezing the render-frame counter and staling the
+ * frame-clock peg; the bus force-repegs on this event so subsequent scheduled
+ * notes anchor to the live clock again.
+ */
+export interface SynthRouteChangedEvent {
+  /** "added" or "removed" — which kind of device-list change triggered it. */
+  kind: string;
+}
+
+/**
  * Fires from the audio render thread (relayed via a Kotlin coroutine
  * dispatcher) at the moment a queued command is applied to TSF. NoteOn
  * is the typical interesting case — listeners use it to sync visual
@@ -103,6 +115,28 @@ export interface RawAudioOutput {
   /** True once prepareAsync has completed successfully. */
   isReady(): boolean;
 
+  /**
+   * Device-native output sample rate (Hz) the synth + AudioTrack actually run
+   * at (queried from the device, not hard-coded). The MIDI bus pegs its frame
+   * clock at this rate so scheduled atFrame math matches the render thread.
+   */
+  getSampleRate(): number;
+
+  /**
+   * v1.4.x P1 — mirror a JS forensic-log line into Android's native log so it
+   * surfaces in `adb logcat` on release builds (where RN does not pipe console
+   * output). `level` is one of "debug" | "info" | "warn" | "error".
+   */
+  nativeLog(level: string, tag: string, msg: string): void;
+
+  /**
+   * v1.4.x P4 — pin the Activity window to the display's highest refresh rate
+   * (enable=true) so the LTPO panel doesn't down-switch (120→80→60) mid-
+   * animation and judder the metronome sweep; pass false to release back to the
+   * system's adaptive default. Call true on foreground, false on background.
+   */
+  setHighRefreshRate(enable: boolean): void;
+
   // ---- v1.4 — scheduled-command surface ----
 
   /**
@@ -149,4 +183,10 @@ export interface RawAudioOutput {
    * the audio fire moment.
    */
   addCommandFiredListener(cb: (e: SynthCommandFiredEvent) => void): { remove(): void };
+  /**
+   * v1.4.x P3 — subscribe to audio output route changes. The bus uses this to
+   * force-repeg the frame clock after a plug/unplug so scheduled notes keep
+   * landing beat-perfect instead of dropping against a stale peg.
+   */
+  addRouteChangeListener(cb: (e: SynthRouteChangedEvent) => void): { remove(): void };
 }

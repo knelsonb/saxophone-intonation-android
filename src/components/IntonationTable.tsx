@@ -279,7 +279,13 @@ export function IntonationTable({
   );
 }
 
-const COL_NOTE = 72; const COL_MEAN = 80; const COL_STD = 68; const COL_N = 44;
+// v1.4 wave-11 — L2: percentage columns replace fixed dp widths.
+// Fixed sum was 264dp + ~40dp padding = 304dp, overflowing 360dp phones.
+// 25/25/25/25 fits any width; textAlign:right on numeric cols preserved.
+const COL_NOTE_PCT = '25%';
+const COL_MEAN_PCT = '25%';
+const COL_STD_PCT  = '25%';
+const COL_N_PCT    = '25%';
 
 function makeStyles(C: ThemePalette) {
   return StyleSheet.create({
@@ -311,10 +317,10 @@ function makeStyles(C: ThemePalette) {
     noteText: { color: C.ink, fontWeight: '600' },
     stdText: { color: C.inkMid },
     nText: { color: C.inkDim },
-    colNote: { width: COL_NOTE },
-    colMean: { width: COL_MEAN, textAlign: 'right' },
-    colStd:  { width: COL_STD, textAlign: 'right' },
-    colN:    { width: COL_N, textAlign: 'right' },
+    colNote: { width: COL_NOTE_PCT },
+    colMean: { width: COL_MEAN_PCT, textAlign: 'right' },
+    colStd:  { width: COL_STD_PCT, textAlign: 'right' },
+    colN:    { width: COL_N_PCT, textAlign: 'right' },
     emptyState: { alignItems: 'center', paddingTop: 60, paddingHorizontal: 32 },
     emptyText:  { color: C.inkMid, fontSize: 14, letterSpacing: 1, marginBottom: 8 },
     emptyHint:  { color: C.inkDim, fontSize: 12, letterSpacing: 1, textAlign: 'center' },

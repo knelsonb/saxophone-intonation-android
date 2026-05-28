@@ -103,6 +103,12 @@ export function usePitchPipes(opts: UsePitchPipesOptions): PipesState {
   const a4Ref = useRef(a4Hz);
   a4Ref.current = a4Hz;
 
+  // v1.4 wave-9 — T3: trailing-throttle state for the a4Hz pitch-bend effect.
+  // 50 ms / 20 Hz gate with trailing-edge one-shot — same pattern as
+  // useDrone's volume throttle and the new a4 throttle added there.
+  const lastA4ApplyAtRef = useRef(0);
+  const a4TrailingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // ---- Voice hydration from prefs ----
   // When prefs first load, adopt the persisted pipesVoice. Subsequent prefs
   // changes propagate into local state too (in case another caller writes
@@ -214,12 +220,50 @@ export function usePitchPipes(opts: UsePitchPipesOptions): PipesState {
   }, [prefs]);
 
   // ---- A4 baseline bend on a4Hz change while sustaining ----
+  // v1.4 wave-9 — T3: throttled to 20 Hz (50 ms gate) with trailing-edge
+  // one-shot so the final slider position always lands. Mirrors the useDrone
+  // a4 throttle added in the same wave.
   useEffect(() => {
     const handle = handleRef.current;
     if (handle === null) return;
     if (currentMidiRef.current === null) return;
-    try { handle.pitchBend(a4BendSemitones(a4Hz)); } catch { /* bus logs */ }
+
+    const THROTTLE_MS = 50;
+    const now = Date.now();
+    const sinceLast = now - lastA4ApplyAtRef.current;
+
+    if (a4TrailingTimerRef.current !== null) {
+      clearTimeout(a4TrailingTimerRef.current);
+      a4TrailingTimerRef.current = null;
+    }
+
+    if (sinceLast >= THROTTLE_MS) {
+      lastA4ApplyAtRef.current = now;
+      try { handle.pitchBend(a4BendSemitones(a4Hz)); } catch { /* bus logs */ }
+    } else {
+      const remaining = THROTTLE_MS - sinceLast;
+      a4TrailingTimerRef.current = setTimeout(() => {
+        a4TrailingTimerRef.current = null;
+        const liveHandle = handleRef.current;
+        if (liveHandle === null) return;
+        if (currentMidiRef.current === null) return;
+        lastA4ApplyAtRef.current = Date.now();
+        try { liveHandle.pitchBend(a4BendSemitones(a4Hz)); } catch { /* bus logs */ }
+      }, remaining);
+    }
   }, [a4Hz]);
+
+  // ---- Final teardown ----
+  // v1.4 wave-9 — T3: cancel any pending a4 trailing-edge timer on unmount
+  // so it doesn't fire a pitchBend against a released channel.
+  useEffect(() => {
+    return () => {
+      if (a4TrailingTimerRef.current !== null) {
+        clearTimeout(a4TrailingTimerRef.current);
+        a4TrailingTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // ---- Memoized return — stable identity across renders that don't flip
   // currentMidi / voice / reserved+ready. Both `toggle` and `release` are

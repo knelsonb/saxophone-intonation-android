@@ -65,13 +65,16 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
   // is null, so the two never collide. Same `DeckToast` shape.
   const [shareToast, setShareToast] = React.useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const shareToastIdRef = React.useRef(0);
+  // v1.4 wave-10 T2 — duration split mirrors useDeck.flashToast: errors stay
+  // up 5000 ms; successes use 2500 ms. Old 2400 ms was too short to read.
   const flashShareToast = React.useCallback((text: string, kind: 'ok' | 'error') => {
     shareToastIdRef.current += 1;
     const id = shareToastIdRef.current;
     setShareToast({ kind, text });
+    const durationMs = kind === 'error' ? 5000 : 2500;
     setTimeout(() => {
       if (shareToastIdRef.current === id) setShareToast(null);
-    }, 2400);
+    }, durationMs);
   }, []);
 
   // v1.0.1 — SHARE handler. Hands the take URI to the OS share sheet.

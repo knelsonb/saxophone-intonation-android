@@ -195,15 +195,17 @@ export const DEFAULT_PREFS: AppPrefs = {
   metroTimeSigPreset: '4/4',
   metroCustomNumerator: 5,
   metroCustomDenominator: 8,
-  // Default pattern matches a fresh-install 4-beat bar: kick on 1, click on
-  // 2..4. The hook re-derives the pattern from beatsPerBar when the parsed
-  // length disagrees with the current numerator, so this string is only the
+  // Default 4-beat bar with a DISTINCT GM percussion voice per beat — kick(36)
+  // on 1, snare(38) on 2, high tom(50) on 3, cowbell(56) on 4 — so each
+  // position in the measure is audibly identifiable (pairs with the per-beat
+  // pendulum-bob colour + numeral). The hook re-derives length from beatsPerBar
+  // when the parsed length disagrees with the numerator, so this is only the
   // "remembered" pattern, not a binding declaration of length.
   metroPatternJson: JSON.stringify([
     { midi: 36, velocity: 110 },
-    { midi: 76, velocity: 90 },
-    { midi: 76, velocity: 90 },
-    { midi: 76, velocity: 90 },
+    { midi: 38, velocity: 95 },
+    { midi: 50, velocity: 95 },
+    { midi: 56, velocity: 95 },
   ]),
   metroSubdivisions: 'off',
   metroSubdivisionVoiceMidi: 42,       // Closed Hi-Hat
@@ -385,9 +387,19 @@ export async function loadPrefs(): Promise<AppPrefs> {
       // patternJson: silent reset on bad JSON / schema mismatch. We keep
       // the raw string in prefs (re-serializing it normalises shape but
       // also strips unknown keys, which is what we want).
+      //
+      // One-time upgrade: the legacy default was kick(36) + three identical
+      // wood blocks(76). The new default gives each beat a distinct voice. If
+      // a stored pattern is EXACTLY that old default we replace it with the new
+      // one; any other (i.e. user-customised) pattern is left untouched.
       metroPatternJson: (() => {
         const coerced = coercePatternJson(d.metroPatternJson);
-        return coerced ? JSON.stringify(coerced) : DEFAULT_PREFS.metroPatternJson;
+        if (!coerced) return DEFAULT_PREFS.metroPatternJson;
+        const isLegacyDefault =
+          coerced.length === 4 &&
+          coerced[0].midi === 36 &&
+          coerced[1].midi === 76 && coerced[2].midi === 76 && coerced[3].midi === 76;
+        return isLegacyDefault ? DEFAULT_PREFS.metroPatternJson : JSON.stringify(coerced);
       })(),
       metroSubdivisions: asOneOf(
         d.metroSubdivisions,
@@ -496,6 +508,14 @@ async function _doWrite(toBeSaved: Partial<AppPrefs>): Promise<void> {
     // backs off via the 50 ms guard in prefsUpdate rather than racing us.
     if (_debounceTimer !== null) { clearTimeout(_debounceTimer); _debounceTimer = null; }
     scheduleRetry = true;
+    // v1.4 wave-8 — T2 INVESTIGATED-NO-RACE: _writeInFlight is NOT cleared
+    // here (scheduleRetry=true causes the outer finally to leave it true).
+    // The setTimeout callback runs ~500 ms later with _writeInFlight=true.
+    // prefsFlush polls until _writeInFlight=false; during the retry IIFE the
+    // flag remains true (cleared only in the IIFE's own finally). So no
+    // concurrent write window exists. The retryPatch===null early-exit is the
+    // only path that clears the flag inside the callback, and that exit fires
+    // only when _pendingPatch was already null — no data to write at all.
     _debounceTimer = setTimeout(() => {
       _debounceTimer = null;
       const retryPatch = _pendingPatch;
@@ -532,20 +552,32 @@ export async function prefsFlush(): Promise<void> {
     clearTimeout(_debounceTimer);
     _debounceTimer = null;
   }
-  const toBeSaved = _pendingPatch;
-  if (toBeSaved === null) return;
-  _pendingPatch = null;
-  // v1.4 — L2: respect the in-flight guard. If a write is already in
-  // progress, wait for it to clear before starting our own write. A simple
-  // polling loop is safe here because prefsFlush is called from AppState
-  // 'background' handlers where a short busy-wait is acceptable.
-  while (_writeInFlight) {
-    await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+  // v1.4 wave-5 — L2: poll BEFORE touching _pendingPatch (silence-over-wrong
+  // for storage).  The wave-4 code cleared _pendingPatch before the polling
+  // loop ran, so a timeout meant the data was gone. Fix: poll first, then
+  // take ownership of the patch only once we know _writeInFlight is clear.
+  // If we time out, _pendingPatch is left intact so a future prefsUpdate call
+  // or App relaunch will pick it up — we lose nothing.
+  const FLUSH_POLL_MAX_MS = 2000;
+  const FLUSH_POLL_INTERVAL_MS = 50;
+  const maxIterations = Math.ceil(FLUSH_POLL_MAX_MS / FLUSH_POLL_INTERVAL_MS);
+  for (let i = 0; i < maxIterations && _writeInFlight; i++) {
+    await new Promise<void>((resolve) => { setTimeout(resolve, FLUSH_POLL_INTERVAL_MS); });
   }
+  if (_writeInFlight) {
+    log.w('Prefs', 'flushAsync-timeout', { maxMs: FLUSH_POLL_MAX_MS });
+    // _pendingPatch is intentionally NOT cleared — the data survives for the
+    // next flush attempt. Silence-over-wrong: lose no data on timeout.
+    return;
+  }
+  // Take ownership now that the write slot is clear.
+  const patch = _pendingPatch;
+  if (patch === null) return;
+  _pendingPatch = null;
   _writeInFlight = true;
   try {
     const current = await loadPrefs();
-    await savePrefs({ ...current, ...toBeSaved });
+    await savePrefs({ ...current, ...patch });
   } catch {
     // Best-effort.
   } finally {

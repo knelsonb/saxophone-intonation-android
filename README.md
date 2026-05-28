@@ -1,45 +1,81 @@
-# Intonation Analyzer — Android
+# BellCurve — Android Saxophone Tuner
 
-React Native (Expo SDK 56) port of the
-[saxophone-intonation-table](https://github.com/knelsonb/saxophone-intonation-table)
-desktop app. Built for landscape Android tablets.
+BellCurve is a landscape Android tablet app for saxophone players. It combines
+real-time pitch detection, a sample-accurate metronome, a drone/pitch-pipe
+synth, and a recording deck in one instrument-focused tool.
 
-## Sprint plan
+**Current version:** v1.4 (versionCode 14) — Expo SDK 56 / React Native 0.85
 
-Tracks the desktop app (currently v0.5.8). Parity target = chunk 5.
+---
 
-| Chunk | Version | Scope |
-|------|---------|-------|
-| **1** | 0.1.0 | Scaffold: mic permission + live RMS meter (no pitch detection yet) |
-| 2     | 0.2.0 | YIN pitch detection + tuner readout. Default instrument **Bb tenor** (matches desktop v0.5.7.1). Frequency-adaptive cent precision (0.1¢ / 0.5¢ / 1.0¢ tiers). A4 reference 430–450 Hz. |
-| 3     | 0.3.0 | Filter modes (Fast / Normal / Slow) re-tuned per desktop v0.5.8 research baseline — `_FILTER_PRESETS` from `sax_audio_engine.py` ported verbatim. Min-N filter. Instrument catalog incl. bass clarinet (C–G), contras, full sax range. Sounding / fingered display toggle. |
-| 4     | 0.4.0 | Intonation table + SQLite persistence. Per-instrument range editor (gear button) with overrides DB. Allow-out-of-range toggle. Prefs save-on-exit (instrument, nickname, A4, lang, display mode, filter mode, min-N). |
-| 5     | 1.0.0 | Matrix view with bar+whisker cell graphics, CSV/PNG export, autotune, custom instruments, i18n (en/de), spectrum-analyzer + diagnostics toggle, response-modes inline help. |
+## Four pillars
 
-Out-of-scope (desktop-only, irrelevant on Android):
-- Audio device picker / host-API fallback / hot-plug recovery — Android's `expo-audio` owns the input route.
-- Sample-rate negotiation / native-rate-first — Android picks one rate and we live with it.
+### TUNER
+YIN pitch detection on a dedicated `UNPROCESSED` audio capture, 25 ms latency.
+Transposition-aware: pick your instrument (Bb/Eb/F/C, full sax + clarinet +
+bass clarinet range) and BellCurve shows sounding pitch alongside fingered
+pitch. A4 reference 430–450 Hz. Three response modes (Fast / Normal / Slow).
+Intonation history table with per-note statistics.
 
-Current commit ships **chunk 1**.
+### METRONOME
+Sample-accurate real-time MIDI engine. Beats are scheduled as `noteOnAt`
+commands tied to the native frame clock, with a 500 ms past-atFrame grace
+window (silence over wrong). Supports custom time signatures (any numerator
+1–32, denominators 2/4/8/16/32), per-beat drum voice, and subdivisions.
+Four saveable profile slots. Pendulum, flash, and pulse visual modes all
+driven by the same fire callback as audio — no reconciler lag.
 
-## Running locally
+### DRONE + PITCH PIPES
+TSF + GeneralUser GS SF2 soundfont renders drone notes through the same
+real-time synth. Every pitch change does a full noteOff + noteOn + A4 pitch-
+bend re-anchor — no frequency chase, no audible glide. Pitch pipes use the
+same synth channel on a separate role.
+
+### DECK
+Five-minute recording takes via `expo-audio`. Mute/unmute is coordinated
+through the MIDI bus master-mute so drone and metronome go silent together.
+Takes are stored on-device and shareable via the system share sheet.
+
+---
+
+## Requirements
+
+- Android 8.0+ (minSdk 26), landscape tablet recommended (Pixel 9 Pro tested)
+- JDK 17
+- Android SDK with NDK (for the native audio module)
+- Node 20+
+
+---
+
+## How to build
 
 ```sh
 npm install
-npx expo prebuild --platform android --non-interactive
-npm run android      # or: cd android && ./gradlew installDebug
+npm run prebuild          # expo prebuild --platform android --non-interactive
+npm run build:android     # cd android && ./gradlew assembleRelease
 ```
 
-Requires a connected Android device or emulator, JDK 17, and the Android SDK.
+For a debug build on a connected device:
+
+```sh
+npm run android           # expo run:android
+```
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs
+`expo prebuild` + `assembleRelease` and attaches the APK to a GitHub Release.
+
+---
 
 ## Permissions
 
-`RECORD_AUDIO` only. Audio is processed on-device; nothing leaves the
-tablet. The first launch shows an explicit permission gate explaining
-this in plain language.
+`RECORD_AUDIO` only. Audio is processed entirely on-device. Nothing is
+uploaded, transmitted, or stored outside the device filesystem.
 
-## Release builds
+---
 
-Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs
-`expo prebuild` and Gradle's `assembleRelease`, then attaches the APK
-to a GitHub Release matching the tag.
+## License
+
+MIT — see `LICENSE`.
+
+Assets: GeneralUser GS soundfont is licensed separately by S. Christian Collins
+(free for non-commercial and commercial use; see the SF2 bundle for full terms).

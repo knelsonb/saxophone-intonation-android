@@ -25,6 +25,15 @@
 import React, { act, useState } from 'react';
 import { render } from '@testing-library/react-native';
 
+// v1.4 wave-4 — MetroScreen + TunerScreen now use `useFocusEffect` from
+// @react-navigation/native to reset the sub-page on tab focus (production
+// always wraps screens in NavigationContainer). The harness here renders
+// screens in isolation for render-count counting, so mock useFocusEffect to
+// a no-op — focus behavior isn't what this suite validates.
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: () => {},
+}));
+
 import { withRenderCounter } from './helpers/renderCount';
 import { SetupScreen } from '../screens/SetupScreen';
 import { MetroScreen } from '../screens/MetroScreen';
