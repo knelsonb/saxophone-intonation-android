@@ -227,6 +227,16 @@ export function useMidiBus(): MidiBusState {
         vsyncSlow: e.vsyncSlow,
         reset: e.reset,
       });
+      // #64 gate-1 egress — stream each shadow beat to logcat so the bookended
+      // sweep harness can capture the full series (`adb logcat -s ShadowBeat:*`).
+      // info level is mirrored to logcat via nativeLog; fires ONLY while the
+      // probe is armed (SHADOW_PROBE_ENABLED), so it is gated to the measurement
+      // build — zero cost in a shipped session.
+      log.i('ShadowBeat', JSON.stringify({
+        bh: e.beatHeardNanos, rs: e.rawSkewNs, rd: e.residualNs,
+        pn: e.periodNanos, af: e.atFrame, gen: e.gen,
+        vf: e.vsyncFrames, vs: e.vsyncSlow, rst: e.reset,
+      }));
     });
     return () => { try { sub?.remove(); } catch { /* ignore */ } };
   }, [forensicRing]);
