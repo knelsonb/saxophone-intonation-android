@@ -302,6 +302,7 @@ export function useMidiBus(): MidiBusState {
       // do NOT touch the #167 pendulum PLL). try/catch so a synth port lacking
       // the native method (older build / mock) is a silent no-op.
       startShadowProbe: () => { try { synth.startShadowProbe?.(); } catch { /* ignore */ } },
+      setHighRefreshRate: (enable: boolean) => { try { synth.setHighRefreshRate?.(enable); } catch { /* ignore */ } },
       stopShadowProbe: () => { try { synth.stopShadowProbe?.(); } catch { /* ignore */ } },
       setBeatAnchor: (beatFrame: number, periodNanos: number) => {
         try { synth.setBeatAnchor?.(beatFrame, periodNanos); } catch { /* ignore */ }

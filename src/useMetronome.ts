@@ -624,6 +624,10 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     if (SHADOW_PROBE_ENABLED) {
       try { busRef.current.startShadowProbe?.(); } catch { /* ignore */ }
     }
+    // #68 — pin 120Hz while the metronome runs (LTPO panels idle down to ~40Hz,
+    // which makes the visualizer stutter). Released in stop(), which the AppState
+    // background handler also routes through. Independent of the shadow probe.
+    try { busRef.current.setHighRefreshRate?.(true); } catch { /* ignore */ }
     schedule();
   }, [schedule]);
 
@@ -637,6 +641,8 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     if (SHADOW_PROBE_ENABLED) {
       try { busRef.current.stopShadowProbe?.(); } catch { /* ignore */ }
     }
+    // #68 — release the 120Hz pin so the LTPO panel can idle down (battery).
+    try { busRef.current.setHighRefreshRate?.(false); } catch { /* ignore */ }
     clearScheduleTimers();
     // v1.4 Belt 1 — cancel ALL future-scheduled commands in the native queue
     // BEFORE issuing allNotesOff(). Without this, the ~150 ms of bus.noteOnAt

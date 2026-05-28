@@ -285,6 +285,13 @@ export interface MidiBusState {
    * BEAT_OFFSET records) for the on-device gate read. Empty if unsupported.
    */
   dumpForensics?(): ForensicRecord[];
+  /**
+   * #68 — pin (true) / release (false) the panel's max refresh (120Hz) while an
+   * animated screen (metro/tuner) runs; release lets the LTPO panel idle down
+   * (battery). Optional; no-op if the synth port lacks the native method.
+   * useMetronome calls true on metro start, false on stop/background.
+   */
+  setHighRefreshRate?(enable: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
