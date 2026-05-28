@@ -88,6 +88,21 @@ const ARM_W = 4;
 const BEAD_SIZE = 18;
 const BEAD_FROM_ARM_TOP = 14;
 
+// #65 (Maelzel) — the visible bob slides along the rod with tempo, like a real
+// pyramid metronome: faster → weight DOWN toward the pivot (less inertia, quicker
+// swing), slower → weight UP toward the rod tip. Pure cosmetic position, fully
+// independent of the swing timing. `top` is measured from the armWrap's top, so a
+// LARGER top sits NEARER the pivot (the wrap's bottom).
+const BOB_TOP_SLOW = BEAD_FROM_ARM_TOP;       // ~40 BPM — high on the rod (far from pivot)
+const BOB_TOP_FAST = ARM_H - BEAD_SIZE - 8;   // ~240 BPM — near the pivot
+const BOB_BPM_MIN = 40;
+const BOB_BPM_MAX = 240;
+function bobTopForBpm(bpm: number): number {
+  const c = Math.max(BOB_BPM_MIN, Math.min(BOB_BPM_MAX, bpm || BOB_BPM_MIN));
+  const t = (c - BOB_BPM_MIN) / (BOB_BPM_MAX - BOB_BPM_MIN);
+  return BOB_TOP_SLOW + t * (BOB_TOP_FAST - BOB_TOP_SLOW);
+}
+
 const FRAME_W = 220;
 const FRAME_H = ARM_H + BODY_H - PIVOT_FROM_BODY_TOP + 4;
 
@@ -183,12 +198,21 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
   // until a measurement warms up, so this is a real lead from the first run.
   const compLeadMs = useSharedValue(0);
 
+  // #65 — the bob's slide position (its `top` within the armWrap). Animated so a
+  // tempo change glides the weight along the rod instead of snapping.
+  const bobTop = useSharedValue(bobTopForBpm(bpm));
+
   // Target beat duration follows BPM. theta is in BEATS, so a tempo change only
   // alters the RATE (dθ/dt = 1/dur) going forward — angle stays continuous, no
   // re-anchor needed.
   useEffect(() => {
     beatDur.value = Math.max(60, 60000 / Math.max(1, bpm));
   }, [bpm, beatDur]);
+
+  // #65 — glide the bob to its tempo position on BPM change (scrub-friendly).
+  useEffect(() => {
+    bobTop.value = withTiming(bobTopForBpm(bpm), { duration: 250 });
+  }, [bpm, bobTop]);
 
   // How aggressively pendingCorr bleeds into the rate. The frame-clock peg now
   // tracks the hardware (DAC-vs-wall) drift in the scheduling layer, so the only
@@ -330,6 +354,11 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
     return { transform: [{ rotate: `${angle.value * SWING_DEG}deg` }] };
   });
 
+  // #65 — drive the bob's vertical slide from the animated bobTop.
+  const bobSlideStyle = useAnimatedStyle(() => {
+    return { top: bobTop.value };
+  });
+
   // Bob colour tracks the current beat while running (red/orange/yellow/blue,
   // cycling); reverts to the theme accent at rest. `beat` is 1-based.
   const bobColor = running
@@ -373,7 +402,7 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
           ]}
         >
           <View style={styles.arm} />
-          <View style={[styles.weight, { backgroundColor: bobColor }]} />
+          <Animated.View style={[styles.weight, { backgroundColor: bobColor }, bobSlideStyle]} />
         </Animated.View>
 
         {/* Pivot dot — drawn on top of the body so it's visible. */}
@@ -435,7 +464,6 @@ function makeStyles(C: ThemePalette) {
     },
     weight: {
       position: 'absolute',
-      top: BEAD_FROM_ARM_TOP,
       width: BEAD_SIZE,
       height: BEAD_SIZE * 0.7,
       borderRadius: 3,
