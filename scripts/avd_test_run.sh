@@ -26,7 +26,7 @@ log "off-device regression"
 cd "$REPO"
 { echo "--- tsc ---"; npx tsc --noEmit 2>&1; echo "tsc_rc=$?";
   echo "--- npm test ---"; CI=true npm test 2>&1; echo "test_rc=$?"; } > "$OUT/tierA-regression.log" 2>&1
-if grep -q "test_rc=0" "$OUT/tierA-regression.log" && ! grep -qE "error TS[0-9]" "$OUT/tierA-regression.log"; then
+if grep -q "tsc_rc=0" "$OUT/tierA-regression.log" && grep -q "test_rc=0" "$OUT/tierA-regression.log" && ! grep -qE "error TS[0-9]" "$OUT/tierA-regression.log"; then
   row "A/off" "regression" "GREEN" "tsc+legacy+jest clean"; log "regression GREEN"
 else
   row "A/off" "regression" "RED" "see $OUT/tierA-regression.log"; log "regression RED"
@@ -42,7 +42,7 @@ if ! "$ADB" devices | grep -q "^$SERIAL"; then
   log "booting AVD $AVD headless"
   nohup "$EMU" -avd "$AVD" -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot \
     > "$OUT/emulator.log" 2>&1 &
-  "$ADB" wait-for-device
+  timeout 180 "$ADB" -s "$SERIAL" wait-for-device || { row "A/AVD" "boot" "RED" "wait-for-device timeout (emulator failed to start)"; log "wait-for-device timeout"; exit 0; }
   log "waiting for boot_completed"
   booted=0
   for _ in $(seq 1 150); do
@@ -59,11 +59,12 @@ log "AVD up: $SERIAL"
   || { row "A/AVD" "install" "RED" "see install.log"; exit 0; }
 
 # smoke-launch + crash check
-"$ADB" -s "$SERIAL" shell logcat -c
+"$ADB" -s "$SERIAL" shell logcat -c; "$ADB" -s "$SERIAL" shell logcat -c -b crash 2>/dev/null
 "$ADB" -s "$SERIAL" shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 sleep 6
-"$ADB" -s "$SERIAL" shell "logcat -d -b crash | tail -40" > "$OUT/crash.log" 2>&1
-if [ -s "$OUT/crash.log" ] && grep -qiE "FATAL|$PKG" "$OUT/crash.log"; then
+"$ADB" -s "$SERIAL" shell "logcat -d -b crash | tail -60" > "$OUT/crash.log" 2>&1
+PKG_RE="${PKG//./\\.}"
+if [ -s "$OUT/crash.log" ] && grep -qE "FATAL EXCEPTION.*$PKG_RE|$PKG_RE" "$OUT/crash.log"; then
   row "A/AVD" "launch-no-crash" "RED" "crash in crash.log"
 else
   row "A/AVD" "launch-no-crash" "GREEN" "no crash on launch"
