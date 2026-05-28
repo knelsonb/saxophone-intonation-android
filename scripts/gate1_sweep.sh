@@ -69,7 +69,9 @@ run(){
   for ((s=0;s<3;s++)); do tapn 40 "$X_M5" "$Y_BPM"; tapn 40 "$X_P5" "$Y_BPM"; done
   sleep "$SETTLE"
   log "STOP metro"; tap "$X_PRIMARY" "$Y_PRIMARY"
-  a shell logcat -d | grep -E "ShadowBeat|armPhase|phaseErr|PendulumArm" > "$OUT/capture.log"
+  # captures all 3 criteria: ShadowBeat (floor), 'gate1 clock-identity' one-shot
+  # (criterion 1, native Log.i), PendDiag/armPhase (#167 head-to-head, criterion 3).
+  a shell logcat -d | grep -E "ShadowBeat|gate1 clock-identity|PendDiag|armPhase|phaseErr" > "$OUT/capture.log"
   log "captured $(wc -l < "$OUT/capture.log") matching logcat lines -> $OUT/capture.log"
   log "analyze: python3 scripts/gate1_analyze.py '$OUT/capture.log'"
 }
