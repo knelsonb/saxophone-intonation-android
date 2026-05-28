@@ -59,24 +59,43 @@ export function PulseDisplay({ running, beat, timeSig, bus }: PulseDisplayProps)
   // period ≤ 222ms) the prior 220ms tween isn't done when the next fires.
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
+  // v1.4.x #66 — pending heard-moment fire timer (see the subscription effect).
+  const fireTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // v1.3.4 B5 — subscribe synchronously to bus.on('noteOn') so the dot flash
-  // lands on the same JS tick as the audio attack (U21 invariant). The `pulse`
-  // prop approach batched through React reconciler → ~16 ms lag.
+  // v1.3.4 B5 — subscribe synchronously to bus.on('noteOn').
+  // v1.4.x #66 — the noteOn (commandFired) peg fires at the audio WRITE moment;
+  // the click is HEARD ~getCompensationLatencyMs() later. Firing the blink on
+  // the peg lit it ~85 ms BEFORE the sound (and, since the `beat` prop only
+  // advances at the heard moment, on the PREVIOUS dot). We now DELAY the blink
+  // by the bus's effective latency so the scale-pop lands on the heard click —
+  // by which time the beat prop has advanced, so the CORRECT dot pulses. The old
+  // "same JS tick as the audio attack (U21)" goal was wrong once attack=write.
   useEffect(() => {
     if (!running || !bus) return;
     const off = bus.on('noteOn', (evt) => {
       if (evt.channel !== 'drums') return;
       if ((evt.velocity ?? 0) <= 0) return;
       if (evt.tick === 'sub') return;
-      animRef.current?.stop();
-      pulseAnim.setValue(1.6);
-      const a = Animated.timing(pulseAnim, { toValue: 1, duration: 220, useNativeDriver: true });
-      animRef.current = a;
-      a.start();
+      const fire = () => {
+        animRef.current?.stop();
+        pulseAnim.setValue(1.6);
+        const a = Animated.timing(pulseAnim, { toValue: 1, duration: 220, useNativeDriver: true });
+        animRef.current = a;
+        a.start();
+      };
+      // Read the effective latency fresh each beat (picks up route changes),
+      // clamp sane, and delay so the pulse peak coincides with the heard click.
+      const comp = Math.max(0, Math.min(500, bus.getCompensationLatencyMs?.() ?? 0));
+      if (fireTimerRef.current) clearTimeout(fireTimerRef.current); // drop a stale pending fire
+      if (comp > 0) {
+        fireTimerRef.current = setTimeout(() => { fireTimerRef.current = null; fire(); }, comp);
+      } else {
+        fire();
+      }
     });
     return () => {
       off();
+      if (fireTimerRef.current) { clearTimeout(fireTimerRef.current); fireTimerRef.current = null; }
       animRef.current?.stop();
     };
   }, [running, bus, pulseAnim]);

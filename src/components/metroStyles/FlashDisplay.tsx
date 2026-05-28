@@ -110,11 +110,20 @@ export function FlashDisplay({ running, beat, bpm, timeSig, bus }: FlashDisplayP
   const flashColorRef = useRef(C.accent);
   const [flashBg, setFlashBg] = React.useState(C.accent);
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
+  // v1.4.x #66 — pending heard-moment fire timer (see the subscription effect).
+  const fireTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // v1.3.4 B5 — subscribe synchronously to bus.on('noteOn') so the flash
-  // lands on the same JS tick as the audio attack (U21). The `pulse` prop
-  // approach batched through React reconciler → ~16 ms lag.
-  // beat is read via beatRef so its identity churn doesn't force a rebind.
+  // v1.3.4 B5 — subscribe synchronously to bus.on('noteOn'). beat is read via
+  // beatRef so its identity churn doesn't force a rebind.
+  // v1.4.x #66 — the noteOn (commandFired) peg fires at the audio WRITE moment;
+  // the click is HEARD ~getCompensationLatencyMs() later. Firing the flash on
+  // the peg made the bright snap land ~85 ms BEFORE the sound. Now we DELAY the
+  // flash onset by the bus's effective latency so the PEAK coincides with the
+  // heard click. (The old "land on the same JS tick as the audio attack (U21)"
+  // goal was wrong once attack=write≠heard.) The ~4 ms commandFired bridge is
+  // ignored — sub-perceptual for a coarse one-shot, well under the ~60 ms AV
+  // sync JND. The colour is snapshotted at PEG time (not fire time) so a delayed
+  // fire can't pick up the next beat's downbeat colour.
   const beatRef = useRef(beat);
   useEffect(() => { beatRef.current = beat; }, [beat]);
 
@@ -124,26 +133,37 @@ export function FlashDisplay({ running, beat, bpm, timeSig, bus }: FlashDisplayP
       if (evt.channel !== 'drums') return;
       if ((evt.velocity ?? 0) <= 0) return;
       if (evt.tick === 'sub') return;
-      animRef.current?.stop();
       // v1.4 wave-5 T5 — read colors via colorsRef so theme changes don't
-      // force a subscription rebuild (which would drop beats firing during
-      // the gap). colorsRef.current is always the latest palette values.
+      // force a subscription rebuild. Snapshot NOW (peg time) for #66's delay.
       const color = beatRef.current === 1 ? colorsRef.current.inTune : colorsRef.current.accent;
-      flashColorRef.current = color;
-      setFlashBg(color);
-      flashAnim.setValue(1);
-      const halfBeatMs = Math.max(50, Math.min(1000, (60000 / Math.max(1, bpmRef.current)) * 0.5));
-      const a = Animated.timing(flashAnim, {
-        toValue: 0,
-        duration: halfBeatMs,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      });
-      animRef.current = a;
-      a.start();
+      const fire = () => {
+        animRef.current?.stop();
+        flashColorRef.current = color;
+        setFlashBg(color);
+        flashAnim.setValue(1);
+        const halfBeatMs = Math.max(50, Math.min(1000, (60000 / Math.max(1, bpmRef.current)) * 0.5));
+        const a = Animated.timing(flashAnim, {
+          toValue: 0,
+          duration: halfBeatMs,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        });
+        animRef.current = a;
+        a.start();
+      };
+      // #66 — read the bus's EFFECTIVE latency fresh each beat (picks up route
+      // changes), clamp sane, and delay so the peak lands on the heard click.
+      const comp = Math.max(0, Math.min(500, bus.getCompensationLatencyMs?.() ?? 0));
+      if (fireTimerRef.current) clearTimeout(fireTimerRef.current); // drop a stale pending fire
+      if (comp > 0) {
+        fireTimerRef.current = setTimeout(() => { fireTimerRef.current = null; fire(); }, comp);
+      } else {
+        fire();
+      }
     });
     return () => {
       off();
+      if (fireTimerRef.current) { clearTimeout(fireTimerRef.current); fireTimerRef.current = null; }
       animRef.current?.stop();
     };
   // C.inTune / C.accent removed from deps — read via colorsRef (wave-5 T5).
