@@ -207,9 +207,13 @@ static void apply_command(const Command& c, int64_t currentFrame) {
                 g_tsf, c.channel, c.program, c.channel == 9 ? 1 : 0);
             break;
         case CmdKind::PitchBend: {
-            // Allow ±12 semitones via a 24-semitone range. Map linearly to
-            // the 14-bit wheel [0, 16383] with 8192 = centre.
-            tsf_channel_set_pitchrange(g_tsf, c.channel, 24.0f);
+            // Allow ±12 semitones. TSF's pitchrange R is the ± value (total
+            // ±R), so the range is 12.0f — NOT 24. (Was 24.0f: with the encode
+            // below mapping ±12 st → full wheel, a 24 range made the wheel
+            // decode to ±24 → every bend came out 2× too large. The A4
+            // calibration bend, e.g. +7.85¢ at A4=442, sounded as ~+15.7¢.)
+            // Map linearly to the 14-bit wheel [0, 16383] with 8192 = centre.
+            tsf_channel_set_pitchrange(g_tsf, c.channel, 12.0f);
             float clamped = c.semitones;
             if (clamped > 12.0f)  clamped = 12.0f;
             if (clamped < -12.0f) clamped = -12.0f;
