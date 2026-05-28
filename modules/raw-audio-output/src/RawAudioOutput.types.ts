@@ -123,6 +123,14 @@ export interface RawAudioOutput {
   getSampleRate(): number;
 
   /**
+   * Latest measured write->hear latency in ms (AudioTrack.getTimestamp,
+   * warm-gated, ~1 Hz). -1 until a valid reading exists. The bus holds this
+   * with a deadband + debounce, so the raw value's jitter never reaches the
+   * animation — consumers read the HELD value, not this directly.
+   */
+  getOutputLatencyMs(): number;
+
+  /**
    * v1.4.x P1 — mirror a JS forensic-log line into Android's native log so it
    * surfaces in `adb logcat` on release builds (where RN does not pipe console
    * output). `level` is one of "debug" | "info" | "warn" | "error".

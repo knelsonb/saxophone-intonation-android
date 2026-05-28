@@ -50,11 +50,6 @@
 
 #define LOG_TAG "BellCurve/Synth"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-// DIAG (temporary) — onset-timing instrumentation. Logs the actual rendered
-// onset frame (buffer start) vs the intended atFrame for every scheduled
-// metronome tick, so we can measure inter-onset jitter from logcat. Remove
-// once the sub-buffer-firing question is settled. Grep tag: "ONSET".
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 #define TSF_IMPLEMENTATION
 #include "tsf.h"
@@ -194,19 +189,6 @@ static void apply_command(const Command& c, int64_t currentFrame) {
                  static_cast<unsigned>(c.kind), c.channel, c.midi);
             return;
         }
-    }
-
-    // DIAG (temporary) — see LOGI definition. Only metronome ticks carry a
-    // non-zero tick_kind, so this fires ~1-4×/sec, not per-sample. onsetFrame
-    // is where the click's first sample actually lands in the PCM stream;
-    // leadFrames = atFrame - onsetFrame is the buffer-quantization error.
-    if (c.kind == CmdKind::NoteOn && c.tick_kind != TICK_NONE) {
-        const long long wallMs = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        LOGI("ONSET tick=%u ch=%d midi=%d atFrame=%lld onsetFrame=%lld leadFrames=%lld rate=%d wallMs=%lld",
-             static_cast<unsigned>(c.tick_kind), c.channel, c.midi,
-             (long long)c.atFrame, (long long)currentFrame,
-             (long long)(c.atFrame - currentFrame), g_rate, wallMs);
     }
 
     switch (c.kind) {

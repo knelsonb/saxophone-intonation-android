@@ -478,6 +478,15 @@ class RawAudioOutputModule : Module() {
             outputSampleRate
         }
 
+        // Latest MEASURED write->hear latency in ms (from AudioTrack.getTimestamp,
+        // ~1 Hz, warm-gated). -1 until a valid reading exists. The JS bus uses
+        // this to auto-compensate visual/audio sync per device + route; it holds
+        // the value with a deadband/debounce so this raw figure's jitter never
+        // reaches the animation.
+        Function("getOutputLatencyMs") {
+            renderer?.outputLatencyMs() ?: -1.0
+        }
+
         // v1.4 — scheduled noteOn. atFrame is the absolute render-frame index
         // returned by getCurrentFrame() pegged to wall-clock on the JS side.
         // tickKind: 0=none, 1=beat, 2=sub.

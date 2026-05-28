@@ -137,6 +137,7 @@ jest.mock('react-native-reanimated', () => {
     useFrameCallback: () => ({ setActive: () => {}, isActive: false, callbackId: 0 }),
     useAnimatedStyle: () => ({}),
     withTiming: (toValue) => toValue,
+    runOnJS: (fn) => fn,
   };
 });
 

@@ -46,6 +46,13 @@ internal class SynthRenderer(
     // Pre-allocated mix buffer; reused every render. Size = frames * channels.
     private val mixBuffer: ShortArray = ShortArray(framesPerRender * channels)
 
+    // Latest measured write->hear latency (ms), updated ~1x/sec from
+    // getTimestamp once the stream is warm. -1 until a valid reading exists.
+    // JS reads this (getOutputLatencyMs) to drive auto visual/audio sync
+    // compensation; it is the MEASUREMENT, not the held compensation value.
+    @Volatile private var lastLatencyMs: Double = -1.0
+    fun outputLatencyMs(): Double = lastLatencyMs
+
     val isRunning: Boolean get() = running
 
     fun start() {
@@ -208,11 +215,16 @@ internal class SynthRenderer(
         val samplesPerWrite = framesPerRender * channels
         var underrunStreak = 0
 
-        // DIAG (temporary) — output-latency probe. framesWritten counts frames
+        // Output-latency probe (LOAD-BEARING). framesWritten counts frames
         // accepted by AudioTrack; getTimestamp().framePosition is frames the DAC
-        // has actually PRESENTED. The difference is the in-flight (write->heard)
-        // latency. Logged ~2x/sec. Grep tag: "OUTLAT". Remove once the
-        // audio-buffer-latency question is settled.
+        // has actually PRESENTED — the difference is the in-flight (write->heard)
+        // latency. The warm-gated `lastLatencyMs` write below is read by the JS
+        // bus (getOutputLatencyMs) to drive #167 auto sync-compensation; sampled
+        // at ~1 Hz, the rate the bus watchdog needs.
+        // NEVER log inside this loop: it runs on the THREAD_PRIORITY_AUDIO render
+        // thread, where a string alloc / binder write can priority-invert into an
+        // underrun (audible dropout). The committed value is logged off-thread by
+        // the bus (`latency-comp set`).
         val ats = android.media.AudioTimestamp()
         var framesWritten = 0L
         var lastLatLogNs = 0L
@@ -231,17 +243,20 @@ internal class SynthRenderer(
                 break
             }
 
-            // DIAG (temporary) — see above.
+            // Accumulate frames the DAC has accepted (drives the probe below).
             if (written > 0) framesWritten += written / channels
             val nowNs = System.nanoTime()
-            if (nowNs - lastLatLogNs > 500_000_000L) {
+            if (nowNs - lastLatLogNs > 1_000_000_000L) { // ~1 Hz — as often as the watchdog needs, no more
                 lastLatLogNs = nowNs
                 if (track.getTimestamp(ats)) {
                     val latFrames = framesWritten - ats.framePosition
                     val latMs = latFrames * 1000.0 / sampleRate
-                    Log.i(TAG, "OUTLAT framesWritten=$framesWritten framePos=${ats.framePosition} latFrames=$latFrames latMs=${"%.1f".format(latMs)} bufFrames=${track.bufferSizeInFrames} cap=${track.bufferCapacityInFrames} underruns=${track.underrunCount} rate=$sampleRate")
-                } else {
-                    Log.i(TAG, "OUTLAT getTimestamp=false framesWritten=$framesWritten bufFrames=${track.bufferSizeInFrames} cap=${track.bufferCapacityInFrames}")
+                    // Only publish once the stream is warm (>=1 s written) and the
+                    // reading is sane — during warm-up framesWritten races ahead of
+                    // the DAC and inflates the figure.
+                    if (framesWritten > sampleRate && latFrames in 1..sampleRate.toLong()) {
+                        lastLatencyMs = latMs
+                    }
                 }
             }
 

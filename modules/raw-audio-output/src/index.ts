@@ -33,6 +33,7 @@ declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEven
   setMasterGain(gain: number): void;
   isReady(): boolean;
   getSampleRate(): number; // device-native output rate (Hz) — JS pegs frame clock at this
+  getOutputLatencyMs(): number; // measured write->hear latency (ms), -1 until warm
   nativeLog(level: string, tag: string, msg: string): void; // v1.4.x P1
   setHighRefreshRate(enable: boolean): void; // v1.4.x P4
   // v1.4
@@ -74,6 +75,8 @@ const synth: RawAudioOutput = {
   isReady: () => NativeRawAudioOutput.isReady(),
 
   getSampleRate: () => NativeRawAudioOutput.getSampleRate(),
+
+  getOutputLatencyMs: () => NativeRawAudioOutput.getOutputLatencyMs(),
 
   nativeLog: (level, tag, msg) => NativeRawAudioOutput.nativeLog(level, tag, msg), // v1.4.x P1
 

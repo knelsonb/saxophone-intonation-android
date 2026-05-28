@@ -43,13 +43,14 @@
  * the arm FREEZES (settles to center) rather than free-running on a drifting
  * clock. It never shows approximate motion.
  */
-import React, { useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
   useSharedValue,
   useFrameCallback,
   useAnimatedStyle,
   withTiming,
+  runOnJS,
   type FrameInfo,
 } from 'react-native-reanimated';
 import { useTheme } from '../../theme';
@@ -58,6 +59,14 @@ import type { MidiBusState } from '../../useMidiBusCore';
 import { log } from '../../log';
 
 const SWING_DEG = 26;
+
+// v1.4.x #167 — RN→worklet delivery delay (ms). The `commandFired` peg fires at
+// the audio WRITE moment but reaches this worklet ~this late over the JS bridge.
+// It is a delivery-FRAME correction, NOT an output latency: it applies ONLY to
+// the pendulum (which reacts to the peg event), never to the metronome (which
+// schedules forward and never round-trips an event). So the heard moment is
+// (effectiveLatency − PEG_BRIDGE_MS) ahead of the instant the peg arrives.
+const PEG_BRIDGE_MS = 4;
 
 // Per-beat bob colour so the weight itself signals position in the bar:
 // 1=red, 2=orange, 3=yellow, 4=blue. Cycles for bars longer than 4. Together
@@ -107,6 +116,28 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
 
+  // DIAG (on-device validation) — one-shot arm-vs-sound offset measurement.
+  // The worklet reports the arm's PHASE ERROR at each beat peg (how far theta is
+  // from an integer = how far the arm is from center when the beat fires), in
+  // ms, for the first 16 beats after start. Combine with the bus compensation:
+  //   armLeadsHeardMs ≈ effectiveLatencyMs − PEG_BRIDGE_MS + phaseErrMs
+  // phaseErrMs > 0 → arm already past center at the peg (leads the click more);
+  // phaseErrMs < 0 → arm reaches center AFTER the peg (closer to the heard
+  // click). The discriminator for whether the #167 phase-lock is correct on
+  // hardware. The 16-shot cap is enforced WORKLET-SIDE (phaseLogCount below) so
+  // that after 16 beats there is ZERO worklet→JS hop — no per-beat marshal for
+  // the life of the session. `logArmPhase` is pure logging; the worklet owns
+  // the gate and supplies the shot index.
+  const phaseLogCount = useSharedValue(0);
+  const logArmPhase = useCallback((n: number, phaseErrMs: number, beatDurMs: number) => {
+    log.i('PendDiag', 'armPhase', {
+      n,
+      phaseErrMs: Math.round(phaseErrMs * 100) / 100,
+      beatDurMs: Math.round(beatDurMs),
+      hint: 'armLeadsHeardMs ~= effectiveLatencyMs - PEG_BRIDGE_MS + phaseErrMs (+ = sound after arm center)',
+    });
+  }, []);
+
   // Shared values live on the UI thread (Reanimated). `angle` ∈ [-1, 1] is the
   // arm position (0 = center/vertical, ±1 = extreme) and drives the rotation.
   const angle = useSharedValue(0);
@@ -137,6 +168,13 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
   const pegSeq = useSharedValue(0);
   const seenPegSeq = useSharedValue(0);
   const runningSV = useSharedValue(false);
+  // v1.4.x #167 — effective output-latency compensation (ms), seeded on start
+  // and refreshed from the bus on each peg. The peg fires at the audio WRITE
+  // moment but the click is HEARD ~this many ms later; we lock the arm's center
+  // to the HEARD moment by leading the phase correction by
+  // (compLeadMs − PEG_BRIDGE_MS) beats. The bus supplies the per-route guess
+  // until a measurement warms up, so this is a real lead from the first run.
+  const compLeadMs = useSharedValue(0);
 
   // Target beat duration follows BPM. theta is in BEATS, so a tempo change only
   // alters the RATE (dθ/dt = 1/dur) going forward — angle stays continuous, no
@@ -175,9 +213,31 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
         pendingCorr.value = 0;
         anchored.value = true;
       } else {
-        // err > 0 → theta ran ahead of the audio; schedule −err to pull it back.
-        const err = theta.value - Math.round(theta.value);
-        pendingCorr.value = pendingCorr.value - err;
+        // #167 — lock the arm's CENTER to the HEARD moment, not the write/peg
+        // moment. The click is heard ~compLeadMs after the peg fires (minus the
+        // PEG_BRIDGE_MS RN→worklet delivery delay), so we want theta to reach an
+        // integer that many beats in the FUTURE — i.e. lock (theta + leadBeats)
+        // to an integer now. The PLL bleeds this in smoothly over a beat (no
+        // step/jerk), and when compLeadMs changes (route change) it re-locks the
+        // same gentle way. compLeadMs is the bus's EFFECTIVE latency (held once
+        // warm, else the per-route guess), so it's a real lead even cold — never
+        // 0 once the route is set. The max(0,…) clamp only guards a degenerate
+        // sub-bridge latency (write-lock, harmless); the metronome's
+        // `targetMs − effective` stays UNCLAMPED — that asymmetry is correct.
+        // A latency CHANGE (even speaker→BT ~0.35 beat) is bounded, so it bleeds
+        // smoothly here; a true cycle-slip / frozen clock is caught instead by
+        // the >1.5-beat staleness freeze below (the decisive re-acquire path).
+        const leadBeats = Math.max(0, (compLeadMs.value - PEG_BRIDGE_MS) / dur);
+        const errLead = (theta.value + leadBeats) - Math.round(theta.value + leadBeats);
+        pendingCorr.value = pendingCorr.value - errLead;
+        // DIAG — RAW arm-vs-peg phase (negative once compensated = arm reaches
+        // center AFTER the peg, nearer the heard click). Worklet-side 16-shot
+        // gate: after 16 beats NO runOnJS marshal fires — zero per-beat hop.
+        if (phaseLogCount.value < 16) {
+          phaseLogCount.value += 1;
+          const rawErr = theta.value - Math.round(theta.value);
+          runOnJS(logArmPhase)(phaseLogCount.value, rawErr * dur, dur);
+        }
       }
     }
 
@@ -213,20 +273,28 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
   // motion. No side/parity here — the sine alternates the arc direction itself.
   useEffect(() => {
     if (!running || !bus) return;
+    // #167 — PRIME the lead before the first peg arrives, so the opening beats
+    // lead by the right amount instead of 0. The bus returns its EFFECTIVE
+    // latency (the per-route guess until a real measurement warms up), so this
+    // is a usable value from the very first render of a run.
+    compLeadMs.value = bus.getCompensationLatencyMs?.() ?? 0;
     const off = bus.on('noteOn', (evt) => {
       if (evt.channel !== 'drums') return;
       if ((evt.velocity ?? 0) <= 0) return;
       if (evt.tick === 'sub') return;
-      log.i('PendDiag', 'peg', { now: Date.now(), midi: evt.midi }); // DIAG (temporary) — visual-vs-audio offset measurement
+      // #167 — refresh the effective latency compensation (ms) into the worklet.
+      // It's the bus's debounced/deadbanded value, so it's stable beat-to-beat.
+      compLeadMs.value = bus.getCompensationLatencyMs?.() ?? 0;
       pegSeq.value = pegSeq.value + 1;
     });
     return () => { off(); };
-  }, [running, bus, pegSeq]);
+  }, [running, bus, pegSeq, compLeadMs]);
 
   // Start/stop the per-frame worklet and reset phase state.
   useEffect(() => {
     runningSV.value = running;
     if (running) {
+      phaseLogCount.value = 0; // DIAG — re-arm the one-shot arm-phase measurement
       pegSeq.value = 0;
       seenPegSeq.value = 0;
       theta.value = 0;
@@ -241,7 +309,7 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
       // Ease the arm to center (vertical rest) on the UI thread.
       angle.value = withTiming(0, { duration: 300 });
     }
-  }, [running, frameCb, runningSV, pegSeq, seenPegSeq, theta, pendingCorr, lastFrame, anchored, lastPegTime, appliedDur, beatDur, angle]);
+  }, [running, frameCb, runningSV, pegSeq, seenPegSeq, theta, pendingCorr, lastFrame, anchored, lastPegTime, appliedDur, beatDur, angle, phaseLogCount]);
 
   const armStyle = useAnimatedStyle(() => {
     return { transform: [{ rotate: `${angle.value * SWING_DEG}deg` }] };

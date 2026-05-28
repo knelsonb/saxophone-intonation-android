@@ -481,6 +481,15 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // All synth consumers (drone, metronome, pipes) reserve their channel from this bus.
   const bus = useMidiBus();
 
+  // v1.4.x #167 — feed the user's selected output route into the bus so its
+  // cold-start latency guess (before AudioTrack.getTimestamp warms up) matches
+  // the real path (speaker/wired/BT). The bus holds it in a ref, so this never
+  // churns the build-once bus interface; both the metronome and the pendulum
+  // then read one effective latency via getCompensationLatencyMs().
+  useEffect(() => {
+    bus.setOutputRoute?.(engine.metroOutputRoute);
+  }, [bus, engine.metroOutputRoute]);
+
   // v1.4 wave-10 T3 — SF2 loading feedback. Show "Loading sounds…" until the
   // bus reports ready. If it hasn't resolved after 10 s, surface a persistent
   // "Synth unavailable" warning (error-states-are-mandatory axiom).

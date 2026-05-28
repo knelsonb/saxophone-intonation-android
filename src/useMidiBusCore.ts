@@ -51,6 +51,32 @@
 // Public types
 // ---------------------------------------------------------------------------
 
+/**
+ * Output route the metronome + visuals compensate for. The authoritative value
+ * is the user's `metroOutputRoute` preference (a React prop on useMetronome);
+ * App.tsx plumbs it into the bus via `setOutputRoute` so the bus can supply a
+ * per-route latency GUESS at cold start, before a real measurement exists.
+ */
+export type MetroOutputRoute = 'speaker' | 'wired' | 'bluetooth';
+
+// v1.4.x #167 — per-route base latency (ms), the COLD-START fallback for output
+// compensation before AudioTrack.getTimestamp yields a real reading. Speaker is
+// the workhorse default; wired is the cleanest path; Bluetooth A2DP buffering is
+// generally awful (we surface a warning on the METRO screen). SINGLE SOURCE OF
+// TRUTH: the bus reads this inside getCompensationLatencyMs()'s fallback, and
+// useMetronome re-exports routeLatencyMs for back-compat — neither keeps its own
+// copy, so the audio and visual fallbacks can never diverge.
+const ROUTE_LATENCY_MS: Record<MetroOutputRoute, number> = {
+  speaker:   25,
+  wired:     5,
+  bluetooth: 200,
+};
+
+/** Cold-start per-route latency guess (ms); speaker default for any unknown route. */
+export function routeLatencyMs(route: MetroOutputRoute): number {
+  return ROUTE_LATENCY_MS[route] ?? 25;
+}
+
 /** GM-respecting channel roles. Drums MUST stay 9 (GM channel 10). */
 export type ChannelRole =
   | 'drone'
@@ -213,6 +239,28 @@ export interface MidiBusState {
    * No-op if the underlying synth port doesn't support frame counters.
    */
   repegFrameClock(opts?: { force?: boolean }): void;
+  /**
+   * v1.4.x #167 — the EFFECTIVE output-latency compensation (ms). The bus
+   * measures the real write->hear latency on triggers (start / route change /
+   * recovery) and via a low-rate watchdog, holds it with a 30 ms deadband + 5 s
+   * debounce so the value is piecewise-constant (no per-frame jitter). When a
+   * measurement exists it returns the held value; UNTIL then it returns the
+   * per-route cold-start GUESS (routeLatencyMs of the route set via
+   * setOutputRoute) — so it is ALWAYS a usable positive latency, never 0.
+   * BOTH consumers (useMetronome scheduling AND the pendulum phase-lead) read
+   * this one number, so audio and visuals compensate by the SAME amount in
+   * every state — the single source of truth for "how late is the heard click".
+   * Optional so legacy mocks omit it. O(1): two ref reads + a map lookup.
+   */
+  getCompensationLatencyMs?(): number;
+  /**
+   * v1.4.x #167 — tell the bus which output route the user selected, so its
+   * cold-start latency guess matches the real path (speaker/wired/BT). The
+   * authoritative value is the `metroOutputRoute` preference; App.tsx pushes it
+   * here whenever it changes. Stored in a ref (NOT the build-once interface memo
+   * dep) so a route change never churns the bus identity. Optional for mocks.
+   */
+  setOutputRoute?(route: MetroOutputRoute): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +294,9 @@ export interface SynthPort {
    * SAME rate the render thread advances g_frame_position. Optional so legacy
    * mocks remain valid (they fall back to the configured default). */
   getSampleRate?(): number;
+  /** Latest MEASURED write->hear latency (ms); -1 until warm. The bus holds
+   * this with a deadband/debounce — consumers read getCompensationLatencyMs. */
+  getOutputLatencyMs?(): number;
   addCommandFiredListener?(cb: (e: FiredPayload) => void): { remove(): void };
   /**
    * v1.4 — Drop all pending scheduled commands. Called from stop paths to

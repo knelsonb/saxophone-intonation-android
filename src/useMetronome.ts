@@ -40,7 +40,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { loadMetroProfiles, loadPrefs, prefsUpdate, savePrefs } from './storage/prefs';
 import type { MetroProfile } from './storage/prefs';
-import type { ChannelHandle, ChannelRole, MidiBusState } from './useMidiBusCore';
+import { routeLatencyMs } from './useMidiBusCore';
+import type { ChannelHandle, ChannelRole, MetroOutputRoute, MidiBusState } from './useMidiBusCore';
+// #167 — route types + the cold-start latency guess now live in the bus core
+// (single source of truth shared with the bus's getCompensationLatencyMs
+// fallback). Re-exported here so existing `from './useMetronome'` imports of
+// MetroOutputRoute / routeLatencyMs keep working.
+export { routeLatencyMs };
+export type { MetroOutputRoute };
 import type { EditableProfile } from './components/ProfileEditorAccordion';
 import { log } from './log';
 
@@ -121,6 +128,17 @@ const DEFAULT_BEAT_VOICES: BeatInstrument[] = [
   { midi: 56, velocity: 95 },  // 4 — Cowbell
 ];
 
+// Default voice for beat index i (0-based). The kick (the accent) lands ONLY
+// on the downbeat; every other beat cycles through the NON-downbeat voices
+// (snare/tom/cowbell). This keeps a single, unambiguous "1" — naively cycling
+// `i % 4` would replay the kick on beat 5 of a 6/8 bar, planting a phantom
+// second downbeat.
+function defaultVoiceForBeat(i: number): BeatInstrument {
+  if (i <= 0) return { ...DEFAULT_BEAT_VOICES[0] };
+  const nonDownbeat = DEFAULT_BEAT_VOICES.length - 1; // snare, tom, cowbell
+  return { ...DEFAULT_BEAT_VOICES[1 + ((i - 1) % nonDownbeat)] };
+}
+
 const DRUM_MIDI_LO = 35;
 const DRUM_MIDI_HI = 81;
 
@@ -134,23 +152,6 @@ const ALLOWED_DENOMINATORS: readonly (2 | 4 | 8 | 16 | 32)[] = [2, 4, 8, 16, 32]
 
 const TAP_RESET_MS = 2000;
 const TAP_WINDOW = 4;
-
-export type MetroOutputRoute = 'speaker' | 'wired' | 'bluetooth';
-
-// Per-route base latency offsets (ms) — subtracted from the scheduled click
-// time so the audio arrives at the user's ear at the same wall-clock moment
-// as the visual peak. Speaker is the workhorse default; wired is the cleanest
-// path; Bluetooth A2DP buffering is generally awful and we surface a warning
-// on the METRO screen.
-const ROUTE_LATENCY_MS: Record<MetroOutputRoute, number> = {
-  speaker:   25,
-  wired:     5,
-  bluetooth: 200,
-};
-
-export function routeLatencyMs(route: MetroOutputRoute): number {
-  return ROUTE_LATENCY_MS[route] ?? 25;
-}
 
 export interface MetronomeState {
   bpm: number;
@@ -225,7 +226,7 @@ function clampDrumMidi(n: number): number {
 function buildDefaultPattern(beats: number): BeatInstrument[] {
   const out: BeatInstrument[] = new Array(beats);
   for (let i = 0; i < beats; i++) {
-    out[i] = { ...DEFAULT_BEAT_VOICES[i % DEFAULT_BEAT_VOICES.length] };
+    out[i] = defaultVoiceForBeat(i);
   }
   return out;
 }
@@ -239,7 +240,7 @@ function resizePattern(old: BeatInstrument[], newBeats: number): BeatInstrument[
   if (old.length > newBeats) return old.slice(0, newBeats);
   const out = old.slice();
   while (out.length < newBeats) {
-    out.push({ ...DEFAULT_BEAT_VOICES[out.length % DEFAULT_BEAT_VOICES.length] });
+    out.push(defaultVoiceForBeat(out.length));
   }
   return out;
 }
@@ -439,8 +440,15 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     // skip-if-too-late guard below drops the click silently rather than
     // playing it overlapped. Band-directors at 300 BPM should pick wired or
     // speaker output anyway.
-    const routeLat = routeLatencyMs(outputRouteRef.current);
-    const clickFireAt = targetMs - routeLat + clickOffsetRef.current;
+    // v1.4.x #167 — single EFFECTIVE output latency from the bus: the held
+    // measurement once warm, else the bus's per-route cold-start guess. The bus
+    // now owns that fallback, so audio (here) and the pendulum phase-lead
+    // compensate by the SAME amount in every state. ONE read, reused for the
+    // downbeat AND its sub-ticks below — never recompute a fallback at the
+    // sub-tick or the two would diverge. The `??` covers only legacy bus mocks
+    // that omit the method.
+    const effective = busRef.current.getCompensationLatencyMs?.() ?? routeLatencyMs(outputRouteRef.current);
+    const clickFireAt = targetMs - effective + clickOffsetRef.current;
 
     const visualDelay = Math.max(0, targetMs - now);
 
@@ -470,7 +478,7 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
 
     // v1.2 — schedule sub-ticks for this beat, if any. Sub-ticks use the
     // global subdivisionVoice and DO NOT advance the beat counter (visual
-    // semantics stay 1..N downbeats only). Sub-ticks share the same routeLat
+    // semantics stay 1..N downbeats only). Sub-ticks share the same `effective`
     // + clickOffset lead so they land at the right wall-clock moment too, and
     // ride the same real-time engine schedule as the downbeat (tick='sub' so
     // visual subscribers skip them when stepping their bar position).
@@ -480,7 +488,7 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
       const subVoice = subdivisionVoiceRef.current;
       for (let k = 1; k < subsPerBeat; k++) {
         const subTargetMs = targetMs + (intervalMs * k) / subsPerBeat;
-        const subFireAt = subTargetMs - routeLat + clickOffsetRef.current;
+        const subFireAt = subTargetMs - effective + clickOffsetRef.current;
         // Same too-late skip as the downbeat path.
         if (now - subFireAt >= intervalMs * 0.5) continue;
         scheduleNoteAt(subVoice.midi, subVoice.velocity, subFireAt, 'sub');

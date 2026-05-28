@@ -16,11 +16,13 @@
  * `src/__tests__/useMidiBus.test.ts`.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import synth from '@local/raw-audio-output';
 import { log } from './log';
 import {
   createMidiBusCore,
+  routeLatencyMs,
+  type MetroOutputRoute,
   type MidiBusCore,
   type MidiBusState,
   type SynthPort,
@@ -30,6 +32,8 @@ import {
 export {
   CHANNEL_OF_ROLE,
   createMidiBusCore,
+  routeLatencyMs,
+  type MetroOutputRoute,
   type ChannelRole,
   type ChannelHandle,
   type MidiBusState,
@@ -111,11 +115,51 @@ export function useMidiBus(): MidiBusState {
   //       thread exits and the counter freezes forever. Fix: rebuild via the
   //       existing, tested stop()/start() path, then drop the stale queue and
   //       force-repeg. Throttled to avoid restart storms on a flapping device.
+  // v1.4.x #167 — automatic output-latency compensation. useMetronome (audio
+  // scheduling) and PendulumDisplay (arm phase-lead) read getCompensationLatencyMs()
+  // to align audio + visuals to the HEARD moment. We MEASURE the real write->hear
+  // latency (synth.getOutputLatencyMs, from getTimestamp) but HOLD it: a change is
+  // only committed when it moves more than a 30 ms deadband, and the watchdog only
+  // resyncs after a sustained >5 s excursion. So the held value is piecewise-
+  // constant — its measurement jitter never reaches the animation. 0 until the
+  // first valid measurement (consumers fall back to their per-route guess).
+  const compLatencyRef = useRef(0);
+  // #167 — the user's selected output route, pushed in by App.tsx via
+  // setOutputRoute (the route name is NOT in the native route-change event,
+  // which carries only {kind}). Held in a ref — NEVER a memo dep — so a route
+  // change updates the cold-start guess with zero re-render and never churns
+  // the build-once bus interface (mirrors compLatencyRef's pattern).
+  const routeRef = useRef<MetroOutputRoute>('speaker');
+  const outOfSyncSinceRef = useRef<number | null>(null);
+  const LAT_DEADBAND_MS = 30;
+  const LAT_DEBOUNCE_MS = 5000;
+  const commitLatency = useCallback((force: boolean): void => {
+    let raw = -1;
+    try { raw = synth.getOutputLatencyMs?.() ?? -1; } catch { raw = -1; }
+    if (raw < 0) return; // not warm / unsupported — keep the held value
+    const held = compLatencyRef.current;
+    if (force || Math.abs(raw - held) > LAT_DEADBAND_MS) {
+      compLatencyRef.current = raw;
+      outOfSyncSinceRef.current = null;
+      log.i('Bus', 'latency-comp set', { heldMs: Math.round(raw), prevMs: Math.round(held), force });
+    }
+  }, []);
+
   const lastRecoveryRef = useRef(0);
   useEffect(() => {
+    // #167 — track the settle-remeasure timers so they can't fire commitLatency
+    // (a native-bridge call) after this effect/component tears down.
+    const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+    const scheduleMeasure = () => {
+      const id = setTimeout(() => { pendingTimers.delete(id); commitLatency(true); }, 900);
+      pendingTimers.add(id);
+    };
     const routeSub = synth.addRouteChangeListener?.((e) => {
       log.d('Bus', 'audioRouteChanged — force-repeg frame clock', e);
       try { core.repegFrameClock({ force: true }); } catch { /* ignore */ }
+      // #167 — a route change is a known latency step (speaker<->BT etc.).
+      // Re-measure after the new route settles, then commit if it moved.
+      scheduleMeasure();
     });
     const errSub = synth.addErrorListener((e) => {
       const reason = e?.reason ?? '';
@@ -131,12 +175,43 @@ export function useMidiBus(): MidiBusState {
       try { synth.start(); } catch { /* ignore */ }
       try { core.clearScheduled(); } catch { /* ignore */ }
       try { core.repegFrameClock({ force: true }); } catch { /* ignore */ }
+      // #167 — fresh AudioTrack = fresh buffer/HAL config; re-measure latency.
+      scheduleMeasure();
     });
     return () => {
       try { routeSub?.remove(); } catch { /* ignore */ }
       try { errSub.remove(); } catch { /* ignore */ }
+      pendingTimers.forEach(clearTimeout);
+      pendingTimers.clear();
     };
-  }, [core]);
+  }, [core, commitLatency]);
+
+  // #167 — latency watchdog. Low-rate poll (NO per-frame getTimestamp): the
+  // native side already computes latency ~1 Hz; we just sample the cached value.
+  // Holds the compensation steady inside a 30 ms deadband; only resyncs when the
+  // measured latency sits >30 ms off the held value for >5 s continuously (a
+  // sustained change, not a transient). Plus a one-shot settle-measure on mount.
+  useEffect(() => {
+    const initial = setTimeout(() => commitLatency(true), 1500);
+    const watchdog = setInterval(() => {
+      let raw = -1;
+      try { raw = synth.getOutputLatencyMs?.() ?? -1; } catch { raw = -1; }
+      if (raw < 0) { outOfSyncSinceRef.current = null; return; }
+      const held = compLatencyRef.current;
+      if (Math.abs(raw - held) > LAT_DEADBAND_MS) {
+        const now = Date.now();
+        if (outOfSyncSinceRef.current == null) {
+          outOfSyncSinceRef.current = now;
+        } else if (now - outOfSyncSinceRef.current > LAT_DEBOUNCE_MS) {
+          log.w('Bus', 'latency-comp watchdog resync', { rawMs: Math.round(raw), heldMs: Math.round(held) });
+          commitLatency(true);
+        }
+      } else {
+        outOfSyncSinceRef.current = null;
+      }
+    }, 1000);
+    return () => { clearTimeout(initial); clearInterval(watchdog); };
+  }, [commitLatency]);
 
   // v1.3.4 B1 — split identity from reactive value. The INTERFACE object is
   // built once from `core` (stable useMemo with no `ready` dep) so consumers
@@ -156,6 +231,18 @@ export function useMidiBus(): MidiBusState {
       atMsToAtFrame:   core.atMsToAtFrame.bind(core),
       // v1.4 wave-3 — force-repeg surface for AppState resume.
       repegFrameClock: core.repegFrameClock.bind(core),
+      // v1.4.x #167 — EFFECTIVE output-latency compensation (ms): the held
+      // measurement once warm, else the per-route cold-start guess. Both
+      // consumers read this one value so audio + visuals always compensate by
+      // the same amount. O(1) — two ref derefs + a map lookup, no JNI.
+      getCompensationLatencyMs: () => {
+        const held = compLatencyRef.current;
+        return held > 0 ? held : routeLatencyMs(routeRef.current);
+      },
+      // #167 — receive the user's route selection (see routeRef). Plain ref
+      // write: updates the cold-start guess without re-rendering or rebuilding
+      // this interface.
+      setOutputRoute: (route: MetroOutputRoute) => { routeRef.current = route; },
     }),
     [core],
   );
