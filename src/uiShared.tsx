@@ -259,7 +259,14 @@ export function makeStyles(C: ThemePalette) {
   arcTickMajor: { width: 2, height: 28, backgroundColor: C.ink },
   arcTickCenter: { width: 3, height: 36, backgroundColor: C.ink },
   arcTickActive: { opacity: 1 },
-  arcNeedle: { position: 'absolute', top: 0, bottom: 0, width: 4, marginLeft: -2, backgroundColor: C.accent, borderRadius: 2, zIndex: 10, shadowColor: C.accent, shadowOpacity: 0.6, shadowRadius: 3, elevation: 4 },
+  // #67 — NO `elevation`/`shadow*` here. On Android an elevated view draws on
+  // its own surface and is NOT clipped by the parent `arcTrack`'s
+  // `overflow:'hidden'`; the amber shadow (and, at the spring's underdamped
+  // overshoot, the needle body) bled OUTSIDE the track — over the scale labels
+  // above and the note/cents readout below — and appeared to "float" as the
+  // needle swept. Plain zIndex keeps it above the ticks without leaving the
+  // clip. The 4dp width + accent color already distinguish it from a tick.
+  arcNeedle: { position: 'absolute', top: 0, bottom: 0, width: 4, marginLeft: -2, backgroundColor: C.accent, borderRadius: 2, zIndex: 10 },
   arcNeedleTip: { position: 'absolute', top: -4, left: -4, width: 12, height: 12, borderRadius: 6, backgroundColor: C.accent, zIndex: 11 },
   arcZones: { flexDirection: 'row', marginTop: 4, height: 2 },
   arcZone: { height: '100%' },
