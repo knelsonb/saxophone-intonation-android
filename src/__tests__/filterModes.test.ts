@@ -67,16 +67,16 @@ const SR = 44100;
   const s = newFilterState();
   const hz = midiToHz(60); // middle C
 
-  const r1 = processFrame(s, hz, preset, SR);
+  const r1 = processFrame(s, hz, preset, SR, 440);
   assert(r1 === null, 'confirm: frame 1 suppressed (below confirm)');
 
-  const r2 = processFrame(s, hz, preset, SR);
+  const r2 = processFrame(s, hz, preset, SR, 440);
   assert(r2 === null, 'confirm: frame 2 suppressed (edge hop)');
 
-  const r3 = processFrame(s, hz, preset, SR);
+  const r3 = processFrame(s, hz, preset, SR, 440);
   assert(r3 === null, 'confirm: frame 3 suppressed (pending not deep enough)');
 
-  const r4 = processFrame(s, hz, preset, SR);
+  const r4 = processFrame(s, hz, preset, SR, 440);
   assert(r4 !== null, 'confirm: frame 4 emits');
   assertClose(r4, hz, 1.0, 'confirm: frame 4 frequency close to input');
 }
@@ -97,25 +97,25 @@ const SR = 44100;
   // Warm up on C4 — need enough frames to get past confirm + edgeHops + pending.
   // confirm=3, edgeHops=2: first emit at frame confirm(3) + edgeHops(2) + edgeHops(2) + 1 = 8
   for (let i = 0; i < 8; i++) {
-    processFrame(s, hzC, preset, SR);
+    processFrame(s, hzC, preset, SR, 440);
   }
   // Verify C4 is locked.
   assert(s._lockedMidi === 60, 'edge-hop: C4 locked after warm-up');
 
   // Now feed D4 — first edgeHops frames must be null.
-  const d1 = processFrame(s, hzD, preset, SR);
+  const d1 = processFrame(s, hzD, preset, SR, 440);
   assert(d1 === null, 'edge-hop: D4 frame 1 suppressed (confirm not met yet)');
 
-  const d2 = processFrame(s, hzD, preset, SR);
+  const d2 = processFrame(s, hzD, preset, SR, 440);
   assert(d2 === null, 'edge-hop: D4 frame 2 suppressed');
 
-  const d3 = processFrame(s, hzD, preset, SR);
+  const d3 = processFrame(s, hzD, preset, SR, 440);
   assert(d3 === null, 'edge-hop: D4 frame 3 suppressed (confirm=3 just met, edgeHops gate now starts)');
 
   // Frames 4+ should eventually emit.
   let emitted: number | null = null;
   for (let i = 0; i < 6; i++) {
-    const r = processFrame(s, hzD, preset, SR);
+    const r = processFrame(s, hzD, preset, SR, 440);
     if (r !== null) { emitted = r; break; }
   }
   assert(emitted !== null, 'edge-hop: D4 eventually emits after edge guard');
@@ -145,7 +145,7 @@ const SR = 44100;
   let result: number | null = null;
   const inputs = [flatHz, trueHz, sharpHz, trueHz, trueHz, trueHz];
   for (const hz of inputs) {
-    const r = processFrame(s, hz, preset, SR);
+    const r = processFrame(s, hz, preset, SR, 440);
     if (r !== null) { result = r; break; }
   }
   assert(result !== null, 'median: emitted a result');
@@ -165,11 +165,11 @@ const SR = 44100;
 
   // Warm up enough to lock.
   for (let i = 0; i < 6; i++) {
-    processFrame(s, hz, preset, SR);
+    processFrame(s, hz, preset, SR, 440);
   }
   assert(s._lockedMidi !== null, 'silence: locked before null');
 
-  processFrame(s, null, preset, SR);
+  processFrame(s, null, preset, SR, 440);
 
   assert(s._lockedMidi === null, 'silence: _lockedMidi cleared after null');
   assert(s._recent.length === 0, 'silence: _recent cleared after null');
@@ -185,7 +185,7 @@ const SR = 44100;
   const hz = midiToHz(72);
 
   for (let i = 0; i < 12; i++) {
-    processFrame(s, hz, preset, SR);
+    processFrame(s, hz, preset, SR, 440);
   }
   // State should be non-trivial.
   assert(s._recent.length > 0 || s._lockedMidi !== null, 'reset: state is non-trivial before reset');
@@ -228,10 +228,10 @@ const SR = 44100;
   const s = newFilterState();
 
   for (let i = 0; i < 8; i++) {
-    processFrame(s, midiToHz(60), preset, SR);
+    processFrame(s, midiToHz(60), preset, SR, 440);
   }
   const wasLocked = s._lockedMidi;
-  processFrame(s, 0, preset, SR);
+  processFrame(s, 0, preset, SR, 440);
   assert(s._lockedMidi === null, 'zero-hz: treated as silence, lockedMidi cleared');
 }
 

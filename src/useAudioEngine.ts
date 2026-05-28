@@ -257,6 +257,10 @@ export interface AudioEngineState {
   /** v0.9.1 user-declared current audio output route. */
   metroOutputRoute: 'speaker' | 'wired' | 'bluetooth';
   setMetroOutputRoute: (r: 'speaker' | 'wired' | 'bluetooth') => void;
+  /** #A4-S1 — canonical A4 reference (Hz), engine-owned. Drives display/drone/
+   *  pitch-pipes (re-render) AND the record path (ref mirror) from one source. */
+  a4Hz: number;
+  setA4Hz: (hz: number) => void;
   // v0.9.1 — drone-chase guard wiring. Drone hook writes its current MIDI
   // here so the engine's vote loop can exclude it from incumbent voting;
   // engine calls back into the drone's duck function when the suspicion
@@ -655,11 +659,14 @@ export function useAudioEngine(): AudioEngineState {
   const [droppedFrameCount, setDroppedFrameCount] = useState<number>(0);
   const [lastDropReason, setLastDropReason] = useState<QualityRejection>(null);
 
-  // a4Hz is not yet lifted into the engine (Frodo owns refHz in App.tsx).
-  // We track it only in a ref so onBuffer can use it for MIDI conversion and
-  // savePrefsNow can write a consistent blob. Initialized to 440; prefs
-  // hydration updates it via the ref.
+  // #A4-S1 — canonical A4 reference, ENGINE-OWNED (was an App.tsx useState that
+  // never propagated to the record path → logged cents stale at 440). Two faces
+  // of one value: reactive STATE so display/drone/pitch-pipes re-render, plus a
+  // ref mirror so the onBuffer/record hot path reads it synchronously without a
+  // render gap (the filterModeRef pattern). App.tsx refHz is now a read-through.
+  const [a4Hz, setA4HzState] = useState<number>(440);
   const a4HzRef = useRef<number>(440);
+  a4HzRef.current = a4Hz; // per-render mirror for the audio/record hot path
 
   // Stable setters.
   const setGainMode = useCallback((m: GainMode) => setGainModeState(m), []);
@@ -968,6 +975,24 @@ export function useAudioEngine(): AudioEngineState {
     })();
   }, []);
 
+  // #A4-S1 — live A4 calibration setter. Updates the ref IMMEDIATELY (so the
+  // very next audio callback / record sample uses the new reference — closes the
+  // stale-record bug), updates state to re-render the display/drone/pipes, and
+  // DEBOUNCE-persists (400ms) so a slider scrub doesn't flood storage. Clamp
+  // MUST match the prefs-load clamp (prefs.ts) so a live value survives restart
+  // byte-identical, with no see↔record divergence across a relaunch.
+  const a4SaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setA4Hz = useCallback((hz: number): void => {
+    const clamped = Math.max(430, Math.min(450, hz));
+    a4HzRef.current = clamped;   // immediate — next record/audio callback is correct
+    setA4HzState(clamped);       // re-render display + drone + pitch-pipes
+    if (a4SaveTimer.current) clearTimeout(a4SaveTimer.current);
+    a4SaveTimer.current = setTimeout(() => {
+      a4SaveTimer.current = null;
+      savePrefsNow({ a4Hz: clamped }).catch(() => {});
+    }, 400);
+  }, [savePrefsNow]);
+
   // ---------------------------------------------------------------------------
   // Drone-chase wiring entry points. Both reset the suspicion counter when
   // the drone state shifts under us — a fresh transition shouldn't carry an
@@ -1140,6 +1165,7 @@ export function useAudioEngine(): AudioEngineState {
         setMetroClickOffsetMsState(prefs.metroClickOffsetMs);
         setMetroOutputRouteState(prefs.metroOutputRoute);
         a4HzRef.current = prefs.a4Hz;
+        setA4HzState(prefs.a4Hz);   // #A4-S1 — hydrate state DIRECT (not via setA4Hz → no save-loop on load)
         setPrefsLoaded(true);
 
         // Init DB and open first run after prefs are known.
@@ -1609,6 +1635,7 @@ export function useAudioEngine(): AudioEngineState {
         rawHz,
         preset,
         buffer.sampleRate,
+        a4HzRef.current,   // #A4-S2 — canonical A4 so clustering honours calibration
       );
 
       // LIVE / COLLECT both feed the same smoothed-freq path. The mode only
@@ -2081,6 +2108,8 @@ export function useAudioEngine(): AudioEngineState {
     setMetroClickOffsetMs,
     metroOutputRoute,
     setMetroOutputRoute,
+    a4Hz,
+    setA4Hz,
     setDroneCurrentMidi,
     installDroneDuckHandler,
   }), [
@@ -2118,6 +2147,7 @@ export function useAudioEngine(): AudioEngineState {
     deckStyle,
     metroClickOffsetMs,
     metroOutputRoute,
+    a4Hz,
     setGainMode,
     setFilterMode,
     setInstrumentKey,

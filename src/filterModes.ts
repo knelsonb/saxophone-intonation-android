@@ -66,11 +66,13 @@ export function resetFilterState(s: FilterState): void {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-const A4_HZ = 440.0;
-
-function freqToMidi(hz: number): number {
+// #A4-S2 — A4 reference is no longer hardcoded; the caller threads in the
+// engine's canonical a4Hz so the filter's note clustering matches the user's
+// calibration (was a fixed 440 → mis-clustered near note boundaries and fed the
+// session raw-log a 440-referenced MIDI under any non-440 reference).
+function freqToMidi(hz: number, a4Hz: number): number {
   if (hz <= 0) return NaN;
-  return 69.0 + 12.0 * Math.log2(hz / A4_HZ);
+  return 69.0 + 12.0 * Math.log2(hz / a4Hz);
 }
 
 function median(values: number[]): number {
@@ -114,6 +116,9 @@ function onSilence(s: FilterState, edgeHops: number): number[] {
  * @param preset      Active FilterPreset from FILTER_PRESETS.
  * @param _sampleRate Reserved for future per-rate edge timing (unused — hop
  *                    counts are pre-calibrated in the presets).
+ * @param a4Hz        Canonical A4 reference (Hz) for freq→MIDI clustering.
+ *                    #A4-S2 — threaded from the engine so clustering honours
+ *                    the user's calibration instead of a hardcoded 440.
  * @returns           Smoothed, confirmed, edge-suppressed Hz, or null.
  *
  * Silence flushing: the desktop emits all pending frames as Qt signals; here
@@ -125,13 +130,14 @@ export function processFrame(
   rawHz: number | null,
   preset: FilterPreset,
   _sampleRate: number,
+  a4Hz: number,
 ): number | null {
   if (rawHz === null || rawHz <= 0) {
     const flushed = onSilence(state, preset.edgeHops);
     return flushed.length > 0 ? flushed[flushed.length - 1] : null;
   }
 
-  const midi = freqToMidi(rawHz);
+  const midi = freqToMidi(rawHz, a4Hz);
   if (!isFinite(midi)) {
     onSilence(state, preset.edgeHops);
     return null;

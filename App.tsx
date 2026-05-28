@@ -56,7 +56,6 @@ import {
   makeStyles,
   IDLE_GLOW,
   PEAK_DECAY_PER_SEC,
-  REF_HZ_DEFAULT,
 } from './src/uiShared';
 import {
   SilenceBanner,
@@ -212,7 +211,13 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // the navigator's state via the BottomTabBarProps adapter at the foot of
   // this file.
 
-  const [refHz, setRefHz] = useState(REF_HZ_DEFAULT);
+  // #A4-S1 — A4 is now ENGINE-owned (single source of truth). refHz is a
+  // read-through of the canonical engine value; setRefHz aliases the engine's
+  // live setter (immediate ref+state + debounced persist), so the +/- call
+  // sites stay unchanged. Was a parallel useState that never reached the record
+  // path → logged cents stale at 440 and calibration lost on restart.
+  const refHz = engine.a4Hz;
+  const setRefHz = engine.setA4Hz;
 
   // v1.2 — active tab lifted out of the navigator so the persistent TopBar
   // (rendered above NavigationContainer) can be tab-aware per U7. Mirrors the
@@ -275,7 +280,8 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   useEffect(() => {
     if (!engine.prefsLoaded) return;
     loadPrefs().then((p) => {
-      setRefHz(p.refHz);
+      // #A4-S1 — A4 is hydrated by the engine itself; do NOT setRefHz here
+      // (it would call engine.setA4Hz → re-persist on load).
       setMinN(p.minNVisible);
       setShowDebugOverlay(p.showDebugOverlay);
       setDroneVoiceState(p.droneVoice);
@@ -301,39 +307,16 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     loadRangeOverrides().then((overrides) => setRangeOverrides(overrides)).catch(() => {});
   }, []);
 
-  // v1.0 BUG-2 — debounce A4/refHz writes so rapid ± taps don't flood
-  // AsyncStorage. The timer fires 250 ms after the last edit. Background
-  // AppState flushes any pending write immediately.
-  const refHzSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingRefHzRef = useRef<number>(refHz);
-  pendingRefHzRef.current = refHz; // always fresh for the background flush
-  const queueRefHzSave = useCallback((nextHz: number) => {
-    if (refHzSaveTimer.current) clearTimeout(refHzSaveTimer.current);
-    refHzSaveTimer.current = setTimeout(() => {
-      engine.savePrefsNow({ refHz: nextHz }).catch(() => {});
-      refHzSaveTimer.current = null;
-    }, 250);
-  }, [engine]);
+  // #A4-S1 — refHz debounce machinery REMOVED. A4 persistence (and its
+  // debounce) now lives in engine.setA4Hz, the single owner; the +/- call sites
+  // just call setRefHz (= engine.setA4Hz). This block used to own a parallel
+  // debounce that wrote refHz — the very split that left the record path stale.
 
-  // v1.0 CRITICAL-1 — cancel any pending debounce on unmount (permission-
-  // denied path, hot-reload, test remount) to avoid firing into a stale closure.
-  useEffect(() => () => {
-    if (refHzSaveTimer.current) {
-      clearTimeout(refHzSaveTimer.current);
-      refHzSaveTimer.current = null;
-    }
-  }, []);
-
-  // Persist refHz + minN on background.
+  // Persist minN on background. (A4 persistence is handled by engine.setA4Hz.)
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background') {
-        // Flush any pending debounced refHz save before the write below.
-        if (refHzSaveTimer.current) {
-          clearTimeout(refHzSaveTimer.current);
-          refHzSaveTimer.current = null;
-        }
-        engine.savePrefsNow({ refHz: pendingRefHzRef.current, minNVisible: minN }).catch(() => {});
+        engine.savePrefsNow({ minNVisible: minN }).catch(() => {});
       }
     });
     return () => sub.remove();
@@ -624,10 +607,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     <SetupScreen
       engine={engine}
       refHz={refHz}
-      setRefHz={(v) => {
-        setRefHz(v);
-        queueRefHzSave(v); // v1.0 BUG-2 — debounced
-      }}
+      setRefHz={setRefHz}
       showDebugOverlay={showDebugOverlay}
       setShowDebugOverlay={handleSetShowDebugOverlay}
       onOpenPipes={() => setPipesOpen(true)}
@@ -647,10 +627,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           status={engine.status}
           streamErrorReason={engine.streamErrorReason}
           refHz={refHz}
-          setRefHz={(v) => {
-            setRefHz(v);
-            queueRefHzSave(v); // v1.0 BUG-2 — debounced
-          }}
+          setRefHz={setRefHz}
           compact={!isLandscape}
           badgeText={badgeText}
           displayMode={displayMode}
