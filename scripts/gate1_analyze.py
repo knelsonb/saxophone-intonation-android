@@ -17,20 +17,26 @@ and nativeLog mirrors info -> Android logcat.
 CAPTURE (once the Pixel is back on adb):
     adb logcat -c
     # ... run the bookended 40<->240 sweep (scripts/gate1_sweep.sh) ...
-    adb logcat -d -s ShadowBeat:* PendulumArm:* > capture.log
+    adb logcat -d | grep -E "ShadowBeat|armPhase|phaseErr" > capture.log
     python3 scripts/gate1_analyze.py capture.log
 
 GATE CRITERIA (on-device-measurable only; PIPELINE is rig-only, NOT here):
-  1. CLOCK IDENTITY  — gate-1 one-shot (captured separately; see --note). Not from
-     ShadowBeat; this script flags if you didn't supply it.
+  1. CLOCK IDENTITY  — gate-1 one-shot (captured separately). Not from ShadowBeat.
   2. ACHIEVABILITY FLOOR sub-ms — robust spread (IQR/MAD) of PER-SEGMENT
-     local-linear-DETRENDED rawSkew. NEVER global-detrend (curvature would read the
-     floor artificially LOW = false PASS). Exclude reset beats from the fit.
+     local-linear-DETRENDED rawSkew, detrended against REAL TIME (beatHeardNanos),
+     NEVER global (curvature would read the floor artificially LOW = false PASS).
+     Excludes reset beats AND each segment's first (re-anchor transient) beat.
   3. SCRUB-TRANSIENT-GONE (head-to-head) — closed-form residual spread stays FLAT
      under BPM scrub while the live #167 PLL (armPhase phaseErr) blows out.
 
 FROZEN NUMBERS: ramp knee ~156 BPM; high-BPM residual floor ~108us; bookend
 40<->240 BPM; fingerprint residualNs offset ~ 1/f (proportional, matches declared).
+
+Hardened per an independent methodology cross-review (Legolas, 2026-05-28):
+  - detrend x-axis = real time (bh), not beat index -> dropped beats don't compress
+    the axis and inflate the floor;
+  - skip NaN-BPM (pn=0/missing) beats so a malformed line can't fragment a segment;
+  - fingerprint decision is a scale-free correlation, not an arbitrary ns threshold.
 """
 import sys, json, re, argparse, math, statistics as st
 
@@ -72,6 +78,18 @@ def ols(xs, ys):
     slope = sxy / sxx
     return slope, my - slope * mx
 
+def _pearson(xs, ys):
+    """Scale-free correlation — so the proportional/integral fingerprint decision
+    isn't a knife-edge on an arbitrary ns threshold (cross-review)."""
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    mx = sum(xs) / n; my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs); syy = sum((y - my) ** 2 for y in ys)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    d = math.sqrt(sxx * syy)
+    return sxy / d if d else 0.0
+
 # ---- parse ----------------------------------------------------------------
 SHADOW_RE = re.compile(r"ShadowBeat[^{]*(\{.*\})")
 # #167 COARSE armPhase diag — tolerant: any line carrying a phaseErr-ish JSON.
@@ -101,8 +119,8 @@ def bpm_of(rec):
 
 def segment(beats):
     """Group consecutive beats into steady-BPM holds (a sweep step). A bpm jump
-    of >1 starts a new segment. Reset beats (rst) break a segment and are dropped
-    from the steady analysis."""
+    of >1 starts a new segment. Reset beats (rst) break a segment and are dropped.
+    Beats with NaN bpm (pn=0/missing/malformed) are skipped, NOT used to fragment."""
     segs, cur, curbpm = [], [], None
     for b in beats:
         if b.get("rst"):
@@ -110,6 +128,8 @@ def segment(beats):
                 segs.append((round(curbpm), cur)); cur = []; curbpm = None
             continue
         bpm = bpm_of(b)
+        if math.isnan(bpm):
+            continue  # malformed/zero pn — drop the beat, don't fragment the segment
         if curbpm is None or abs(bpm - curbpm) <= 1.0:
             cur.append(b); curbpm = bpm if curbpm is None else curbpm
         else:
@@ -121,16 +141,22 @@ def segment(beats):
     return segs
 
 def detrended_floor_ns(seg_beats):
-    """Per-segment local-linear detrend of rawSkew over beat index; return robust
-    spread (IQR & MAD) of the residual = the law-free achievability floor."""
-    rs = [b["rs"] for b in seg_beats if "rs" in b]
-    if len(rs) < 4:
+    """Per-segment local-linear detrend of rawSkew against REAL elapsed time
+    (beatHeardNanos), NOT beat index — so dropped beats don't compress the x-axis
+    and inflate the floor (cross-review bug). Drops the segment's first beat
+    (post-reset/re-anchor transient). Returns robust spread (IQR & MAD) of the
+    residual = the law-free achievability floor; slope = the DAC drift rate."""
+    pts = [(b["bh"], b["rs"]) for b in seg_beats if "rs" in b and "bh" in b]
+    if len(pts) < 5:
         return None
-    idx = list(range(len(rs)))
-    slope, inter = ols(idx, rs)
-    resid = [y - (slope * x + inter) for x, y in zip(idx, rs)]
-    return {"n": len(rs), "iqr_ns": iqr(resid), "mad_ns": mad(resid),
-            "slope_ns_per_beat": slope, "resid_max_ns": max(abs(r) for r in resid)}
+    pts = pts[1:]                            # drop the first beat (transient)
+    t0 = pts[0][0]
+    xs = [(bh - t0) / 1e9 for bh, _ in pts]  # seconds from the segment's start
+    ys = [float(rs) for _, rs in pts]
+    slope, inter = ols(xs, ys)               # slope = ns per second = DAC drift rate
+    resid = [y - (slope * x + inter) for x, y in zip(xs, ys)]
+    return {"n": len(ys), "iqr_ns": iqr(resid), "mad_ns": mad(resid),
+            "slope_ns_per_s": slope, "resid_max_ns": max(abs(r) for r in resid)}
 
 # ---- report ---------------------------------------------------------------
 def main():
@@ -162,7 +188,7 @@ def main():
     # ---- Criterion 2: achievability floor ----
     print("\n-- Criterion 2: ACHIEVABILITY FLOOR (detrended rawSkew, per-segment) --")
     print(f"{'BPM':>5} {'n':>4} {'floorIQR(us)':>12} {'MAD(us)':>9} "
-          f"{'drift(us/beat)':>14} {'resid|max|(us)':>14} {'residMed(us)':>12} {'vSlow%':>7}")
+          f"{'drift(ms/s)':>12} {'resid|max|(us)':>14} {'residMed(us)':>12} {'vSlow%':>7}")
     worst_floor = 0.0
     seg_rows = []
     for bp, bs in segs:
@@ -176,11 +202,12 @@ def main():
         worst_floor = max(worst_floor, f["iqr_ns"])
         seg_rows.append((bp, f, rd_med, vslow_pct))
         print(f"{bp:>5} {f['n']:>4} {f['iqr_ns']/US:>12.1f} {f['mad_ns']/US:>9.1f} "
-              f"{f['slope_ns_per_beat']/US:>14.2f} {f['resid_max_ns']/US:>14.1f} "
+              f"{f['slope_ns_per_s']/1e6:>12.2f} {f['resid_max_ns']/US:>14.1f} "
               f"{rd_med/US:>12.1f} {vslow_pct:>6.1f}%")
     floor_pass = worst_floor < SUBMS_NS and worst_floor > 0
     print(f"\nworst-segment detrended floor (IQR): {worst_floor/US:.1f} us  "
           f"=> {'SUB-MS PASS' if floor_pass else 'FAIL/NO-DATA'} (threshold 1000 us)")
+    print("(drift ~1.3 ms/s across segments is the expected DAC-vs-MONOTONIC slope — a sanity check.)")
 
     # ---- residualNs ramp curve + knee ----
     print("\n-- residualNs floor-vs-BPM (ramp curve; expect knee ~156 BPM) --")
@@ -199,17 +226,26 @@ def main():
     print(f"  ramp present (low >> high): {'YES (as-designed proportional limit)' if ramp_seen else 'no/insufficient'}")
 
     # ---- fingerprint: residual offset ~ 1/f (proportional) ----
-    print("\n-- Fingerprint: residualNs offset vs 1/f (proportional vs integral) --")
+    print("\n-- Fingerprint: residualNs offset vs period (proportional vs integral) --")
     fs = [(60.0 / r[0], abs(r[2])) for r in seg_rows if r[0] and not math.isnan(r[2])]
     if len(fs) >= 3:
-        xs = [x for x, _ in fs]; ys = [y for _, y in fs]
-        slope, inter = ols(xs, ys)  # offset = slope*(1/f_period?) ...
-        # x here = 60/bpm (seconds/beat); residual ~ drift/(GAIN) * x for proportional
-        print(f"  fit |residual| ~ {slope/US:.1f} us * (60/BPM) + {inter/US:.1f} us")
-        if slope > 0 and slope / US > 5:
-            print("  => offset scales with 1/f  => PROPORTIONAL running (matches declared law)")
+        xs = [x for x, _ in fs]; ys = [y for _, y in fs]   # x = period (s/beat), y = |residual| ns
+        slope, inter = ols(xs, ys)
+        r = _pearson(xs, ys)
+        lo = min(ys); hi = max(ys)
+        print(f"  fit |residual| ~ {slope/US:.1f} us per (60/BPM) + {inter/US:.1f} us ; "
+              f"corr(|residual|, period) r={r:.2f}")
+        print(f"  |residual| range over the sweep: {lo/US:.1f}..{hi/US:.1f} us")
+        # Proportional: offset GROWS with period (longer beat -> more uncorrected
+        # drift) => positive, strong correlation. Integral: offset ~constant, no
+        # period dependence. Correlation is scale-free — the r is shown so a
+        # borderline call is visible, not hidden behind an arbitrary ns threshold.
+        if r > 0.6 and slope > 0:
+            print("  => |residual| scales with period (1/f) => PROPORTIONAL running (matches declared law)")
+        elif abs(r) < 0.3:
+            print("  => |residual| ~flat, no period dependence => INTEGRAL-style — declared-vs-coded MISMATCH (investigate)")
         else:
-            print("  => offset ~flat/near-zero  => INTEGRAL-style — declared-vs-coded MISMATCH (BUG)")
+            print("  => INCONCLUSIVE fingerprint (r borderline) — widen the BPM bookend / add steps")
     else:
         print("  insufficient BPM spread for the fingerprint (need the bookended sweep)")
 
