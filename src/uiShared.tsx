@@ -754,7 +754,7 @@ export function makeStyles(C: ThemePalette) {
   // accent fill, wider) and CLEAR is a smaller subordinate destructive
   // outlined button.
   deckActionRow: { flexDirection: 'row', gap: 10, marginTop: 16, justifyContent: 'center', flexWrap: 'wrap', alignItems: 'center' },
-  deckActionBtn: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 4, borderWidth: 1, borderColor: C.edge, minHeight: 44, alignItems: 'center', justifyContent: 'center', minWidth: 110 },
+  deckActionBtn: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 4, borderWidth: 1, borderColor: C.edge, minHeight: 48, alignItems: 'center', justifyContent: 'center', minWidth: 110 },
   deckActionBtnPrimary: {
     backgroundColor: C.accent,
     borderColor: C.accent,
@@ -766,7 +766,7 @@ export function makeStyles(C: ThemePalette) {
     backgroundColor: 'transparent',
     borderColor: C.sharp,
     minWidth: 80,
-    minHeight: 40,
+    minHeight: 48,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },

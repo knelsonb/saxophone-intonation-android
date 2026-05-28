@@ -238,7 +238,7 @@ function makeStyles(C: ThemePalette, ledDiameter: number, ledGap: number) {
     root: {
       width: '100%',
       alignSelf: 'center',
-      maxWidth: (ledDiameter + ledGap) * LED_COUNT,
+      maxWidth: ledDiameter * LED_COUNT + ledGap * (LED_COUNT - 1),
       alignItems: 'center',
       paddingHorizontal: 8,
     },
@@ -284,7 +284,7 @@ function makeStyles(C: ThemePalette, ledDiameter: number, ledGap: number) {
     },
     baselineWrap: {
       width: '100%',
-      maxWidth: (ledDiameter + ledGap) * LED_COUNT,
+      maxWidth: ledDiameter * LED_COUNT + ledGap * (LED_COUNT - 1),
       marginTop: 8,
       height: 6,
       position: 'relative',
@@ -309,7 +309,7 @@ function makeStyles(C: ThemePalette, ledDiameter: number, ledGap: number) {
       flexDirection: 'row',
       justifyContent: 'space-between',
       width: '100%',
-      maxWidth: (ledDiameter + ledGap) * LED_COUNT,
+      maxWidth: ledDiameter * LED_COUNT + ledGap * (LED_COUNT - 1),
       marginTop: 6,
       paddingHorizontal: 4,
     },
