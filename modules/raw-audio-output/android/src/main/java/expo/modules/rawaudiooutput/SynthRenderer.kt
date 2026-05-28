@@ -5,7 +5,38 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
+import java.util.concurrent.atomic.AtomicReference
 import timber.log.Timber
+
+/**
+ * #64 Phase-1 — immutable snapshot of the audio-output clock anchor, published
+ * lock-free by the render thread and read by the sub-ms-sync shadow probe.
+ *
+ * All four counters are sampled in ONE render-loop iteration so the heard-time
+ * projection
+ *
+ *     heard(atFrame) = nanoTime + (atFrame − gFrame + latFrames) / sampleRate
+ *
+ * lives in a single consistent frame space (see #64 changeset §1.1). `atFrame`
+ * is a `g_frame_position` index (the render-frame counter, which resets only on
+ * nativeInit); `framePos`/`latFrames` are track-relative (reset at play()). The
+ * algebra cancels the per-session origin offset G0 exactly, so the projection
+ * is correct as long as these are sampled together.
+ *
+ * INVARIANT: `nanoTime` comes from the SINGLE-ARG AudioTrack.getTimestamp(ats)
+ * overload = TIMEBASE_MONOTONIC. NEVER the (ts, timebase) BOOTTIME overload —
+ * the shadow's MONOTONIC guarantee rides entirely on this call shape and is NOT
+ * provable from the clock-identity gate (MONOTONIC and BOOTTIME read Δ≈0 alike
+ * absent deep sleep).
+ */
+internal data class AudioAnchor(
+    val nanoTime: Long,   // CLOCK_MONOTONIC ns the DAC presented `framePos`
+    val framePos: Long,   // AudioTimestamp.framePosition (play/presentation index, track-relative)
+    val gFrame: Long,     // g_frame_position render-frame counter (atFrame's space)
+    val latFrames: Long,  // framesWritten − framePos = buffer depth D (frames)
+    val sampleRate: Int,  // device-native output rate used for the ns projection
+    val gen: Long,        // discontinuity generation; a change ⟹ reset the shadow trim
+)
 
 /**
  * Owns the AudioTrack and the dedicated render thread.
@@ -52,6 +83,23 @@ internal class SynthRenderer(
     // compensation; it is the MEASUREMENT, not the held compensation value.
     @Volatile private var lastLatencyMs: Double = -1.0
     fun outputLatencyMs(): Double = lastLatencyMs
+
+    // #64 Phase-1 — audio-clock anchor for the shadow probe. Single writer (the
+    // render thread); reader is the shadow probe on the UI/main thread. An
+    // AtomicReference store is lock-free, so the real-time render thread never
+    // blocks; it allocates one small AudioAnchor ~1 Hz (NOT per buffer), which
+    // is negligible and off the per-vsync path Legolas gates to zero. null until
+    // the first valid timestamp.
+    private val audioAnchorRef = AtomicReference<AudioAnchor?>(null)
+    fun audioAnchor(): AudioAnchor? = audioAnchorRef.get()
+    // Render-thread-ONLY discontinuity state (never read off-thread; its value is
+    // copied into each published AudioAnchor.gen). A framePosition reset or a
+    // short write breaks the framesWritten↔g_frame_position↔framePosition
+    // lockstep the projection relies on, so we bump `tsGen`; the shadow sees the
+    // changed gen and resets its skew accumulator instead of dragging the step
+    // across dozens of beats.
+    private var tsGen: Long = 0L
+    private var lastTsFramePos: Long = -1L
 
     val isRunning: Boolean get() = running
 
@@ -248,14 +296,38 @@ internal class SynthRenderer(
             val nowNs = System.nanoTime()
             if (nowNs - lastLatLogNs > 1_000_000_000L) { // ~1 Hz — as often as the watchdog needs, no more
                 lastLatLogNs = nowNs
+                // INVARIANT (#64): single-arg getTimestamp(ats) = TIMEBASE_MONOTONIC.
+                // Do NOT switch to the (ats, timebase) overload — the shadow probe's
+                // MONOTONIC guarantee depends on this exact call shape (see AudioAnchor).
                 if (track.getTimestamp(ats)) {
-                    val latFrames = framesWritten - ats.framePosition
+                    val framePos = ats.framePosition
+                    val latFrames = framesWritten - framePos
                     val latMs = latFrames * 1000.0 / sampleRate
                     // Only publish once the stream is warm (>=1 s written) and the
                     // reading is sane — during warm-up framesWritten races ahead of
                     // the DAC and inflates the figure.
                     if (framesWritten > sampleRate && latFrames in 1..sampleRate.toLong()) {
                         lastLatencyMs = latMs
+                    }
+                    // #64 Phase-1 — publish the audio-clock anchor in the SAME block
+                    // (no extra HAL call). A backward framePosition is a flush /
+                    // route-reset discontinuity → bump the generation so the shadow
+                    // resets its skew accumulator. Publish only on a sane reading
+                    // (latFrames >= 0, framePos advanced past 0); leave the prior
+                    // anchor in place otherwise (the shadow ages it out via nanoTime).
+                    if (lastTsFramePos >= 0 && framePos < lastTsFramePos) tsGen++
+                    lastTsFramePos = framePos
+                    if (latFrames >= 0 && framePos > 0) {
+                        audioAnchorRef.set(
+                            AudioAnchor(
+                                nanoTime = ats.nanoTime,
+                                framePos = framePos,
+                                gFrame = SynthBridge.getCurrentFrame(),
+                                latFrames = latFrames,
+                                sampleRate = sampleRate,
+                                gen = tsGen,
+                            )
+                        )
                     }
                 }
             }
@@ -267,6 +339,11 @@ internal class SynthRenderer(
 
                 written >= 0 -> {
                     // Short write — buffer not fully accepted. Counts as underrun.
+                    // #64 — a short write advances framesWritten by less than the
+                    // render thread advanced g_frame_position, breaking the lockstep
+                    // the heard projection assumes. Bump the discontinuity gen so the
+                    // next published anchor signals the shadow to reset its trim.
+                    tsGen++
                     underrunStreak += 1
                     if (underrunStreak == 1) {
                         Timber.tag(TAG).w("renderLoop: underrun — accepted %d of %d samples", written, samplesPerWrite)

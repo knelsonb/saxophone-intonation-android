@@ -153,6 +153,14 @@ const ALLOWED_DENOMINATORS: readonly (2 | 4 | 8 | 16 | 32)[] = [2, 4, 8, 16, 32]
 const TAP_RESET_MS = 2000;
 const TAP_WINDOW = 4;
 
+// #64 Phase-1 — arm the sub-ms-sync shadow probe while the metronome runs so
+// PoisonMedic can drive the on-device gate sweep. Measurement only: the probe
+// drives no view and does not touch the #167 pendulum PLL. Default-on for the
+// Phase-1 measurement build; flip false to ship Phase 1 without the probe.
+// Phase 2 removes the shadow path entirely. The native probe is itself
+// default-off, so this is the single JS-side switch that arms it.
+const SHADOW_PROBE_ENABLED = true;
+
 export interface MetronomeState {
   bpm: number;
   setBpm: (n: number) => void;
@@ -474,6 +482,17 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     // silence-over-wrong).
     if (now - clickFireAt < intervalMs * 0.5) {
       scheduleNoteAt(beatVoice.midi, beatVoice.velocity, clickFireAt, 'beat');
+      // #64 Phase-1 — anchor the shadow probe to THIS downbeat. Reuse the click's
+      // atFrame (same atMs → atMsToAtFrame yields the exact frame the click fires
+      // at) so the shadow projects the HEARD time of the real click. Downbeats
+      // ONLY — mirrors the #167 peg filter (sub-ticks never anchor). No-op unless
+      // the bus supports it (probe armed only when SHADOW_PROBE_ENABLED).
+      if (SHADOW_PROBE_ENABLED && busRef.current.setBeatAnchor) {
+        const beatAtFrame = busRef.current.atMsToAtFrame(clickFireAt);
+        if (Number.isFinite(beatAtFrame)) {
+          busRef.current.setBeatAnchor(beatAtFrame, 60e9 / bpmNow);
+        }
+      }
     }
 
     // v1.2 — schedule sub-ticks for this beat, if any. Sub-ticks use the
@@ -600,12 +619,24 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     }
     setRunning(true);
     if (!preservePhase) setBeat(1);
+    // #64 Phase-1 — arm the shadow probe for this run (idempotent natively;
+    // re-anchors on its first beat). Paired with stopShadowProbe in stop().
+    if (SHADOW_PROBE_ENABLED) {
+      try { busRef.current.startShadowProbe?.(); } catch { /* ignore */ }
+    }
     schedule();
   }, [schedule]);
 
   const stop = useCallback(() => {
     runningRef.current = false;
     setRunning(false);
+    // #64 Phase-1 — paired teardown: disarm the shadow probe (removes the
+    // Choreographer callback) so it never outlives a running metronome. The
+    // AppState background handler routes through stop(), so this also covers
+    // app background→resume (no stacked self-reposting chain).
+    if (SHADOW_PROBE_ENABLED) {
+      try { busRef.current.stopShadowProbe?.(); } catch { /* ignore */ }
+    }
     clearScheduleTimers();
     // v1.4 Belt 1 — cancel ALL future-scheduled commands in the native queue
     // BEFORE issuing allNotesOff(). Without this, the ~150 ms of bus.noteOnAt
@@ -1009,6 +1040,11 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     return () => {
       runningRef.current = false;
       clearScheduleTimers();
+      // #64 Phase-1 — final paired teardown of the shadow probe on unmount
+      // (defense-in-depth; the native OnDestroy is the last safety net).
+      if (SHADOW_PROBE_ENABLED) {
+        try { busRef.current.stopShadowProbe?.(); } catch { /* ignore */ }
+      }
       const ch = channelRef.current;
       if (ch !== null) {
         try {

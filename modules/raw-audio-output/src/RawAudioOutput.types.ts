@@ -74,6 +74,57 @@ export interface SynthCommandFiredEvent {
   atFrame: number;
 }
 
+/**
+ * #64 Phase-1 — snapshot of the audio-output clock anchor (the ~1 Hz
+ * AudioTrack.getTimestamp read; no new HAL call). All counters are sampled in
+ * one render-loop iteration so the heard-time projection
+ *   heard(atFrame) = nanoTime + (atFrame − gFrame + latFrames) / rate
+ * lives in one consistent frame space. `nanoTime` is the SINGLE-ARG
+ * getTimestamp overload = CLOCK_MONOTONIC (TIMEBASE_MONOTONIC). `valid` is
+ * false until the stream is warm.
+ */
+export interface SynthAudioTimestamp {
+  valid: boolean;
+  /** CLOCK_MONOTONIC ns the DAC presented `framePosition`. */
+  nanoTime?: number;
+  /** AudioTimestamp.framePosition — play/presentation index (track-relative). */
+  framePosition?: number;
+  /** g_frame_position render-frame counter (the space `atFrame` lives in). */
+  gFrame?: number;
+  /** framesWritten − framePosition = buffer depth D (frames). */
+  latFrames?: number;
+  /** Device-native output rate (Hz). */
+  rate?: number;
+  /** Discontinuity generation; a change ⟹ frame-space reset (flush/underrun/route). */
+  gen?: number;
+}
+
+/**
+ * #64 Phase-1 — one per-downbeat sub-ms-sync shadow record. Fires only while
+ * the shadow probe is armed (startShadowProbe). The measurement drives NO view
+ * and does not touch the #167 pendulum PLL.
+ */
+export interface SynthShadowBeatEvent {
+  /** Projected HEARD time of this downbeat (CLOCK_MONOTONIC ns) — ground truth. */
+  beatHeardNanos: number;
+  /** Untrimmed drift residual (ns), cumulative-K so it does not wrap. Slope = DAC drift, detrended noise = floor. */
+  rawSkewNs: number;
+  /** §2.1 per-downbeat slow-skew-trimmed residual (ns) — the as-designed control law's floor. */
+  residualNs: number;
+  /** 60e9 / bpm. */
+  periodNanos: number;
+  /** The scheduled beat frame (g_frame_position space). */
+  atFrame: number;
+  /** Anchor discontinuity generation at this beat. */
+  gen: number;
+  /** Vsyncs observed since the previous beat (≈ period/8.33ms at 120Hz). */
+  vsyncFrames: number;
+  /** Of those, intervals >10ms — an ARR demotion (panel left 120Hz) tell. */
+  vsyncSlow: number;
+  /** true = re-anchor beat (first beat / post-discontinuity) — exclude from the steady floor. */
+  reset: boolean;
+}
+
 export interface RawAudioOutput {
   /**
    * Copy the bundled SF2 from assets to cache and load it into TSF.
@@ -180,6 +231,39 @@ export interface RawAudioOutput {
    */
   clearScheduled(): void;
 
+  // ---- #64 Phase-1 — sub-ms sync instrumentation (measurement only) ----
+
+  /** CLOCK_MONOTONIC nanoseconds (System.nanoTime). For the JS clock-identity co-log. */
+  getMonotonicNanos(): number;
+
+  /** Snapshot of the cached audio-clock anchor (the ~1 Hz getTimestamp read). */
+  getAudioTimestamp(): SynthAudioTimestamp;
+
+  /**
+   * Set the frameTimeNanos→photon compositor+scanout constant. Cancels out of
+   * the shadow residual (measurement-irrelevant in Phase 1); stored for the
+   * gate-1 log + Phase-2 actuation. Default ~12.5e6 (1.5 frame @120Hz).
+   */
+  setDisplayPipelineNanos(ns: number): void;
+
+  /**
+   * Arm the shadow probe (idempotent — never stacks a second Choreographer
+   * chain). Default-off: a normal practice session that never calls this pays
+   * zero per-vsync cost.
+   */
+  startShadowProbe(): void;
+
+  /** Disarm the shadow probe; removes the same Choreographer callback (paired teardown). */
+  stopShadowProbe(): void;
+
+  /**
+   * Per-downbeat anchor for the shadow measurement. `beatFrame` is the #167
+   * atFrame (g_frame_position space); `periodNanos` = 60e9/bpm. No-op unless the
+   * probe is armed. Emits one `shadowBeat` per downbeat. Does NOT drive a view
+   * or touch the #167 PLL.
+   */
+  setBeatAnchor(beatFrame: number, periodNanos: number): void;
+
   // ---- Event subscription ----
   addReadyListener(cb: (e: SynthReadyEvent) => void): { remove(): void };
   addUnderrunListener(cb: (e: SynthUnderrunEvent) => void): { remove(): void };
@@ -197,4 +281,10 @@ export interface RawAudioOutput {
    * landing beat-perfect instead of dropping against a stale peg.
    */
   addRouteChangeListener(cb: (e: SynthRouteChangedEvent) => void): { remove(): void };
+  /**
+   * #64 Phase-1 — subscribe to per-downbeat shadow-measurement records. Fires
+   * only while the probe is armed (startShadowProbe). The bus rings these as
+   * BEAT_OFFSET forensic records for the sub-ms-sync gate read.
+   */
+  addShadowBeatListener(cb: (e: SynthShadowBeatEvent) => void): { remove(): void };
 }

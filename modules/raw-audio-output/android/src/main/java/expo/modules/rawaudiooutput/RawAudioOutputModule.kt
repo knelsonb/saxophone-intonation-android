@@ -8,7 +8,9 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import android.view.Choreographer
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
@@ -242,6 +244,226 @@ class RawAudioOutputModule : Module() {
     private val fireScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     @Volatile private var firedListener: CommandFiredListener? = null
 
+    // -------------------------------------------------------------------------
+    // #64 Phase-1 — sub-ms sync SHADOW PROBE (measurement only; drives no view).
+    //
+    // A Choreographer.FrameCallback on the MAIN thread captures the platform
+    // vsync time (frameTimeNanos = CLOCK_MONOTONIC, same epoch as the audio
+    // AudioTimestamp.nanoTime — Sauron-blessed). It does ONE clock-identity log
+    // on the first frame and accumulates vsync cadence (to confirm 120 Hz held
+    // across the floor window). It NEVER emits and NEVER drives a view.
+    //
+    // The achievability-floor residual is computed per-downbeat in setBeatAnchor
+    // from SynthRenderer's cached AudioAnchor — see the §1.3 contract.
+    //
+    // Lifecycle (Frodo + Legolas): DEFAULT-OFF (armed only by startShadowProbe),
+    // IDEMPOTENT start (the shadowActive guard never stacks a second self-
+    // reposting chain), PAIRED stop (removeFrameCallback the SAME instance) wired
+    // to metro-stop + stop() + OnDestroy. Per-vsync steady path is allocation-
+    // free: primitive volatile-long cadence counters only — no Log/Map/boxing.
+    // -------------------------------------------------------------------------
+    @Volatile private var shadowActive = false
+    @Volatile private var shadowResetPending = false
+    @Volatile private var gate1Logged = false
+    // #64 default ~1.5 frame @120Hz; cancels out of the shadow residual (so it is
+    // measurement-irrelevant here) — stored for the gate-1 log + Phase-2 actuation,
+    // photodiode-rig-refined before the rewrite.
+    @Volatile private var displayPipelineNanos = 12_500_000.0
+
+    // vsync cadence — SINGLE writer (doFrame on main), read by setBeatAnchor.
+    // Volatile longs: 64-bit reads/writes are atomic; single-writer so ++ is safe.
+    @Volatile private var vsyncLastNanos = 0L
+    @Volatile private var vsyncFrameCount = 0L
+    @Volatile private var vsyncSlowCount = 0L
+
+    // Trim/anchor state — touched ONLY inside setBeatAnchor (a single call site,
+    // so it is thread-consistent no matter which thread Expo runs Functions on).
+    // The reset is deferred here via shadowResetPending so startShadowProbe never
+    // writes these directly (it may run on a different thread).
+    private var shadowAnchored = false
+    private var shadowRawAnchorNanos = 0L  // FIXED first-beat heard time (raw drift ramps off this)
+    private var shadowTrimAnchorNanos = 0L // §2.1 slow-skew-trimmed anchor
+    private var shadowLastHeardNanos = 0L  // previous beat's heard time (for the cumulative-K step)
+    private var shadowCumK = 0L            // cumulative beats since the raw anchor (wrap-robust rawSkew)
+    private var shadowPrevGen = 0L
+    private var shadowPrevVsyncFrames = 0L
+    private var shadowPrevVsyncSlow = 0L
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var choreographer: Choreographer? = null
+
+    private val shadowFrameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            // stopShadowProbe sets shadowActive=false → the chain ends here (no re-post).
+            if (!shadowActive) return
+            // GATE-1 one-shot clock-identity. Sample frameTimeNanos (the ARG = the
+            // past vsync instant), a fresh System.nanoTime() (NOW), and uptimeMillis
+            // ALL inside this same doFrame so we measure dispatch latency, not a
+            // thread-hop. PASS rule (Sauron/Legolas): (fresh − frameTimeNanos)
+            // bounded-POSITIVE in 0..tens-of-ms ⟹ same epoch. Gross |Δ| or large-
+            // negative ⟹ wrong gross epoch ⟹ fail→NDK. A 1 ms staircase on the
+            // frame/audio legs fingerprints the disqualified worklet clock.
+            if (!gate1Logged) {
+                gate1Logged = true
+                val freshNano = System.nanoTime()
+                val uptimeNano = SystemClock.uptimeMillis() * 1_000_000L
+                val a = renderer?.audioAnchor()
+                Log.i(TAG, "#64 gate1 clock-identity: frameTimeNanos=$frameTimeNanos freshNano=$freshNano " +
+                    "dNano_minus_frame=${freshNano - frameTimeNanos} [PASS=bounded-POSITIVE 0..tens-of-ms; gross/negative=wrong-epoch] " +
+                    "uptimeNano=$uptimeNano dNano_minus_uptime=${freshNano - uptimeNano} [expect ~0; staircase tell=worklet clock] " +
+                    "audioNano=${a?.nanoTime ?: -1L} audioSR=${a?.sampleRate ?: -1} pipelineNs=$displayPipelineNanos")
+            }
+            // vsync cadence — allocation-free primitive accumulation.
+            val last = vsyncLastNanos
+            if (last > 0L) {
+                vsyncFrameCount++
+                if (frameTimeNanos - last > SLOW_VSYNC_NS) vsyncSlowCount++ // > ~10ms ⟹ ARR demoted below ~100Hz
+            }
+            vsyncLastNanos = frameTimeNanos
+            // Self-repost to keep the chain alive while active.
+            choreographer?.postFrameCallback(this)
+        }
+    }
+
+    /** Idempotent. Arms the shadow probe; resets cadence + gate1 on the main thread. */
+    private fun startShadowProbeInternal() {
+        if (shadowActive) return // idempotent — never stack a second self-reposting chain
+        shadowActive = true
+        shadowResetPending = true // setBeatAnchor re-anchors on its next call
+        mainHandler.post {
+            // Reset cadence state on the MAIN thread (same thread as doFrame) so
+            // all cadence access is single-threaded, then arm the chain. Remove
+            // first as a belt against any orphaned callback (no double-post).
+            gate1Logged = false
+            vsyncLastNanos = 0L
+            vsyncFrameCount = 0L
+            vsyncSlowCount = 0L
+            val c = Choreographer.getInstance()
+            choreographer = c
+            c.removeFrameCallback(shadowFrameCallback)
+            c.postFrameCallback(shadowFrameCallback)
+            Timber.tag(TAG).i("#64 shadow probe ARMED")
+        }
+    }
+
+    /** Idempotent. Stops the probe and removes the SAME callback instance (paired teardown). */
+    private fun stopShadowProbeInternal() {
+        if (!shadowActive) return
+        shadowActive = false // doFrame's guard ends the chain on its next fire
+        mainHandler.post {
+            choreographer?.removeFrameCallback(shadowFrameCallback)
+            Timber.tag(TAG).i("#64 shadow probe STOPPED")
+        }
+    }
+
+    /** #64 — emit one BEAT_OFFSET record to JS (≤4Hz downbeat path; Map alloc OK here). */
+    private fun emitShadowBeat(heardNanos: Long, rawSkewNs: Long, residualNs: Long,
+                               periodNanos: Double, atFrame: Long, gen: Long,
+                               vsyncFrames: Long, vsyncSlow: Long, reset: Boolean) {
+        try {
+            sendEvent("shadowBeat", mapOf(
+                "beatHeardNanos" to heardNanos.toDouble(), // ground truth — gate detrends from this
+                "rawSkewNs" to rawSkewNs.toDouble(),       // untrimmed drift (slope=drift, noise=floor)
+                "residualNs" to residualNs.toDouble(),     // §2.1 per-downbeat trimmed residual
+                "periodNanos" to periodNanos,
+                "atFrame" to atFrame.toDouble(),
+                "gen" to gen.toDouble(),
+                "vsyncFrames" to vsyncFrames.toDouble(),   // vsyncs since last beat
+                "vsyncSlow" to vsyncSlow.toDouble(),        // of those, intervals >10ms (ARR demote tell)
+                "reset" to reset,                           // true = re-anchor beat; exclude from steady floor
+            ))
+        } catch (t: Throwable) {
+            Log.w(TAG, "shadowBeat emit failed: ${t.message}")
+        }
+    }
+
+    /**
+     * #64 Phase-1 — per-downbeat shadow measurement (single call site, so its
+     * trim/anchor fields stay thread-consistent). Projects the beat's HEARD time
+     * from the cached audio anchor in play-clock frame space, computes the
+     * wrap-robust untrimmed rawSkew + the §2.1 per-downbeat trimmed residual, and
+     * emits a `shadowBeat`. Re-anchors + resets the trim on any frame-space
+     * discontinuity (gen change / first beat) so a flush/underrun step is never
+     * dragged across the slow trim. HOLDs (emits nothing) when the clock is
+     * unavailable or stale — gate-4, silence-over-wrong.
+     */
+    private fun handleSetBeatAnchor(beatFrame: Double, periodNanos: Double) {
+        if (!shadowActive) return
+        val bf = beatFrame.toLong()
+        val anchor = renderer?.audioAnchor() ?: return // gate-4: no clock yet → hold
+        val nowNanos = System.nanoTime()
+        if (nowNanos - anchor.nanoTime > STALE_ANCHOR_NS) return // stale clock → hold
+        val sr = anchor.sampleRate
+        if (sr <= 0) return
+        // heard = nanoTime + (atFrame − gFrame + latFrames)/SR, in LONG ns (no
+        // catastrophic cancellation). frameDelta is small (near-future beat +
+        // buffer depth) so frameDelta*1e9 stays well within Long range.
+        val frameDelta = bf - anchor.gFrame + anchor.latFrames
+        val heard = anchor.nanoTime + (frameDelta * 1_000_000_000L) / sr.toLong()
+
+        // Re-anchor on the first beat OR any frame-space discontinuity (gen change
+        // = flush/underrun/short-write/route). Reset the trim — never drag a step.
+        if (shadowResetPending || !shadowAnchored || anchor.gen != shadowPrevGen) {
+            shadowResetPending = false
+            shadowAnchored = true
+            shadowRawAnchorNanos = heard
+            shadowTrimAnchorNanos = heard
+            shadowLastHeardNanos = heard
+            shadowCumK = 0L
+            shadowPrevGen = anchor.gen
+            shadowPrevVsyncFrames = vsyncFrameCount
+            shadowPrevVsyncSlow = vsyncSlowCount
+            emitShadowBeat(heard, 0L, 0L, periodNanos, bf, anchor.gen, 0L, 0L, true)
+            return
+        }
+        if (periodNanos <= 0.0) return
+        val period = periodNanos.toLong()
+
+        // rawSkew — UNTRIMMED, via cumulative beat index. Wrap-robust: the raw
+        // anchor is FIXED, so the ~1.3 ms/s DAC-vs-MONOTONIC drift would wrap an
+        // absolute round(m) at ±period/2. stepK = beats since the previous beat
+        // (≈1) accumulates smoothly. SLOPE of rawSkew = drift; detrended NOISE =
+        // the fundamental floor (control-law-independent).
+        val stepK = Math.round((heard - shadowLastHeardNanos).toDouble() / periodNanos)
+        shadowCumK += stepK
+        shadowLastHeardNanos = heard
+        val rawSkew = heard - (shadowRawAnchorNanos + shadowCumK * period)
+
+        // residual — §2.1 per-downbeat slow-skew trim AS WRITTEN.
+        //
+        // CONTROL LAW (declared, per Sauron 3572/3579): PROPORTIONAL. The trim
+        // NUDGES the phase anchor by clamp(GAIN·err, ±CAP) ns each downbeat — it
+        // does NOT accumulate a persistent rate/period correction (no integral
+        // term). So SKEW_CAP_NS bounds the per-step PHASE-NUDGE (ns), not a rate
+        // increment; the reset above re-acquires phase (not anti-windup). Stepped
+        // at the PER-DOWNBEAT cadence (§2.1's actuation cadence as written).
+        // Expected gate signature (Legolas): residualNs floor flat ≈σ/(GAIN·f) at
+        // high BPM, RAMPS below ~156 BPM (cap 0.5ms/beat < drift ~1.3ms/s). That
+        // ramp is the as-designed limitation the gate REVEALS → it drives the
+        // Phase-2 law call (per-vsync proportional vs integral slope-feedforward);
+        // it is NOT pre-fixed here. The law-free achievability floor is the
+        // detrended rawSkew, not this.
+        //
+        // residual = OBSERVED − PREDICTED:
+        //   observed  = `heard` (projected from AudioTimestamp.framePosition)
+        //   predicted = trimmed anchor + round(m)·period
+        // NEVER simplify to (prediction − the-anchor-that-generated-it): that is
+        // self-vs-self → 0-by-construction → the gate lies GREEN (Sauron 3566).
+        val mT = Math.round((heard - shadowTrimAnchorNanos).toDouble() / periodNanos)
+        val residual = heard - (shadowTrimAnchorNanos + mT * period)
+        // proportional phase-nudge clamped to ±CAP — the ONLY feedback term.
+        var corr = (residual.toDouble() * SKEW_GAIN).toLong()
+        if (corr > SKEW_CAP_NS) corr = SKEW_CAP_NS
+        if (corr < -SKEW_CAP_NS) corr = -SKEW_CAP_NS
+        shadowTrimAnchorNanos += corr
+
+        val vFrames = vsyncFrameCount - shadowPrevVsyncFrames
+        val vSlow = vsyncSlowCount - shadowPrevVsyncSlow
+        shadowPrevVsyncFrames = vsyncFrameCount
+        shadowPrevVsyncSlow = vsyncSlowCount
+        emitShadowBeat(heard, rawSkew, residual, periodNanos, bf, anchor.gen, vFrames, vSlow, false)
+    }
+
     init {
         // Plant a DebugTree once per process. Guard with treeCount so hot-
         // reloads and multiple module instantiations don't stack duplicate trees.
@@ -287,9 +509,13 @@ class RawAudioOutputModule : Module() {
 
         Events("ready", "audioOutputError", "audioOutputUnderrun", "commandFired",
                "audioFocusLost", "audioFocusGained", // v1.4 wave-11 N2
-               "audioRouteChanged") // v1.4.x P3 — route recovery
+               "audioRouteChanged", // v1.4.x P3 — route recovery
+               "shadowBeat") // #64 Phase-1 — per-downbeat sub-ms-sync shadow record
 
         OnDestroy {
+            // #64 — paired teardown: stop the shadow probe before anything else so
+            // the self-reposting Choreographer callback can't outlive the module.
+            try { stopShadowProbeInternal() } catch (_: Exception) {}
             // Wave-2: renderer.stop() before nativeShutdown — do not reorder.
             try { renderer?.stop() } catch (_: Exception) {}
             renderer = null
@@ -430,6 +656,10 @@ class RawAudioOutputModule : Module() {
             // tearing down.
             try { r.stop() } catch (_: Exception) {}
             renderer = null
+            // #64 — the AudioTrack is gone, so the shadow probe's heard projection
+            // has no valid clock; stop it (defense-in-depth — useMetronome also
+            // stops it on metro-stop / background).
+            try { stopShadowProbeInternal() } catch (_: Exception) {}
             unregisterDeviceCallback() // v1.4.x P3 — stop watching route changes when idle
             abandonAudioFocus() // v1.4 wave-11 N2 — release focus when AudioTrack stops
             Timber.tag(TAG).i("stop() exit — renderer released")
@@ -575,6 +805,64 @@ class RawAudioOutputModule : Module() {
                 }
             }
         }
+
+        // -----------------------------------------------------------------
+        // #64 Phase-1 — sub-ms sync instrumentation surface (measurement
+        // only; the #167 path is untouched). See the module-level shadow
+        // probe doc + the #64 changeset §1.1.
+        // -----------------------------------------------------------------
+
+        // CLOCK_MONOTONIC nanoseconds (System.nanoTime) for the JS clock-identity
+        // co-log. JS double holds ns to <2ns granularity until ~104 days uptime.
+        Function("getMonotonicNanos") {
+            System.nanoTime().toDouble()
+        }
+
+        // Snapshot of SynthRenderer's cached audio-clock anchor (the existing
+        // ~1Hz getTimestamp read — NO new HAL call). nanoTime is the SINGLE-ARG
+        // getTimestamp overload = TIMEBASE_MONOTONIC. {valid:false} until warm.
+        Function("getAudioTimestamp") {
+            val a = renderer?.audioAnchor()
+            if (a == null) {
+                mapOf("valid" to false)
+            } else {
+                mapOf(
+                    "valid" to true,
+                    "nanoTime" to a.nanoTime.toDouble(),
+                    "framePosition" to a.framePos.toDouble(),
+                    "gFrame" to a.gFrame.toDouble(),
+                    "latFrames" to a.latFrames.toDouble(),
+                    "rate" to a.sampleRate,
+                    "gen" to a.gen.toDouble(),
+                )
+            }
+        }
+
+        // The frameTimeNanos→photon compositor+scanout constant. CANCELS out of
+        // the shadow residual (so it is measurement-irrelevant in Phase 1) —
+        // stored for the gate-1 log + Phase-2 actuation, rig-refined before the
+        // rewrite. Replaces the pendulum's PEG_BRIDGE_MS in Phase 2.
+        Function("setDisplayPipelineNanos") { ns: Double ->
+            displayPipelineNanos = ns
+        }
+
+        // Arm / disarm the shadow probe. Both idempotent; paired teardown. The
+        // probe is DEFAULT-OFF — only a startShadowProbe call posts the
+        // Choreographer callback, so a normal practice session pays zero cost.
+        Function("startShadowProbe") {
+            startShadowProbeInternal()
+        }
+        Function("stopShadowProbe") {
+            stopShadowProbeInternal()
+        }
+
+        // Per-downbeat anchor + shadow measurement. beatFrame = the #167 atFrame
+        // (g_frame_position space); periodNanos = 60e9/bpm. No-op unless the probe
+        // is armed. Emits one `shadowBeat` per downbeat (the achievability-floor
+        // record). Does NOT touch the #167 pendulum PLL.
+        Function("setBeatAnchor") { beatFrame: Double, periodNanos: Double ->
+            handleSetBeatAnchor(beatFrame, periodNanos)
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -600,6 +888,12 @@ class RawAudioOutputModule : Module() {
         private const val TAG = "RawAudioOutputModule"
         private const val SF2_ASSET = "GeneralUser-GS.sf2"
         private const val SF2_CACHE_NAME = "GeneralUser-GS.sf2"
+        // #64 Phase-1 — shadow trim + gating constants. SKEW_GAIN/CAP mirror the
+        // Phase-2 §2.1 control law EXACTLY so Phase 1 shadow-proves that math.
+        private const val SKEW_GAIN = 0.1
+        private const val SKEW_CAP_NS = 500_000L      // 0.5 ms/beat correction ceiling
+        private const val STALE_ANCHOR_NS = 2_000_000_000L // anchor older than 2s ⟹ hold (gate-4)
+        private const val SLOW_VSYNC_NS = 10_000_000L  // inter-vsync >10ms ⟹ ARR demoted below ~100Hz
         // Sample rate is no longer fixed — it's queried from the device
         // (outputSampleRate) so we render at the native rate and hit the FAST
         // mixer. TSF resamples the SF2 to whatever output rate it's given, so

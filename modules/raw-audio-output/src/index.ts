@@ -2,10 +2,12 @@ import { EventSubscription, NativeModule, requireNativeModule } from 'expo-modul
 
 import type {
   RawAudioOutput,
+  SynthAudioTimestamp,
   SynthCommandFiredEvent,
   SynthErrorEvent,
   SynthReadyEvent,
   SynthRouteChangedEvent,
+  SynthShadowBeatEvent,
   SynthUnderrunEvent,
 } from './RawAudioOutput.types';
 
@@ -19,6 +21,7 @@ type RawAudioOutputEvents = {
   audioOutputError: (payload: SynthErrorEvent) => void;
   commandFired: (payload: SynthCommandFiredEvent) => void;
   audioRouteChanged: (payload: SynthRouteChangedEvent) => void;
+  shadowBeat: (payload: SynthShadowBeatEvent) => void; // #64 Phase-1
 };
 
 declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEvents> {
@@ -40,6 +43,13 @@ declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEven
   noteOnAt(channel: number, midi: number, velocity: number, atFrame: number, tickKind: number): void;
   getCurrentFrame(): number;
   clearScheduled(): void; // v1.4 — renamed from clearQueue
+  // #64 Phase-1 — sub-ms sync instrumentation
+  getMonotonicNanos(): number;
+  getAudioTimestamp(): SynthAudioTimestamp;
+  setDisplayPipelineNanos(ns: number): void;
+  startShadowProbe(): void;
+  stopShadowProbe(): void;
+  setBeatAnchor(beatFrame: number, periodNanos: number): void;
 }
 
 const NativeRawAudioOutput =
@@ -90,6 +100,20 @@ const synth: RawAudioOutput = {
 
   clearScheduled: () => NativeRawAudioOutput.clearScheduled(), // v1.4 — renamed from clearQueue
 
+  // #64 Phase-1 — sub-ms sync instrumentation surface (measurement only)
+  getMonotonicNanos: () => NativeRawAudioOutput.getMonotonicNanos(),
+
+  getAudioTimestamp: () => NativeRawAudioOutput.getAudioTimestamp(),
+
+  setDisplayPipelineNanos: (ns) => NativeRawAudioOutput.setDisplayPipelineNanos(ns),
+
+  startShadowProbe: () => NativeRawAudioOutput.startShadowProbe(),
+
+  stopShadowProbe: () => NativeRawAudioOutput.stopShadowProbe(),
+
+  setBeatAnchor: (beatFrame, periodNanos) =>
+    NativeRawAudioOutput.setBeatAnchor(beatFrame, periodNanos),
+
   addReadyListener: (cb) => {
     const sub: EventSubscription = NativeRawAudioOutput.addListener(
       'ready',
@@ -129,15 +153,26 @@ const synth: RawAudioOutput = {
     );
     return sub;
   },
+
+  // #64 Phase-1 — per-downbeat shadow-measurement records (only while armed).
+  addShadowBeatListener: (cb) => {
+    const sub: EventSubscription = NativeRawAudioOutput.addListener(
+      'shadowBeat',
+      cb,
+    );
+    return sub;
+  },
 };
 
 export default synth;
 
 export type {
   RawAudioOutput,
+  SynthAudioTimestamp,
   SynthCommandFiredEvent,
   SynthErrorEvent,
   SynthReadyEvent,
   SynthRouteChangedEvent,
+  SynthShadowBeatEvent,
   SynthUnderrunEvent,
 };

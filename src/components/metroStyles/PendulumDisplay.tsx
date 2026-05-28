@@ -134,7 +134,14 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
       n,
       phaseErrMs: Math.round(phaseErrMs * 100) / 100,
       beatDurMs: Math.round(beatDurMs),
-      hint: 'armLeadsHeardMs ~= effectiveLatencyMs - PEG_BRIDGE_MS + phaseErrMs (+ = sound after arm center)',
+      // #64 Phase-1 — COARSE: this reads frame.timestamp (uptimeMillis,
+      // ms-quantized, callback-time) AND folds the #167 PLL's own ±~15ms phase
+      // error. It is the #167 (blowout) side of the closed-form-vs-#167
+      // head-to-head + the PIPELINE-default refinement ONLY — it MUST NOT feed
+      // the sub-ms achievability gate (that is the native-ns detrended-rawSkew
+      // floor off `shadowBeat`). Re-armed on each BPM change (scrub).
+      coarse: true,
+      hint: 'COARSE / head-to-head only; armLeadsHeardMs ~= effectiveLatencyMs - PEG_BRIDGE_MS + phaseErrMs (+ = sound after arm center)',
     });
   }, []);
 
@@ -200,7 +207,15 @@ export function PendulumDisplay({ running, beat, bpm, bus }: PendulumDisplayProp
     const now = frame.timestamp;
 
     // BPM change: theta is in beats, so just adopt the new rate (no re-anchor).
-    if (appliedDur.value !== beatDur.value) appliedDur.value = beatDur.value;
+    if (appliedDur.value !== beatDur.value) {
+      appliedDur.value = beatDur.value;
+      // #64 Phase-1 — re-arm the COARSE armPhase diag on a BPM change (scrub) so
+      // each scrub yields a fresh 16-sample capture of the #167 arm's phase error
+      // = the #167 (blowout) side of the closed-form-vs-#167 head-to-head. Bounded
+      // (16/scrub → no unbounded per-beat marshalling). This touches ONLY the diag
+      // gate; theta/angle/pendingCorr (the motion) are byte-for-byte unchanged.
+      phaseLogCount.value = 0;
+    }
     const dur = appliedDur.value;
 
     // New beat peg? Measure phase error and SCHEDULE it for smooth bleed-in —

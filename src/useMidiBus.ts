@@ -27,6 +27,11 @@ import {
   type MidiBusState,
   type SynthPort,
 } from './useMidiBusCore';
+// #64 Phase-1 — forensic ring (LATENCY_COMMIT + BEAT_OFFSET).
+import {
+  createForensicRing,
+  type LatencyCommitRecord,
+} from './forensicRing';
 
 // Re-export the public surface so callers can import from a single module.
 export {
@@ -133,25 +138,41 @@ export function useMidiBus(): MidiBusState {
   const outOfSyncSinceRef = useRef<number | null>(null);
   const LAT_DEADBAND_MS = 30;
   const LAT_DEBOUNCE_MS = 5000;
-  const commitLatency = useCallback((force: boolean): void => {
-    let raw = -1;
-    try { raw = synth.getOutputLatencyMs?.() ?? -1; } catch { raw = -1; }
-    if (raw < 0) return; // not warm / unsupported — keep the held value
-    const held = compLatencyRef.current;
-    if (force || Math.abs(raw - held) > LAT_DEADBAND_MS) {
-      compLatencyRef.current = raw;
-      outOfSyncSinceRef.current = null;
-      log.i('Bus', 'latency-comp set', { heldMs: Math.round(raw), prevMs: Math.round(held), force });
-    }
-  }, []);
+  // #64 Phase-1 — single forensic ring, mount-stable identity (useMemo []).
+  const forensicRing = useMemo(() => createForensicRing(), []);
+  const commitLatency = useCallback(
+    (force: boolean, trigger: LatencyCommitRecord['trigger'] = 'force'): void => {
+      let raw = -1;
+      try { raw = synth.getOutputLatencyMs?.() ?? -1; } catch { raw = -1; }
+      if (raw < 0) return; // not warm / unsupported — keep the held value
+      const held = compLatencyRef.current;
+      if (force || Math.abs(raw - held) > LAT_DEADBAND_MS) {
+        compLatencyRef.current = raw;
+        outOfSyncSinceRef.current = null;
+        log.i('Bus', 'latency-comp set', { heldMs: Math.round(raw), prevMs: Math.round(held), force, trigger });
+        // #64 — ring the commit with CAUSATION (prevMs + trigger), not just the
+        // symptom. The new held value IS raw (we just committed it).
+        forensicRing.push({
+          type: 'LATENCY_COMMIT',
+          ts: Date.now(),
+          route: routeRef.current,
+          rawMs: raw,
+          heldMs: raw,
+          prevMs: held,
+          trigger,
+        });
+      }
+    },
+    [forensicRing],
+  );
 
   const lastRecoveryRef = useRef(0);
   useEffect(() => {
     // #167 — track the settle-remeasure timers so they can't fire commitLatency
     // (a native-bridge call) after this effect/component tears down.
     const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
-    const scheduleMeasure = () => {
-      const id = setTimeout(() => { pendingTimers.delete(id); commitLatency(true); }, 900);
+    const scheduleMeasure = (trigger: LatencyCommitRecord['trigger']) => {
+      const id = setTimeout(() => { pendingTimers.delete(id); commitLatency(true, trigger); }, 900);
       pendingTimers.add(id);
     };
     const routeSub = synth.addRouteChangeListener?.((e) => {
@@ -159,7 +180,7 @@ export function useMidiBus(): MidiBusState {
       try { core.repegFrameClock({ force: true }); } catch { /* ignore */ }
       // #167 — a route change is a known latency step (speaker<->BT etc.).
       // Re-measure after the new route settles, then commit if it moved.
-      scheduleMeasure();
+      scheduleMeasure('route');
     });
     const errSub = synth.addErrorListener((e) => {
       const reason = e?.reason ?? '';
@@ -176,7 +197,7 @@ export function useMidiBus(): MidiBusState {
       try { core.clearScheduled(); } catch { /* ignore */ }
       try { core.repegFrameClock({ force: true }); } catch { /* ignore */ }
       // #167 — fresh AudioTrack = fresh buffer/HAL config; re-measure latency.
-      scheduleMeasure();
+      scheduleMeasure('recovery');
     });
     return () => {
       try { routeSub?.remove(); } catch { /* ignore */ }
@@ -186,13 +207,37 @@ export function useMidiBus(): MidiBusState {
     };
   }, [core, commitLatency]);
 
+  // #64 Phase-1 — ring per-downbeat shadow records as BEAT_OFFSET. The native
+  // side only emits `shadowBeat` while the probe is armed (startShadowProbe), so
+  // this listener is silent in a normal session. Subscribe once for the hook's
+  // life (mount-stable); the ring overwrites oldest, so no growth.
+  useEffect(() => {
+    const sub = synth.addShadowBeatListener?.((e) => {
+      forensicRing.push({
+        type: 'BEAT_OFFSET',
+        ts: Date.now(),
+        route: routeRef.current,
+        beatHeardNanos: e.beatHeardNanos,
+        rawSkewNs: e.rawSkewNs,
+        residualNs: e.residualNs,
+        periodNanos: e.periodNanos,
+        atFrame: e.atFrame,
+        gen: e.gen,
+        vsyncFrames: e.vsyncFrames,
+        vsyncSlow: e.vsyncSlow,
+        reset: e.reset,
+      });
+    });
+    return () => { try { sub?.remove(); } catch { /* ignore */ } };
+  }, [forensicRing]);
+
   // #167 — latency watchdog. Low-rate poll (NO per-frame getTimestamp): the
   // native side already computes latency ~1 Hz; we just sample the cached value.
   // Holds the compensation steady inside a 30 ms deadband; only resyncs when the
   // measured latency sits >30 ms off the held value for >5 s continuously (a
   // sustained change, not a transient). Plus a one-shot settle-measure on mount.
   useEffect(() => {
-    const initial = setTimeout(() => commitLatency(true), 1500);
+    const initial = setTimeout(() => commitLatency(true, 'mount'), 1500);
     const watchdog = setInterval(() => {
       let raw = -1;
       try { raw = synth.getOutputLatencyMs?.() ?? -1; } catch { raw = -1; }
@@ -204,7 +249,7 @@ export function useMidiBus(): MidiBusState {
           outOfSyncSinceRef.current = now;
         } else if (now - outOfSyncSinceRef.current > LAT_DEBOUNCE_MS) {
           log.w('Bus', 'latency-comp watchdog resync', { rawMs: Math.round(raw), heldMs: Math.round(held) });
-          commitLatency(true);
+          commitLatency(true, 'watchdog');
         }
       } else {
         outOfSyncSinceRef.current = null;
@@ -243,8 +288,17 @@ export function useMidiBus(): MidiBusState {
       // write: updates the cold-start guess without re-rendering or rebuilding
       // this interface.
       setOutputRoute: (route: MetroOutputRoute) => { routeRef.current = route; },
+      // #64 Phase-1 — sub-ms-sync shadow probe passthroughs (measurement only;
+      // do NOT touch the #167 pendulum PLL). try/catch so a synth port lacking
+      // the native method (older build / mock) is a silent no-op.
+      startShadowProbe: () => { try { synth.startShadowProbe?.(); } catch { /* ignore */ } },
+      stopShadowProbe: () => { try { synth.stopShadowProbe?.(); } catch { /* ignore */ } },
+      setBeatAnchor: (beatFrame: number, periodNanos: number) => {
+        try { synth.setBeatAnchor?.(beatFrame, periodNanos); } catch { /* ignore */ }
+      },
+      dumpForensics: () => forensicRing.dump(),
     }),
-    [core],
+    [core, forensicRing],
   );
 
   // Returned object: stable interface + current ready value. Object identity

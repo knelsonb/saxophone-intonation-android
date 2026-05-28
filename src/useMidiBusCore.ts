@@ -47,6 +47,10 @@
 // Node-resolvable main. The `useMidiBus.ts` hook wires the real logger via
 // the `logger` option; tests can pass nothing and get a silent no-op.
 
+// #64 Phase-1 — type-only import (forensicRing is a pure module, no native
+// deps) so MidiBusState can type dumpForensics()'s return.
+import type { ForensicRecord } from './forensicRing';
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -261,6 +265,26 @@ export interface MidiBusState {
    * dep) so a route change never churns the bus identity. Optional for mocks.
    */
   setOutputRoute?(route: MetroOutputRoute): void;
+  /**
+   * #64 Phase-1 — arm/disarm the sub-ms-sync SHADOW PROBE (measurement only;
+   * drives no view, does not touch the #167 PLL). Idempotent; paired teardown.
+   * Optional so legacy mocks omit it. useMetronome calls these on metro
+   * start/stop. No-op if the synth port lacks the native method.
+   */
+  startShadowProbe?(): void;
+  stopShadowProbe?(): void;
+  /**
+   * #64 Phase-1 — per-downbeat shadow anchor. `beatFrame` is the metronome's
+   * atFrame (g_frame_position space — reuse the click's atFrame); `periodNanos`
+   * = 60e9/bpm. Downbeats only (sub-ticks excluded), mirroring the #167 peg.
+   * Emits one BEAT_OFFSET forensic record per downbeat while the probe is armed.
+   */
+  setBeatAnchor?(beatFrame: number, periodNanos: number): void;
+  /**
+   * #64 Phase-1 — newest-first snapshot of the forensic ring (LATENCY_COMMIT +
+   * BEAT_OFFSET records) for the on-device gate read. Empty if unsupported.
+   */
+  dumpForensics?(): ForensicRecord[];
 }
 
 // ---------------------------------------------------------------------------
