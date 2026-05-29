@@ -86,7 +86,7 @@ cmd_tab() {
   local sz w h ny x
   sz=$(cur_size); w=${sz%x*}; h=${sz#*x}
   # per-orientation nav-y (landscape nav sits higher in the content area)
-  if [ "$w" -gt "$h" ]; then ny=$(( h * 87 / 100 )); else ny=$(( h * 94 / 100 )); fi
+  if [ "$w" -gt "$h" ]; then ny=$(( h * 91 / 100 )); else ny=$(( h * 96 / 100 )); fi
   x=$(( w * (idx*2+1) / 8 ))                 # even-spaced tab centre
   [ "$x" -lt 150 ] && x=150                   # clamp off the edges so we never
   [ "$x" -gt $((w-150)) ] && x=$((w-150))     # trip the edge-back gesture
