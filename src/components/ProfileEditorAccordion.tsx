@@ -125,13 +125,39 @@ function ProfileEditorSection({
   // Sync external changes (e.g. parent reset).
   React.useEffect(() => { setNameBuf(profile.name); }, [profile.name]);
 
+  // v1.4 closeout (Frodo NOTE-3) — tiny inline hint when the user blurs an
+  // empty name. The old guardrail SILENTLY rewrote the field to "User N" on an
+  // empty blur, which surprised users who'd only meant to clear-and-retype.
+  // Now we keep the existing saved name, revert the buffer to it, and flash a
+  // short "name can't be empty" hint instead. (The persistence layer in
+  // useMetronome ALSO coerces empty → "User N" on both read and write, so the
+  // saved-name round-trip from #10 is unaffected no matter what we send.)
+  const [nameHint, setNameHint] = useState<string | null>(null);
+  const nameHintTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => {
+    if (nameHintTimerRef.current !== null) clearTimeout(nameHintTimerRef.current);
+  }, []);
+  const flashNameHint = useCallback(() => {
+    setNameHint("Name can't be empty");
+    if (nameHintTimerRef.current !== null) clearTimeout(nameHintTimerRef.current);
+    nameHintTimerRef.current = setTimeout(() => {
+      setNameHint(null);
+      nameHintTimerRef.current = null;
+    }, 2500);
+  }, []);
+
   const commitName = useCallback(() => {
     const trimmed = nameBuf.trim();
-    // v1.3 — empty name reverts to default per §4 (silent guardrail).
-    const next = trimmed.length === 0 ? `User ${profile.slot}` : trimmed;
-    if (next !== profile.name) onUpdate({ name: next });
-    setNameBuf(next);
-  }, [nameBuf, profile.slot, profile.name, onUpdate]);
+    if (trimmed.length === 0) {
+      // Don't silently rename to "User N". Keep the saved name, revert the
+      // buffer to it, and signal why nothing was saved.
+      setNameBuf(profile.name);
+      flashNameHint();
+      return;
+    }
+    if (trimmed !== profile.name) onUpdate({ name: trimmed });
+    setNameBuf(trimmed);
+  }, [nameBuf, profile.name, onUpdate, flashNameHint]);
 
   const ts = profile.timeSig;
   const isCustom = ts.kind === 'custom';
@@ -172,7 +198,7 @@ function ProfileEditorSection({
           <Text style={styles.profileEditor_fieldLabel}>Name</Text>
           <TextInput
             value={nameBuf}
-            onChangeText={setNameBuf}
+            onChangeText={(t) => { setNameBuf(t); if (nameHint) setNameHint(null); }}
             onBlur={commitName}
             onSubmitEditing={commitName}
             maxLength={24}
@@ -181,6 +207,11 @@ function ProfileEditorSection({
             accessibilityLabel="Profile name"
             style={styles.profileEditor_nameInput}
           />
+          {nameHint && (
+            <Text style={styles.profileEditor_nameHint} accessibilityLiveRegion="polite">
+              {nameHint}
+            </Text>
+          )}
 
           {/* Time signature — preset/custom kind toggle + value picker */}
           <Text style={styles.profileEditor_fieldLabel}>Time signature</Text>

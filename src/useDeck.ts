@@ -69,6 +69,14 @@ export interface DeckState {
   playPos: number;
   /** Playback duration in seconds. 0 until first load. */
   playDur: number;
+  /**
+   * v1.4 closeout (Frodo NOTE-2) — true when the take exists but its
+   * AudioPlayer could not be created (ensurePlayer returned null). ▶ is a
+   * no-op in this state, so the card shows a persistent inline error with a
+   * CLEAR CTA instead of re-firing the same transient toast on every tap.
+   * Cleared whenever a take is installed or cleared.
+   */
+  playerError: boolean;
   /** True while a confirmation dialog is pending. */
   pendingConfirm: 'discard-and-record' | 'clear-take' | null;
   toast: DeckToast | null;
@@ -110,6 +118,10 @@ export function useDeck({ bus }: UseDeckArgs): DeckState {
   const [playPos, setPlayPos] = useState(0);
   const [playDur, setPlayDur] = useState(0);
   const [playing, setPlaying] = useState(false);
+  // v1.4 closeout (Frodo NOTE-2) — sticky "this take won't load" flag. Set when
+  // ensurePlayer returns null on a play/scrub attempt; cleared on every fresh
+  // setTake and on clear/dispose so a recovered take starts clean.
+  const [playerError, setPlayerError] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<DeckState['pendingConfirm']>(null);
   const [toast, setToast] = useState<DeckToast | null>(null);
   // v1.4 wave-10 T1 — ref so the AppState listener always reads the freshest
@@ -150,6 +162,10 @@ export function useDeck({ bus }: UseDeckArgs): DeckState {
     setPlaying(false);
     setPlayPos(0);
     setPlayDur(0);
+    // v1.4 closeout (Frodo NOTE-2) — disposePlayer runs before every new-take
+    // install and on every clear, so it's the single chokepoint to reset the
+    // sticky load-failure flag. A re-recorded / cleared take starts clean.
+    setPlayerError(false);
   }, []);
 
   // Ensure a player exists for the current take. Idempotent.
@@ -319,6 +335,11 @@ export function useDeck({ bus }: UseDeckArgs): DeckState {
     let p = playerRef.current;
     if (!p) p = ensurePlayer(take.uri);
     if (!p) {
+      // v1.4 closeout (Frodo NOTE-2) — the take can't be loaded into a player.
+      // Set the sticky flag so the card shows a persistent inline error + CLEAR
+      // CTA; without it, every ▶ tap just re-fired this transient toast into a
+      // silent dead loop. Keep the toast too for the first tap's immediacy.
+      setPlayerError(true);
       flashToast('Could not load take for playback', 'error');
       return;
     }
@@ -517,6 +538,7 @@ export function useDeck({ bus }: UseDeckArgs): DeckState {
     take,
     playPos,
     playDur,
+    playerError,
     pendingConfirm,
     toast,
     startRecord,
@@ -536,6 +558,7 @@ export function useDeck({ bus }: UseDeckArgs): DeckState {
     take,
     playPos,
     playDur,
+    playerError,
     pendingConfirm,
     toast,
     startRecord,

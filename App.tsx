@@ -684,25 +684,40 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
         </Tab.Navigator>
       </NavigationContainer>
 
-      {/* v1.4 wave-10 T3 — SF2 loading feedback. Corner chip visible until the
-          bus reports ready; replaced by a persistent warning after 10 s.
-          `pointerEvents="none"` so it never blocks touches. */}
+      {/* v1.4 wave-10 T3 — SF2 loading feedback. Chip visible until the bus
+          reports ready; replaced by a persistent warning after 10 s.
+          `pointerEvents="none"` so it never blocks touches.
+          v1.4 closeout (Frodo NOTE-1) — re-anchored from bottom:80/right:16,
+          which floated over the DECK SAVE/SHARE/CLEAR row and the TUNER drone
+          controls (both live in the lower-right of those tabs). Top-centred,
+          just under the persistent TopBar, is the one band with no interactive
+          content on any tab. The 'Synth unavailable' variant now names a NEXT
+          STEP ('restart the app') instead of dead-ending on the bare problem —
+          drone/metro/pipes are silent and the user otherwise has no recourse. */}
       {!bus.ready && (
         <View
           pointerEvents="none"
           style={{
             position: 'absolute',
-            bottom: 80,
-            right: 16,
-            backgroundColor: synthWarnShown ? 'rgba(200,50,50,0.88)' : 'rgba(30,30,30,0.75)',
-            borderRadius: 6,
-            paddingHorizontal: 10,
-            paddingVertical: 5,
+            top: insets.top + 60,
+            left: 0,
+            right: 0,
+            alignItems: 'center',
           }}
         >
-          <Text style={{ color: '#fff', fontSize: 11, fontFamily: 'Ubuntu-Regular' }}>
-            {synthWarnShown ? 'Synth unavailable' : 'Loading sounds…'}
-          </Text>
+          <View
+            style={{
+              backgroundColor: synthWarnShown ? 'rgba(200,50,50,0.88)' : 'rgba(30,30,30,0.75)',
+              borderRadius: 6,
+              paddingHorizontal: 10,
+              paddingVertical: 5,
+              maxWidth: '90%',
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 11, fontFamily: 'Ubuntu-Regular', textAlign: 'center' }}>
+              {synthWarnShown ? 'Synth unavailable — restart the app' : 'Loading sounds…'}
+            </Text>
+          </View>
         </View>
       )}
 

@@ -769,6 +769,22 @@ export function makeStyles(C: ThemePalette) {
   deckTimecodes: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   deckTimecode: { color: C.inkMid, fontSize: 11, fontVariant: ['tabular-nums'], letterSpacing: 1 },
 
+  // v1.4 closeout (Frodo NOTE-2) — persistent inline error shown inside the
+  // playback card when the take won't load into a player. Replaces the silent
+  // dead loop where ▶ did nothing and just re-fired a transient toast. In-flow
+  // (not the absolute deckToast) so it stays put with a CLEAR / re-record CTA.
+  deckPlayError: {
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 4,
+    borderWidth: 1,
+    backgroundColor: C.dangerTint,
+    borderColor: C.sharp,
+    gap: 10,
+  },
+  deckPlayErrorText: { color: C.sharp, fontSize: 12, letterSpacing: 0.5, lineHeight: 18, fontWeight: '700' },
+
   // v0.9.8 — SAVE / CLEAR hierarchy rebuilt. Previously identical size
   // (minWidth 110, equal padding) — users went for SAVE on the right and
   // hit CLEAR by accident. Now SAVE has the dominant treatment (solid
@@ -1193,6 +1209,14 @@ export function makeStyles(C: ThemePalette) {
     fontSize: 14,
     fontWeight: '700',
     letterSpacing: 1,
+  },
+  // v1.4 closeout (Frodo NOTE-3) — tiny transient hint under the name field
+  // when an empty blur is rejected (replaces the old silent rename to "User N").
+  profileEditor_nameHint: {
+    color: C.sharp,
+    fontSize: 11,
+    letterSpacing: 0.5,
+    marginTop: 4,
   },
   profileEditor_tsKindRow: {
     flexDirection: 'row',

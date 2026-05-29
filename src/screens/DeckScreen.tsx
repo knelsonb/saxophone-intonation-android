@@ -188,6 +188,28 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
             <Text style={styles.deckTimecode}>{mmss(dur)}</Text>
           </View>
 
+          {/* v1.4 closeout (Frodo NOTE-2) — persistent broken-take error. When
+              the take can't be loaded into a player, ▶ is a no-op; without this
+              band each tap just re-fired a 5 s toast into a silent dead loop.
+              Explains the state + offers CLEAR (routes through the same confirm
+              gate, then drops the dead take so RECORD is available again). */}
+          {deck.playerError && (
+            <View style={styles.deckPlayError}>
+              <Text style={styles.deckPlayErrorText}>
+                This take won't play back — the audio file may be missing or
+                damaged. Clear it and record again.
+              </Text>
+              <Pressable
+                onPress={deck.requestClearTake}
+                accessibilityRole="button"
+                accessibilityLabel="Clear this broken take and record again (will ask to confirm)"
+                style={({ pressed }) => [styles.deckActionBtn, styles.deckActionBtnDanger, pressed && styles.deckActionBtnPressed]}
+              >
+                <Text style={[styles.deckActionBtnText, styles.deckActionBtnTextDanger]}>CLEAR &amp; RE-RECORD</Text>
+              </Pressable>
+            </View>
+          )}
+
           {/* v0.9.8 — SAVE/CLEAR hierarchy: SAVE is the dominant accent-fill
               destination action (wider, taller, on the LEFT — primary
               position). CLEAR is a smaller secondary destructive action
