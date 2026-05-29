@@ -260,6 +260,12 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     ];
     return () => subs.forEach((s) => s.remove());
   }, []);
+  // Push car-connection state into the engine so its mic background-stop
+  // handler can skip the release when the AutoMicClaimModule deliberately
+  // holds the mic for in-car tuning.
+  useEffect(() => {
+    engine.setCarConnected(carState === 'connected');
+  }, [carState, engine.setCarConnected]);
   const handleClaimMic = useCallback(async () => {
     const granted = await AutoMicClaim.requestManageOwnCallsPermissionAsync();
     if (!granted) return;

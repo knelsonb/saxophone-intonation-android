@@ -271,6 +271,14 @@ export interface AudioEngineState {
   setDroneCurrentMidi: (midi: number | null) => void;
   /** Register the drone's duck handler. Pass null on unmount/cleanup. */
   installDroneDuckHandler: (fn: ((ms: number) => void) | null) => void;
+  /**
+   * Notify the engine of the Android Auto car-connection state. Call from
+   * App.tsx whenever carState changes. While connected (true) the engine will
+   * NOT stop the mic on app background — the AutoMicClaimModule deliberately
+   * holds the mic for in-car tuning, and the phone AppState can read
+   * 'background' while the car display is active.
+   */
+  setCarConnected: (v: boolean) => void;
 }
 
 export interface BucketStats {
@@ -779,6 +787,20 @@ export function useAudioEngine(): AudioEngineState {
   // setState; no perf concern.
   const droppedFrameCountRef = useRef<number>(0);
 
+  // Android Auto car-connection guard. Written by setCarConnected (called from
+  // App.tsx on every carState change). Read synchronously inside the AppState
+  // background handler — a ref so the listener never re-creates.
+  const carConnectedRef = useRef<boolean>(false);
+  const setCarConnected = useCallback((v: boolean): void => {
+    carConnectedRef.current = v;
+  }, []);
+
+  // Mic background-stop guard. True only when THIS engine's AppState handler
+  // stopped the stream (not a user-initiated stop, not stream-failed, not a
+  // car-connected skip). Prevents a spurious restart if the mic was already
+  // stopped for another reason when the app returns to the foreground.
+  const wasCapturingRef = useRef<boolean>(false);
+
   // Reentry guard.
   const stopping = useRef(false);
 
@@ -1191,6 +1213,88 @@ export function useAudioEngine(): AudioEngineState {
   // savePrefsNow is stable (useCallback with no deps that change).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // -------------------------------------------------------------------------
+  // Mic background-stop / foreground-restart via AppState (finding #5 fix).
+  //
+  // Problem: AudioRecord (UNPROCESSED) was held in background — battery drain,
+  // privacy issue, and blocks other apps from claiming the mic exclusively.
+  //
+  // Strategy — mirrors useMetronome's wasRunningRef / AppState pattern:
+  //   background / inactive:
+  //     • Skip when carConnectedRef.current — the AutoMicClaimModule
+  //       deliberately keeps the mic for in-car tuning; AppState reads
+  //       'background' while the car display is active.
+  //     • Skip when the stream isn't running (status !== 'listening' /
+  //       'warming-up') — nothing to stop.
+  //     • Stop the active raw stream (hiFi path) or the expo stream. Set
+  //       wasCapturingRef=true so the resume path knows we auto-stopped it.
+  //   active:
+  //     • If wasCapturingRef — we auto-stopped; restart by nudging status back
+  //       to 'warming-up'. The stream-start effect owns the re-open; we only
+  //       flip the status gate.
+  //     • Clear wasCapturingRef regardless so stale state never leaks across
+  //       multiple background/resume cycles.
+  //
+  // Re-entry safety: rawAudioInput.stream.stop() calls stopCaptureAsync()
+  // on the native side, which is idempotent. The stream-start effect's own
+  // startedRef guard (inside useRawAudioInput) prevents a double-start.
+  // We do NOT touch the expo-audio path on background because expo-audio
+  // manages its own lifecycle at the OS level and does not hold UNPROCESSED.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        // Car-claim guard: AutoMicClaimModule holds the mic intentionally.
+        if (carConnectedRef.current) return;
+
+        // Only stop if the mic stream is currently live. Statuses that mean
+        // "not actively capturing" are skipped — nothing to release.
+        const s = status;
+        if (s === 'waiting-for-mic' || s === 'mic-denied' || s === 'stream-failed') return;
+
+        // Only act on the hiFi (raw UNPROCESSED) path. expo-audio's internal
+        // OS-level session management handles itself.
+        if (!hiFiModeRef.current) return;
+
+        // Stop the raw stream and mark that WE stopped it.
+        wasCapturingRef.current = true;
+        rawAudioInput.stream?.stop().catch(() => {});
+        log.i('useAudioEngine', 'mic-background-stop: released UNPROCESSED AudioRecord');
+      } else if (nextState === 'active') {
+        if (!wasCapturingRef.current) return;
+        wasCapturingRef.current = false;
+
+        // Re-open by nudging status through 'warming-up'. The stream-start
+        // effect's dep on (status === 'waiting-for-mic' || 'mic-denied' ||
+        // 'stream-failed') won't fire here because we're leaving the normal
+        // running states. Instead we rely on the stream-start effect seeing
+        // that rawAudioInput.stream.start() was called and the native
+        // startCaptureAsync resolves (startedRef in useRawAudioInput is
+        // cleared by stopCaptureAsync, so start() is not guarded out).
+        //
+        // Directly call start() on the raw stream — the stream-start effect
+        // has already subscribed the listeners; we only need to reopen the
+        // native AudioRecord. stopping.current is false at this point (it
+        // was set true by the stream-start cleanup only on a full re-run,
+        // not by our stop() call above).
+        rawAudioInput.stream?.start().catch((err) => {
+          log.w('useAudioEngine', 'mic-foreground-restart failed', err);
+          setStreamErrorReason(String(err?.message ?? err));
+          setStatus('stream-failed');
+        });
+        log.i('useAudioEngine', 'mic-foreground-restart: reopened UNPROCESSED AudioRecord');
+      }
+    });
+    return () => sub.remove();
+  // rawAudioInput.stream identity changes after each successful start() call
+  // (sessionId bump). We deliberately capture the CURRENT stream handle at
+  // effect-creation time — if the stream restarts between background events
+  // the new session's handle is live in a fresh effect run. status is read
+  // via closure so the 'not capturing' guard always reflects the current value.
+  // carConnectedRef / wasCapturingRef / hiFiModeRef are refs — stable, no dep.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawAudioInput.stream, status]);
 
   // -------------------------------------------------------------------------
   // Step 2: request mic permission on mount
@@ -2051,6 +2155,7 @@ export function useAudioEngine(): AudioEngineState {
     setA4Hz,
     setDroneCurrentMidi,
     installDroneDuckHandler,
+    setCarConnected,
   }), [
     status,
     freqHz,
@@ -2113,5 +2218,6 @@ export function useAudioEngine(): AudioEngineState {
     setMetroOutputRoute,
     setDroneCurrentMidi,
     installDroneDuckHandler,
+    setCarConnected,
   ]);
 }
