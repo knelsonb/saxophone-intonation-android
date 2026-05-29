@@ -38,3 +38,4 @@ One row per run. **Tier:** `A/off`=off-device logic, `A/AVD`=emulator, `B`=real 
 | 2026-05-28-tierA | A/AVD | launch-no-crash | GREEN | no crash on launch |
 | 2026-05-28-tierA | A/AVD | stability(meminfo) | INFO | see meminfo-start/30s.txt (compare TOTAL PSS for growth) |
 | 2026-05-28-tierA | A/AVD | layout-capture | INFO | avd-portrait/landscape.png — manual layout review (#67/tab-fit) |
+| 2026-05-28 | A/off | midiBus gating tests | GREEN | treebeard +2 regression tests (17 assertions, all pass): emit listener-snapshot under unsubscribe-during-callback (N=3 + single) + resolveRole across reserve→fire→release→re-reserve + unreserved→drone fallback. GATES the deferred #12 FRAGILE bus-hotpath opt (size===1 fast-path + reverse channel→role map) → now shippable-later w/ behavior locked. Hardens the #64-critical bus (was under-tested). Note: createMidiBus fire-handler uses JS Set-iteration (no snapshot); createMidiBusCore.emit does snapshot — both gated. |

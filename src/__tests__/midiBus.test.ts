@@ -24,7 +24,15 @@
  */
 
 // @ts-ignore: .ts extension required for node --experimental-strip-types
-import { createMidiBus, vel127To01, type FiredPayload, type MidiBusSynthPort } from '../useMidiBusCore.ts';
+import {
+  createMidiBus,
+  createMidiBusCore,
+  vel127To01,
+  CHANNEL_OF_ROLE,
+  type FiredPayload,
+  type MidiBusSynthPort,
+  type SynthPort,
+} from '../useMidiBusCore.ts';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) { console.error(`FAIL: ${message}`); process.exit(1); }
@@ -413,6 +421,176 @@ function makeMockSynth(initialFrame: number = 0): {
   assertEqual(bus.atMsToAtFrame(5_000), 220_500, 'peg guard: backward wall-clock step SKIPPED');
 
   bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 13. emit listener snapshot — unsubscribe-during-callback (gates future
+//     size===1 fast-path in firedListeners iteration, and N-listener snapshot
+//     guarantee).
+//
+// Regression for the #64 timing-critical bus: all listeners present at emit-
+// time must be called exactly once on THAT emit even when one of them
+// unsubscribes itself mid-loop. The removing listener (B) must NOT be called
+// on the NEXT emit; A and C must continue to be called.
+//
+// Additionally, the single-listener degenerate case is pinned: exactly one
+// subscriber → one emit → invoked exactly once.  This is the path a future
+// size===1 fast-path would special-case, so we lock its behavior now before
+// the optimisation ships.
+// ---------------------------------------------------------------------------
+
+{
+  // --- N-listener (3) unsubscribe-during-callback ---
+  const mock = makeMockSynth(0);
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => 0,
+    repegIntervalMs: 0,
+  });
+
+  const seen: string[] = [];
+
+  // Listener A — passive observer.
+  const offA = bus.addFiredListener((_e) => { seen.push('A'); });
+
+  // Listener B — removes itself during its own callback.
+  let offB!: () => void;
+  offB = bus.addFiredListener((_e) => {
+    seen.push('B');
+    offB(); // self-unsubscribe mid-emit
+  });
+
+  // Listener C — passive observer.
+  const offC = bus.addFiredListener((_e) => { seen.push('C'); });
+
+  // First emit: all three are subscribed at emit-time → all three must fire.
+  mock.fire({ kind: 1, tickKind: 0, channel: 0, midi: 60, velocity: 0.5, atFrame: 1 });
+
+  assertEqual(seen.length, 3, 'emit-snapshot: all 3 listeners fired on first emit');
+  assertEqual(seen[0], 'A', 'emit-snapshot: A fired first');
+  assertEqual(seen[1], 'B', 'emit-snapshot: B fired second (before self-unsubscribe took effect)');
+  assertEqual(seen[2], 'C', 'emit-snapshot: C fired third');
+
+  // Second emit: B has unsubscribed → only A and C must fire.
+  seen.length = 0;
+  mock.fire({ kind: 1, tickKind: 0, channel: 0, midi: 61, velocity: 0.5, atFrame: 2 });
+
+  assertEqual(seen.length, 2, 'emit-snapshot: only 2 listeners on second emit (B removed)');
+  assertEqual(seen[0], 'A', 'emit-snapshot: A still fires after B removed');
+  assertEqual(seen[1], 'C', 'emit-snapshot: C still fires after B removed');
+
+  offA();
+  offC();
+  bus.dispose();
+}
+
+{
+  // --- single-listener degenerate case (fast-path pin) ---
+  const mock = makeMockSynth(0);
+  const bus = createMidiBus({
+    synth: mock.port,
+    sampleRate: 44100,
+    now: () => 0,
+    repegIntervalMs: 0,
+  });
+
+  let singleCount = 0;
+  const offSingle = bus.addFiredListener((_e) => { singleCount += 1; });
+
+  mock.fire({ kind: 1, tickKind: 0, channel: 0, midi: 60, velocity: 0.5, atFrame: 1 });
+
+  assertEqual(singleCount, 1, 'emit-snapshot single: exactly one invocation for one subscriber');
+
+  // A second fire — still exactly one invocation per emit.
+  mock.fire({ kind: 1, tickKind: 0, channel: 0, midi: 61, velocity: 0.5, atFrame: 2 });
+  assertEqual(singleCount, 2, 'emit-snapshot single: exactly two total invocations after two emits');
+
+  offSingle();
+  bus.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// 14. resolveRole correctness — reserve → fire → release → re-reserve
+//     (gates a planned reverse channel→role map in createMidiBusCore).
+//
+// Uses createMidiBusCore (the role-bus) because resolveRole is the internal
+// helper that maps a raw MIDI channel number back to a ChannelRole for the
+// re-emitted BusEvent. createMidiBus has no roles (its FiredEvent.channel is
+// always the raw numeric channel).
+//
+// Scenario:
+//   1. Reserve 'pipes' → fire on CHANNEL_OF_ROLE['pipes'] → BusEvent.channel
+//      must equal 'pipes'.
+//   2. Release the reservation, re-reserve 'pipes', fire again → role still
+//      resolves correctly (no stale attribution from the old handle).
+//   3. Fire on an UNRESERVED channel (no current reservation) → BusEvent.channel
+//      falls back to 'drone' (the documented sentinel for unregistered channels).
+// ---------------------------------------------------------------------------
+
+{
+  // Minimal SynthPort stub for createMidiBusCore — satisfies the interface
+  // without touching native code.
+  const firedCbs: Array<(e: FiredPayload) => void> = [];
+  const corePort: SynthPort = {
+    prepareAsync()   { return Promise.resolve(true); },
+    start()          { return true; },
+    isReady()        { return true; },
+    noteOn()         { /* noop */ },
+    noteOff()        { /* noop */ },
+    programChange()  { /* noop */ },
+    pitchBend()      { /* noop */ },
+    allNotesOff()    { /* noop */ },
+    setMasterGain()  { /* noop */ },
+    addReadyListener(_cb) { return { remove() {} }; },
+    addCommandFiredListener(cb) {
+      firedCbs.push(cb);
+      return { remove() {
+        const i = firedCbs.indexOf(cb);
+        if (i >= 0) firedCbs.splice(i, 1);
+      }};
+    },
+  };
+
+  function fireCore(p: FiredPayload): void {
+    for (const cb of firedCbs) cb(p);
+  }
+
+  const core = createMidiBusCore({
+    synth: corePort,
+    repegIntervalMs: 0,
+  });
+
+  const seenRoles: string[] = [];
+  core.on('noteOn', (e) => { seenRoles.push(e.channel as string); });
+
+  // 1. Reserve 'pipes', fire on its channel → must attribute to 'pipes'.
+  const pipesChannel = CHANNEL_OF_ROLE['pipes']; // = 1
+  const handle = core.reserve('pipes');
+  assert(handle !== null, 'resolveRole: reserve pipes returned a handle');
+
+  fireCore({ kind: 1, tickKind: 0, channel: pipesChannel, midi: 60, velocity: 0.5, atFrame: 1 });
+  assertEqual(seenRoles.length, 1, 'resolveRole: one noteOn event emitted');
+  assertEqual(seenRoles[0], 'pipes', 'resolveRole: channel attributed to pipes (reserved)');
+
+  // 2. Release and re-reserve; fire again → must still attribute to 'pipes'.
+  handle!.release();
+  const handle2 = core.reserve('pipes');
+  assert(handle2 !== null, 're-reserve: second reserve returned a handle');
+
+  seenRoles.length = 0;
+  fireCore({ kind: 1, tickKind: 0, channel: pipesChannel, midi: 61, velocity: 0.5, atFrame: 2 });
+  assertEqual(seenRoles.length, 1, 'resolveRole re-reserve: one noteOn event emitted');
+  assertEqual(seenRoles[0], 'pipes', 'resolveRole re-reserve: channel still attributed to pipes after release+re-reserve');
+
+  // 3. Fire on an unreserved channel → must fall back to 'drone'.
+  const unusedChannel = CHANNEL_OF_ROLE['aux4']; // = 13, never reserved
+  seenRoles.length = 0;
+  fireCore({ kind: 1, tickKind: 0, channel: unusedChannel, midi: 62, velocity: 0.5, atFrame: 3 });
+  assertEqual(seenRoles.length, 1, 'resolveRole fallback: one noteOn event emitted for unreserved channel');
+  assertEqual(seenRoles[0], 'drone', 'resolveRole fallback: unreserved channel falls back to drone');
+
+  core.dispose();
 }
 
 console.log('ALL PASS: midiBus.test.ts');
