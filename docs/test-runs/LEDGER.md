@@ -70,6 +70,7 @@ One row per run. **Tier:** `A/off`=off-device logic, `A/AVD`=emulator, `B`=real 
 | 2026-05-29 | A/off | #26 extract metroHelpers | GREEN (offline_verified) | Pure scheduler/profile helpers extracted useMetronome → src/metroHelpers.ts (zero React/native); useMetronome re-exports the public surface so import sites are unchanged; test imports updated. Behavior identical; suite green. Commit 5676ae8. |
 | 2026-05-29 | A/off | #13 dead-code/cosmetic | CLEAN (offline_verified, no-op) | Verified ALREADY CLEAN: arcNeedleTip was removed in #70 (arcNeedle is live), the only console.warn is the forensic log.w() sink (kept), freqToMidi IS used (centsDeviation + music.test). Nothing to remove. |
 | 2026-05-29 | infra | avdkit.sh — AVD I/O harness | GREEN | scripts/avdkit.sh — operator-requested reusable test tooling: rotate (verify-by-size + retry), tab-by-name (live rotated-size coords, edge-clamped off the back-gesture), shot (auto-resize under the image-read cap), launch (wait-for-resumed + JS settle). Built + used throughout this sprint's verification. Commits e58dbb7, 7231ca5. |
+| 2026-05-29 | review | sub-agent goal review + cross-check | GREEN→2 fixes | 6-lens panel (sauron/gandalf/frodo/legolas/gollum/uruk) + treebeard cross-check. uruk: CLEAN (0 confirmed bugs); core (#25/#26/mic-safety/dual-pane) verified sound. FIXED commit 30aa51f: 4 dead style keys (refLand/navRowLand/displayToggleLand/brandLand) + 2 unreachable refs pruned; portrait-honesty wording corrected. treebeard cross-check then caught #16 mis-bucketed (claimed code_landed but no density-font code was landed) → corrected to external_blocker here. Dismissed (overstated): legolas remount-per-render (re-render≠remount; metro ran continuously in-pane), LandscapeChromeControls "orientation leak" (produces correct behavior). Completion clause SATISFIED after the #16 correction. |
 
 ## GOAL — Hardware-free AVD sprint: TERMINAL BUCKETS (2026-05-29)
 
@@ -81,7 +82,7 @@ No Pixel this sprint. Every open backlog item → exactly one terminal bucket; s
 | #25 validateProfile string-numeric guard | **offline_verified** | commit 5676ae8 + jest |
 | #26 metroHelpers extraction | **offline_verified** | commit 5676ae8; suite green |
 | #13 dead-code/cosmetic | **offline_verified** | verified already-clean (no-op) |
-| #16 density noteFontSize / with-note clip | **code_landed_hw_pending** | font-size logic in tree; with-note clip on tightest screen needs a sounding note → Pixel |
+| #16 density noteFontSize / with-note clip | **external_blocker** | NO density-aware font code landed (the land-based `noteFontSizeFor` is a dual-pane orientation refactor, NOT the tight-screen fix — treebeard cross-check); needs (a) the density-aware noteFontSize change + (b) Pixel with-note clip verify on 731dp |
 | #23A audio-focus mute | **code_landed_hw_pending** | code GREEN + bundled; focus-steal firing needs Pixel / 2nd media app |
 | #11 CLEAR arm-to-confirm | **code_landed_hw_pending** | code GREEN; arm needs an active bucket (sounding note) → Pixel |
 | #20 conditional error states | **code_landed_hw_pending** | code GREEN + smoke; synth-fail / take-fail firing → Pixel |
@@ -95,4 +96,4 @@ No Pixel this sprint. Every open backlog item → exactly one terminal bucket; s
 | #68 120Hz pin (Surface.setFrameRate) | **external_blocker** | native frame-rate API + 120Hz-hold verify → Pixel |
 | #24 mic per-callback alloc | **wontfix_documented** | pooling UNSAFE per Expo SDK56 docs; only safe lever = operator event-rate decision; rate/bound = Pixel-tier |
 
-**TALLY:** avd_verified 1 · offline_verified 3 · code_landed_hw_pending 5 · external_blocker 7 · wontfix_documented 1 · out_of_scope 0 = **17 / 17 bucketed.** Hardware-free sprint COMPLETE; the 12 code_landed_hw_pending + external_blocker items reactivate the moment the Pixel is on a stable (USB) link.
+**TALLY:** avd_verified 1 · offline_verified 3 · code_landed_hw_pending 4 · external_blocker 8 · wontfix_documented 1 · out_of_scope 0 = **17 / 17 bucketed.** Hardware-free sprint COMPLETE; the 12 code_landed_hw_pending + external_blocker items reactivate the moment the Pixel is on a stable (USB) link.
