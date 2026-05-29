@@ -98,10 +98,11 @@ export function makeStyles(C: ThemePalette) {
     paddingHorizontal: 24,
     paddingTop: 14,
   },
-  // #69 landscape rail — fixed-width LEFT column. width:120 fits the CONCERT
-  // pill without flexShrink games on a 914dp-wide / 411dp-tall landscape; the
-  // navigator (flex:1) takes the rest. No flex → width is authoritative. Right
-  // border mirrors the top band's bottom border.
+  // #69 landscape rail — fixed-width LEFT column (LAND_RAIL_W = 72). Holds the
+  // vertical BELLCURVE wordmark + status dot + compact badge ONLY; the A= /
+  // PAGE-CONCERT / TABLE-PIPES chrome relocates into each screen's control
+  // column (LandscapeChromeControls). The navigator (flex:1) takes the rest;
+  // no flex → width is authoritative; right border mirrors the top band's.
   faceplateRail: {
     width: LAND_RAIL_W,
     borderRightColor: C.edge,

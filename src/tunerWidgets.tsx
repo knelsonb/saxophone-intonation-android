@@ -303,7 +303,7 @@ export function TopBar({
         </View>
       ) : (
         <View style={tb.wordmarkRow}>
-          <Text style={[styles.brand, land && tb.brandLand]} numberOfLines={1}>{APP_NAME}</Text>
+          <Text style={styles.brand} numberOfLines={1}>{APP_NAME}</Text>
           <View
             style={[styles.statusDotLarge, { backgroundColor: statusColor }]}
             accessibilityRole="image"
@@ -370,7 +370,7 @@ export function TopBar({
 
           {/* PAGE/CONCERT toggle — TUNER only (§14.2, §15.Q14.3) */}
           {isTuner && !land && (
-            <View style={[styles.displayToggle, land && tb.displayToggleLand]}>
+            <View style={styles.displayToggle}>
               <Pressable
                 onPress={() => setDisplayMode('griff')}
                 accessibilityRole="button"
@@ -1358,7 +1358,6 @@ function makeTopBarStyles(C: ThemePalette) {
     containerLand: {
       paddingBottom: 0,
     },
-    brandLand: { fontSize: 12, letterSpacing: 1, paddingTop: 2, paddingBottom: 2 },
     // Row 1 (landscape) — center as a COLUMN: status dot on top, then the
     // vertical wordmark stack below. height:undefined releases the 42dp lock.
     wordmarkRowLand: { flexDirection: 'column', alignItems: 'center', gap: 8, height: undefined },
@@ -1374,25 +1373,6 @@ function makeTopBarStyles(C: ThemePalette) {
       alignItems: 'stretch',
       gap: 10,
       overflow: 'visible',
-    },
-    // A= stepper — vertical −/A=440/+ so its width is the readout (~64dp).
-    refLand: {
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: 6,
-      minHeight: undefined,
-    },
-    // PAGE/CONCERT — stack so the 7-glyph CONCERT drives column width.
-    displayToggleLand: {
-      flexDirection: 'column',
-      gap: 6,
-    },
-    // TABLE/PIPES — stack vertically; release the 28dp row height.
-    navRowLand: {
-      height: undefined,
-      flexDirection: 'column',
-      alignItems: 'stretch',
-      gap: 8,
     },
     // Row 4 spacer for non-TUNER tabs — same 28dp, invisible
     navSpacer: {
