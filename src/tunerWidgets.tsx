@@ -32,6 +32,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import {
   BottomSheetBackdrop,
@@ -236,6 +237,18 @@ export function TopBar({
   const tb = useMemo(() => makeTopBarStyles(C), [C]);
   void compact;
 
+  // #19 — graceful degradation for narrow portrait widths (e.g. 360dp).
+  // The Row-2 stepper + PAGE/CONCERT toggle are rigid (RN flexShrink defaults
+  // to 0), so when the row over-constrains, the only flexible child — the
+  // instrument badge — collapses to ~0 width AND the residual overflow clips
+  // the trailing CONCERT pill ("CONC"). Below the threshold we trim purely
+  // decorative air (letterSpacing + horizontal padding) from the rigid blocks
+  // and floor the badge so it ellipsises ("BB SAX…") instead of vanishing.
+  // Gate is width-only: at the 411dp primary target and in landscape `narrow`
+  // is false, so NONE of the narrow overrides apply → byte-identical layout.
+  const { width: winW } = useWindowDimensions();
+  const narrow = winW < 390;
+
   // v1.2 — tab guards
   const isTuner = activeTab === 'tuner';
   const isMetro = activeTab === 'metro';
@@ -287,7 +300,7 @@ export function TopBar({
           SETUP  → invisible spacer only
       */}
       {(isTuner || isMetro || isDeck) ? (
-        <View style={tb.pillsRow}>
+        <View style={[tb.pillsRow, narrow && tb.pillsRowNarrow]}>
           {/* Instrument badge */}
           <Pressable
             onPress={onBadgePress}
@@ -297,30 +310,37 @@ export function TopBar({
                 ? `Current instrument: ${badgeText}. Horn: ${hornName}. Tap to change.`
                 : `Current instrument: ${badgeText}. Tap to change.`
             }
-            style={({ pressed }) => [styles.badgePressable, tb.badgeCompact, pressed && styles.badgePressablePressed]}
+            style={({ pressed }) => [
+              styles.badgePressable,
+              tb.badgeCompact,
+              narrow && tb.badgeNarrow,
+              pressed && styles.badgePressablePressed,
+            ]}
           >
-            <Text style={styles.instrumentBadge} numberOfLines={1}>{badgeText}</Text>
+            <Text style={styles.instrumentBadge} numberOfLines={1} ellipsizeMode="tail">{badgeText}</Text>
             {hornName.length > 0 && (
-              <Text style={styles.hornNameCaption} numberOfLines={1}>{hornName}</Text>
+              <Text style={styles.hornNameCaption} numberOfLines={1} ellipsizeMode="tail">{hornName}</Text>
             )}
           </Pressable>
 
           {/* A= stepper */}
-          <View style={[styles.refContainer, tb.refCompact]}>
+          <View style={[styles.refContainer, tb.refCompact, narrow && tb.refNarrow]}>
             <Pressable
               onPress={() => bump(-1)}
               accessibilityRole="button"
               accessibilityLabel="Decrease reference by 1 Hz"
-              style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+              hitSlop={narrow ? 6 : undefined}
+              style={({ pressed }) => [styles.stepBtn, narrow && tb.stepBtnNarrow, pressed && styles.stepBtnPressed]}
             >
               <Text style={styles.stepBtnText}>−</Text>
             </Pressable>
-            <Text style={styles.refValue}>A={refHz}</Text>
+            <Text style={[styles.refValue, narrow && tb.refValueNarrow]}>A={refHz}</Text>
             <Pressable
               onPress={() => bump(1)}
               accessibilityRole="button"
               accessibilityLabel="Increase reference by 1 Hz"
-              style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+              hitSlop={narrow ? 6 : undefined}
+              style={({ pressed }) => [styles.stepBtn, narrow && tb.stepBtnNarrow, pressed && styles.stepBtnPressed]}
             >
               <Text style={styles.stepBtnText}>+</Text>
             </Pressable>
@@ -337,11 +357,12 @@ export function TopBar({
                 style={({ pressed }) => [
                   styles.displayPill,
                   tb.pillCompact,
+                  narrow && tb.pillNarrow,
                   displayMode === 'griff' && styles.displayPillActive,
                   pressed && styles.gainPillPressed,
                 ]}
               >
-                <Text style={[styles.displayPillText, displayMode === 'griff' && styles.displayPillTextActive]}>PAGE</Text>
+                <Text style={[styles.displayPillText, narrow && tb.pillTextNarrow, displayMode === 'griff' && styles.displayPillTextActive]}>PAGE</Text>
               </Pressable>
               <Pressable
                 onPress={() => setDisplayMode('klingend')}
@@ -351,11 +372,12 @@ export function TopBar({
                 style={({ pressed }) => [
                   styles.displayPill,
                   tb.pillCompact,
+                  narrow && tb.pillNarrow,
                   displayMode === 'klingend' && styles.displayPillActive,
                   pressed && styles.gainPillPressed,
                 ]}
               >
-                <Text style={[styles.displayPillText, displayMode === 'klingend' && styles.displayPillTextActive]}>CONCERT</Text>
+                <Text style={[styles.displayPillText, narrow && tb.pillTextNarrow, displayMode === 'klingend' && styles.displayPillTextActive]} numberOfLines={1}>CONCERT</Text>
               </Pressable>
             </View>
           )}
@@ -1230,6 +1252,58 @@ function makeTopBarStyles(C: ThemePalette) {
     // Override displayPill height to fit inside 44dp pillsRow
     pillCompact: {
       height: 36,
+    },
+
+    // ── #19 narrow-width (<390dp) overrides ──────────────────────────────
+    // Applied ONLY when winW < 390 (so the 411dp target + landscape never see
+    // them). Each trims decorative letterSpacing / horizontal padding from the
+    // rigid stepper + toggle to free ~70dp, so CONCERT stays fully visible and
+    // the badge gets a real (non-zero) width floor with tail-ellipsis.
+
+    // Row 2 — tighten inter-element gap (8 → 6) to claw back 4dp.
+    pillsRowNarrow: {
+      gap: 6,
+    },
+
+    // Badge — floor the width so flexShrink can't collapse it to empty; the
+    // instrumentBadge <Text> already has numberOfLines={1}+ellipsizeMode='tail'
+    // so the name degrades to "BB SAX…" / "BB S…" instead of disappearing.
+    // Floor is intentionally SMALL (40dp): it must stay ≤ the row's residual
+    // free space so it never re-pushes CONCERT off-screen — the badge is the
+    // single element that yields; the toggle (flexShrink:0) never clips.
+    badgeNarrow: {
+      minWidth: 40,
+      flexShrink: 1,        // explicit: badge is the only element that yields
+      paddingHorizontal: 8, // 10 → 8: 4dp back, border/radius unchanged
+    },
+
+    // A= stepper — trim only the container's own air; the step buttons keep a
+    // full 48dp TOUCH target via hitSlop (see stepBtnNarrow) so a11y holds.
+    refNarrow: {
+      paddingHorizontal: 3, // 6 → 3
+      gap: 2,               // 4 → 2
+    },
+    // Step button — shrink the VISUAL box 48 → 36 to reclaim 24dp across both
+    // buttons. The 6dp hitSlop on each side (applied in JSX) restores the 48dp
+    // tappable area, so this is a density change only, not a touch-target one.
+    stepBtnNarrow: {
+      width: 36,
+    },
+    // A=440 readout — drop decorative letterSpacing (2 → 0); tabular-nums kept.
+    refValueNarrow: {
+      letterSpacing: 0,
+    },
+
+    // PAGE/CONCERT pills — drop minWidth floor + tighten padding so CONCERT's
+    // own text drives the width (still fully visible, just denser).
+    pillNarrow: {
+      minWidth: 48,
+      paddingHorizontal: 6, // 8 → 6
+    },
+    // Pill labels — drop decorative letterSpacing (2 → 0); biggest single
+    // saving on the 7-glyph CONCERT string (~14dp).
+    pillTextNarrow: {
+      letterSpacing: 0,
     },
 
     // Status caption slot — always rendered (empty string when status = 'listening').
