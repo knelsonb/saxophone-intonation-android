@@ -242,9 +242,11 @@ function makeStyles(C: ThemePalette, ledDiameter: number, ledGap: number) {
       // the row also has to live inside this 8+8 horizontal padding, so the
       // flex row is ~16dp wider than its content box and the end LEDs +
       // ±25¢ legend spilled out. Unlike strip / arcTrack / canvas, this root
-      // had NO clip, so the spill drew over neighbouring UI. Clip it (matches
-      // every other display container) so nothing in the row can escape.
-      maxWidth: ledDiameter * LED_COUNT + ledGap * (LED_COUNT - 1),
+      // had NO clip, so the spill drew over neighbouring UI. v1.4 FIX: fold the
+      // 8+8 padding INTO maxWidth (+16) so the bare row fits its content box and
+      // never spills in the first place — the end LEDs + ±25c legend are no
+      // longer cropped. overflow:'hidden' below stays as a belt-and-braces guard.
+      maxWidth: ledDiameter * LED_COUNT + ledGap * (LED_COUNT - 1) + 16,
       alignItems: 'center',
       paddingHorizontal: 8,
       overflow: 'hidden',
