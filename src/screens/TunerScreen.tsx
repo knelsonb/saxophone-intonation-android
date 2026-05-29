@@ -111,10 +111,40 @@ export function TunerScreen(props: TunerScreenProps) {
   useFocusEffect(
     React.useCallback(() => {
       setSubPage('tuner');
+      return () => { setClearArmed(false); };
     }, []),
   );
 
+  // v1.4 — TUNER CLEAR arm-to-confirm. Mirrors the IntonationTable tap-twice
+  // idiom: first tap arms (4 s window), second tap clears. Prevents a single
+  // stray tap from wiping the active bucket with no undo.
+  const [clearArmed, setClearArmed] = useState(false);
+  const clearArmTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleClearPress = React.useCallback(() => {
+    if (!clearArmed) {
+      setClearArmed(true);
+      clearArmTimer.current = setTimeout(() => setClearArmed(false), 4000);
+      return;
+    }
+    if (clearArmTimer.current !== null) {
+      clearTimeout(clearArmTimer.current);
+      clearArmTimer.current = null;
+    }
+    setClearArmed(false);
+    engine.clearActiveBucket();
+  }, [clearArmed, engine]);
+  // Unmount cleanup: clear any pending disarm timer.
+  React.useEffect(() => () => { if (clearArmTimer.current !== null) clearTimeout(clearArmTimer.current); }, []);
+  // Disarm if the bucket vanishes while armed (e.g. cleared elsewhere / reset).
+  React.useEffect(() => {
+    if (engine.activeBucket === null && clearArmed) {
+      setClearArmed(false);
+      if (clearArmTimer.current !== null) { clearTimeout(clearArmTimer.current); clearArmTimer.current = null; }
+    }
+  }, [engine.activeBucket, clearArmed]);
+
   const isListening = engine.status === 'listening';
+  const droneWaiting = drone.enabled && drone.currentMidi === null;
   const centerStyle = styles.centerPortrait;
   const centsText = noteDisplay
     ? formatCents(noteDisplay.cents, noteDisplay.precision)
@@ -175,22 +205,25 @@ export function TunerScreen(props: TunerScreenProps) {
           {!engine.peakLock && (
             <View style={styles.collectActionRow}>
               <Pressable
-                onPress={() => engine.clearActiveBucket()}
+                onPress={handleClearPress}
                 accessibilityRole="button"
                 accessibilityLabel={
-                  engine.activeBucket
-                    ? `Clear the current bucket (${engine.activeBucket.n} samples)`
-                    : 'Clear current bucket — disabled, no active bucket'
+                  engine.activeBucket === null
+                    ? 'Clear current bucket — disabled, no active bucket'
+                    : clearArmed
+                    ? 'Tap again to confirm clearing this bucket'
+                    : `Clear the current bucket (${engine.activeBucket.n} samples)`
                 }
                 disabled={engine.activeBucket === null}
                 style={({ pressed }) => [
                   styles.statsButton,
                   styles.statsButtonDanger,
+                  clearArmed && styles.statsButtonDangerArmed,
                   pressed && styles.statsButtonPressed,
                   engine.activeBucket === null && { opacity: 0.4 },
                 ]}
               >
-                <Text style={[styles.statsButtonText, styles.statsButtonTextDanger]}>CLEAR</Text>
+                <Text style={[styles.statsButtonText, styles.statsButtonTextDanger]}>{clearArmed ? 'TAP AGAIN' : 'CLEAR'}</Text>
               </Pressable>
               <SessionStrip
                 active={engine.sessionActive}
@@ -262,18 +295,21 @@ export function TunerScreen(props: TunerScreenProps) {
               onPress={drone.toggle}
               accessibilityRole="switch"
               accessibilityState={{ checked: drone.enabled }}
-              accessibilityLabel={drone.enabled
+              accessibilityLabel={droneWaiting
+                ? 'Drone armed, waiting for a pitch. Play a note and hold it; the drone will sound once it locks on. Tap to silence.'
+                : drone.enabled
                 ? `Drone on. Following the detected pitch with a ${droneSemitones} semitone offset. Tap to silence.`
                 : 'Drone off. Tap to play a sustained reference tone that tracks your pitch.'}
               style={({ pressed }) => [
                 styles.dronePill,
                 drone.enabled && styles.dronePillActive,
+                droneWaiting && styles.dronePillWaiting,
                 pressed && styles.dronePillPressed,
               ]}
             >
-              <View style={[styles.dronePillDot, drone.enabled && styles.dronePillDotActive]} />
-              <Text style={[styles.dronePillText, drone.enabled && styles.dronePillTextActive]}>
-                {drone.enabled ? 'DRONE ON' : 'DRONE OFF'}
+              <View style={[styles.dronePillDot, drone.enabled && styles.dronePillDotActive, droneWaiting && styles.dronePillDotWaiting]} />
+              <Text style={[styles.dronePillText, drone.enabled && styles.dronePillTextActive, droneWaiting && styles.dronePillTextWaiting]}>
+                {droneWaiting ? 'DRONE ON · WAITING FOR PITCH' : drone.enabled ? 'DRONE ON' : 'DRONE OFF'}
               </Text>
             </Pressable>
           </View>

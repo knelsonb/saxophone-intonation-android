@@ -374,6 +374,7 @@ export function makeStyles(C: ThemePalette) {
   statsButton: { paddingHorizontal: 14, paddingVertical: 12, borderRadius: 4, borderWidth: 1, borderColor: C.edge, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   statsButtonPrimary: { borderColor: C.accent, backgroundColor: C.face },
   statsButtonDanger:  { borderColor: C.sharp,  backgroundColor: 'transparent' },
+  statsButtonDangerArmed: { backgroundColor: C.dangerTint, borderColor: C.sharp },
   statsButtonPressed: { opacity: 0.7 },
   statsButtonText: { color: C.inkMid, fontSize: 11, letterSpacing: 2, fontWeight: '700' },
   statsButtonTextPrimary: { color: C.accent },
@@ -855,6 +856,9 @@ export function makeStyles(C: ThemePalette) {
   dronePillTextActive: { color: C.inTune },
   dronePillDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.inkVeryDim },
   dronePillDotActive: { backgroundColor: C.inTune },
+  dronePillWaiting: { borderColor: C.sharp, backgroundColor: 'transparent' },
+  dronePillDotWaiting: { backgroundColor: C.sharp },
+  dronePillTextWaiting: { color: C.sharp, letterSpacing: 1.2, fontSize: 10 },
 
   droneControlsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 4 },
   droneControl: { flexDirection: 'row', alignItems: 'center', gap: 8 },
