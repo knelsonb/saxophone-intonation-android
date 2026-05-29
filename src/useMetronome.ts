@@ -249,7 +249,12 @@ function clampDrumMidi(n: number): number {
 }
 
 // v1.2 — default pattern for N beats: kick on 1, click on 2..N.
-function buildDefaultPattern(beats: number): BeatInstrument[] {
+// NOTE: buildDefaultPattern / resizePattern / validatePatternForBeats /
+// editableToMetroProfile / metroProfileToEditable / applyProfilePatch are pure,
+// behaviour-neutral helpers `export`ed for unit testing
+// (src/__tests__/metroScheduling.test.tsx). They are candidates for extraction
+// into a standalone native-free module — tracked as task #26.
+export function buildDefaultPattern(beats: number): BeatInstrument[] {
   const out: BeatInstrument[] = new Array(beats);
   for (let i = 0; i < beats; i++) {
     out[i] = defaultVoiceForBeat(i);
@@ -260,7 +265,7 @@ function buildDefaultPattern(beats: number): BeatInstrument[] {
 // v1.2 — resize an existing pattern to a new beat count without losing user
 // assignments. If shrinking, drop the tail. If growing, fill new cells with
 // the default click voice (matches the default-pattern's non-downbeat slot).
-function resizePattern(old: BeatInstrument[], newBeats: number): BeatInstrument[] {
+export function resizePattern(old: BeatInstrument[], newBeats: number): BeatInstrument[] {
   if (newBeats <= 0) return [];
   if (old.length === newBeats) return old;
   if (old.length > newBeats) return old.slice(0, newBeats);
@@ -274,7 +279,7 @@ function resizePattern(old: BeatInstrument[], newBeats: number): BeatInstrument[
 // v1.2 — validate a parsed pattern against current beats-per-bar. Returns
 // the input if it's well-formed and length-matched, else null (caller falls
 // back to the default).
-function validatePatternForBeats(p: unknown, beats: number): BeatInstrument[] | null {
+export function validatePatternForBeats(p: unknown, beats: number): BeatInstrument[] | null {
   if (!Array.isArray(p) || p.length !== beats) return null;
   const out: BeatInstrument[] = [];
   for (const e of p) {
@@ -320,7 +325,7 @@ function buildInitialProfiles(): EditableProfile[] {
 // (the editor surfaces no per-profile tempo and loadProfile never applied one),
 // so we persist BPM_DEFAULT purely to satisfy validateProfile's 20..300 guard;
 // it is NOT read back into live state.
-function editableToMetroProfile(p: EditableProfile): MetroProfile {
+export function editableToMetroProfile(p: EditableProfile): MetroProfile {
   return {
     name: p.name && p.name.length > 0 ? p.name : `User ${p.slot}`,
     bpm: BPM_DEFAULT,
@@ -339,7 +344,7 @@ function editableToMetroProfile(p: EditableProfile): MetroProfile {
 // editableToMetroProfile. Reconstructs the TimeSig union from the flat string;
 // a 'custom' profile derives its numerator from pattern.length (denominator → 4,
 // notation-only), mirroring useMetronome's existing U22 live-state hydration.
-function metroProfileToEditable(p: MetroProfile, slot: ProfileSlot): EditableProfile {
+export function metroProfileToEditable(p: MetroProfile, slot: ProfileSlot): EditableProfile {
   let timeSig: TimeSig;
   if (p.timeSig === 'custom') {
     timeSig = { kind: 'custom', num: clampNumerator(p.pattern.length), den: 4 };
@@ -367,7 +372,7 @@ function metroProfileToEditable(p: MetroProfile, slot: ProfileSlot): EditablePro
 // a changed time-sig (preserve overlapping cells; default-fill new tail). Mirrors
 // MetroScreen's old local onUpdate merge so the editor behaviour is unchanged —
 // only the OWNER of the state moved into the hook.
-function applyProfilePatch(prev: EditableProfile, patch: EditableProfilePatch): EditableProfile {
+export function applyProfilePatch(prev: EditableProfile, patch: EditableProfilePatch): EditableProfile {
   const merged: EditableProfile = { ...prev, ...patch };
   if (patch.timeSig) {
     const newBeats = beatsPerBar(patch.timeSig);
