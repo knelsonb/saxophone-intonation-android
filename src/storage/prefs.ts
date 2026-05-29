@@ -682,9 +682,11 @@ function validateProfile(elem: unknown, index: number): elem is MetroProfile {
   // name — non-empty string.
   if (typeof p.name !== 'string' || p.name.length === 0) return false;
 
-  // bpm — integer 20..300.
-  const bpm = Number(p.bpm);
-  if (!Number.isFinite(bpm) || !Number.isInteger(bpm) || bpm < BPM_MIN || bpm > BPM_MAX) return false;
+  // bpm — integer 20..300. Strict number type: a string-numeric ("100") must
+  // be REJECTED (not coerced) so the whole load falls back rather than silently
+  // accepting malformed/legacy JSON (#25).
+  const bpm = p.bpm;
+  if (typeof bpm !== 'number' || !Number.isFinite(bpm) || !Number.isInteger(bpm) || bpm < BPM_MIN || bpm > BPM_MAX) return false;
 
   // timeSig — one of the allowed values.
   if (typeof p.timeSig !== 'string' || !VALID_TIME_SIGS.has(p.timeSig)) return false;
@@ -700,22 +702,23 @@ function validateProfile(elem: unknown, index: number): elem is MetroProfile {
   for (const cell of p.pattern) {
     if (typeof cell !== 'object' || cell === null || Array.isArray(cell)) return false;
     const c = cell as Record<string, unknown>;
-    const midi = Number(c.midi);
-    const vel  = Number(c.velocity);
-    if (!Number.isFinite(midi) || !Number.isInteger(midi) || midi < MIDI_MIN || midi > MIDI_MAX) return false;
-    if (!Number.isFinite(vel)  || !Number.isInteger(vel)  || vel  < 1        || vel  > 127     ) return false;
+    // Strict number type — string-numerics are rejected (#25), matching bpm above.
+    const midi = c.midi;
+    const vel  = c.velocity;
+    if (typeof midi !== 'number' || !Number.isFinite(midi) || !Number.isInteger(midi) || midi < MIDI_MIN || midi > MIDI_MAX) return false;
+    if (typeof vel  !== 'number' || !Number.isFinite(vel)  || !Number.isInteger(vel)  || vel  < 1        || vel  > 127     ) return false;
   }
 
   // subdivisions — one of the allowed values.
   if (typeof p.subdivisions !== 'string' || !VALID_SUBDIVS.has(p.subdivisions)) return false;
 
-  // subMidi — integer 35..81.
-  const subMidi = Number(p.subMidi);
-  if (!Number.isFinite(subMidi) || !Number.isInteger(subMidi) || subMidi < MIDI_MIN || subMidi > MIDI_MAX) return false;
+  // subMidi — integer 35..81. Strict number type (#25).
+  const subMidi = p.subMidi;
+  if (typeof subMidi !== 'number' || !Number.isFinite(subMidi) || !Number.isInteger(subMidi) || subMidi < MIDI_MIN || subMidi > MIDI_MAX) return false;
 
-  // subVel — integer 1..127.
-  const subVel = Number(p.subVel);
-  if (!Number.isFinite(subVel) || !Number.isInteger(subVel) || subVel < 1 || subVel > 127) return false;
+  // subVel — integer 1..127. Strict number type (#25).
+  const subVel = p.subVel;
+  if (typeof subVel !== 'number' || !Number.isFinite(subVel) || !Number.isInteger(subVel) || subVel < 1 || subVel > 127) return false;
 
   void index; // index kept for future diagnostic logging.
   return true;

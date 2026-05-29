@@ -225,6 +225,32 @@ describe('metro profiles — U22 reject-and-fall-back invariant (returns null)',
     }
   });
 
+  it('rejects string-numeric values in any numeric field (no coercion — #25)', () => {
+    // A legacy / hand-edited JSON could store a number as a string ("100").
+    // The validator must REJECT it (strict typeof number), not coerce it, so
+    // the whole load falls back instead of silently admitting malformed data.
+    const stringNumericMutators: Array<(p: MetroProfile[]) => void> = [
+      (p) => { (p[0] as unknown as Record<string, unknown>).bpm = '120'; },                          // bpm as string
+      (p) => { (p[1] as unknown as Record<string, unknown>).subMidi = '42'; },                       // subMidi as string
+      (p) => { (p[1] as unknown as Record<string, unknown>).subVel = '70'; },                        // subVel as string
+      (p) => { (p[2].pattern[0] as unknown as Record<string, unknown>).midi = '76'; },               // pattern cell midi as string
+      (p) => { (p[2].pattern[0] as unknown as Record<string, unknown>).velocity = '90'; },           // pattern cell velocity as string
+    ];
+    for (const mutate of stringNumericMutators) {
+      const profiles = fourValid();
+      mutate(profiles);
+      // Hand-build the JSON so serialize's clamping/Number-trunc can't sanitize
+      // the string away — loadMetroProfiles must face the raw string-numeric.
+      expect(loadMetroProfiles(JSON.stringify(profiles))).toBeNull();
+    }
+  });
+
+  it('still accepts the same fields when they are genuine numbers (#25 guard is type-only)', () => {
+    // Companion to the string-numeric rejection above: the strict typeof guard
+    // must NOT reject in-range NUMERIC values. fourValid() is all numbers.
+    expect(loadMetroProfiles(JSON.stringify(fourValid()))).not.toBeNull();
+  });
+
   it('rejects a preset profile whose pattern length != its numerator', () => {
     const profiles = fourValid();
     // 4/4 profile with only 3 beats — must be rejected.

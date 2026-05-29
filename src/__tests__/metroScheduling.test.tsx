@@ -1,11 +1,12 @@
 /**
  * metroScheduling.test.tsx — pure beat-structure + profile-conversion helpers
- * exported from useMetronome.ts.
+ * from src/metroHelpers.ts.
  *
- * JEST test: useMetronome.ts transitively imports React Native + AsyncStorage
- * (via storage/prefs), so it runs under jest-expo (which mocks them), not the
- * plain-node legacy runner. The helpers under test are pure and were exported
- * for testability (see the note in useMetronome.ts; extraction tracked as #26).
+ * #26 — these helpers used to live (and were `export`ed for testability) in
+ * useMetronome.ts; they were extracted into the native-free ./metroHelpers
+ * module. This test now imports them directly from there (useMetronome.ts still
+ * re-exports them, so either import path is equivalent). It still runs under
+ * jest-expo because the EditableProfile type pulls in ProfileEditorAccordion.
  *
  * WHY: wrong beats-per-bar, or a botched pattern resize, yields the WRONG beat
  * structure — a phantom downbeat or a dropped beat — a silence-over-wrong
@@ -25,8 +26,8 @@ import {
   editableToMetroProfile,
   metroProfileToEditable,
   applyProfilePatch,
-} from '../useMetronome';
-import type { BeatInstrument } from '../useMetronome';
+} from '../metroHelpers';
+import type { BeatInstrument } from '../metroHelpers';
 import type { EditableProfile } from '../components/ProfileEditorAccordion';
 
 // ---------------------------------------------------------------------------
