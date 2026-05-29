@@ -12,7 +12,7 @@
  * State + behavior live in `useDeck` so the screen body is mostly layout.
  */
 import React, { useMemo } from 'react';
-import { GestureResponderEvent, Modal, Pressable, Text, View } from 'react-native';
+import { GestureResponderEvent, Modal, Pressable, Text, useWindowDimensions, View } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
@@ -37,6 +37,14 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
   void C;
+
+  // Honour DeckScreen's hard layout rule (no ScrollView — shrink the record
+  // button on small devices so nothing falls off-screen). On short screens
+  // (e.g. pixel_2 731dp) the default 140dp button pushed the empty-state
+  // helper text's last line behind the bottom nav; shrink to 112dp there.
+  // Taller phones (pixel_7 914dp, Pixel 9 Pro) keep the full 140dp.
+  const { height: winH } = useWindowDimensions();
+  const recordSize = winH < 780 ? 112 : 140;
 
   const isRecording = deck.mode === 'recording';
   const isPlaying = deck.mode === 'playing';
@@ -146,11 +154,16 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
         accessibilityLabel={isRecording ? 'Stop recording' : 'Start recording'}
         style={({ pressed }) => [
           styles.deckRecordBtn,
+          { width: recordSize, height: recordSize, borderRadius: recordSize / 2 },
           isRecording && styles.deckRecordBtnActive,
           pressed && styles.deckRecordBtnPressed,
         ]}
       >
-        <Text style={[styles.deckRecordBtnText, isRecording && styles.deckRecordBtnTextActive]}>
+        <Text
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          style={[styles.deckRecordBtnText, isRecording && styles.deckRecordBtnTextActive]}
+        >
           {isRecording ? 'STOP' : 'RECORD'}
         </Text>
       </Pressable>
