@@ -13,7 +13,7 @@ import {
 import type { FilterMode, FilterState } from './filterModes';
 import type { ThemeName } from './theme';
 import { transpMap } from './instruments';
-import { loadPrefs, savePrefs } from './storage/prefs';
+import { loadPrefs, prefsUpdate, savePrefs } from './storage/prefs';
 import type { AppPrefs } from './storage/prefs';
 import {
   initMeasurementsDb,
@@ -877,79 +877,39 @@ export function useAudioEngine(): AudioEngineState {
   // -------------------------------------------------------------------------
   const setPeakLock = useCallback((v: boolean): void => {
     setPeakLockState(v);
-    // Fire-and-forget persist — keep the user's choice across restarts.
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, peakLock: v });
-      } catch {
-        // Ignore — best-effort persistence.
-      }
-    })();
+    prefsUpdate({ peakLock: v });
   }, []);
 
   const setTheme = useCallback((t: ThemeName): void => {
     setThemeState(t);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, theme: t });
-      } catch {
-        // best-effort
-      }
-    })();
+    prefsUpdate({ theme: t });
   }, []);
 
   const setNightDarken = useCallback((v: number): void => {
     const clamped = Math.max(0.4, Math.min(1.0, v));
     setNightDarkenState(clamped);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, nightDarken: clamped });
-      } catch { /* best-effort */ }
-    })();
+    prefsUpdate({ nightDarken: clamped });
   }, []);
 
   const setNightWarmth = useCallback((v: number): void => {
     const clamped = Math.max(-1.0, Math.min(1.0, v));
     setNightWarmthState(clamped);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, nightWarmth: clamped });
-      } catch { /* best-effort */ }
-    })();
+    prefsUpdate({ nightWarmth: clamped });
   }, []);
 
   const setTunerStyle = useCallback((s: 'arc' | 'strobe' | 'led'): void => {
     setTunerStyleState(s);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, tunerStyle: s });
-      } catch { /* best-effort */ }
-    })();
+    prefsUpdate({ tunerStyle: s });
   }, []);
 
   const setMetroStyle = useCallback((s: 'pulse' | 'pendulum' | 'flash'): void => {
     setMetroStyleState(s);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, metroStyle: s });
-      } catch { /* best-effort */ }
-    })();
+    prefsUpdate({ metroStyle: s });
   }, []);
 
   const setDeckStyle = useCallback((s: 'reels' | 'vu' | 'waveform'): void => {
     setDeckStyleState(s);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, deckStyle: s });
-      } catch { /* best-effort */ }
-    })();
+    prefsUpdate({ deckStyle: s });
   }, []);
 
   const setMetroClickOffsetMs = useCallback((ms: number): void => {
@@ -958,22 +918,12 @@ export function useAudioEngine(): AudioEngineState {
     // happen during a load-from-prefs).
     const clamped = Math.max(-50, Math.min(50, Math.round(ms / 5) * 5));
     setMetroClickOffsetMsState(clamped);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, metroClickOffsetMs: clamped });
-      } catch { /* best-effort */ }
-    })();
+    prefsUpdate({ metroClickOffsetMs: clamped });
   }, []);
 
   const setMetroOutputRoute = useCallback((r: 'speaker' | 'wired' | 'bluetooth'): void => {
     setMetroOutputRouteState(r);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, metroOutputRoute: r });
-      } catch { /* best-effort */ }
-    })();
+    prefsUpdate({ metroOutputRoute: r });
   }, []);
 
   // #A4-S1 — live A4 calibration setter. Updates the ref IMMEDIATELY (so the
@@ -1118,14 +1068,7 @@ export function useAudioEngine(): AudioEngineState {
   const setLowCutDb = useCallback((db: number): void => {
     const clamped = Math.max(-80, Math.min(-10, Math.round(db)));
     setLowCutDbState(clamped);
-    (async () => {
-      try {
-        const current = await loadPrefs();
-        await savePrefs({ ...current, lowCutDb: clamped });
-      } catch {
-        // Ignore — best-effort persistence.
-      }
-    })();
+    prefsUpdate({ lowCutDb: clamped });
   }, []);
 
   const setHiFiMode = useCallback(async (v: boolean): Promise<void> => {
@@ -1506,7 +1449,7 @@ export function useAudioEngine(): AudioEngineState {
     let maxAbs = 0;
     for (let i = 0; i < n; i++) {
       const a = Math.abs(incoming[i]);
-      if (a > maxAbs) maxAbs = a;
+      if (a > maxAbs) { maxAbs = a; if (maxAbs >= 1e-9) break; }
     }
     if (maxAbs < 1e-9) {
       silentBufferCount.current += 1;
@@ -1595,13 +1538,8 @@ export function useAudioEngine(): AudioEngineState {
       if (rmsLinear >= effectiveFloor) {
         analysisBlock.current!.set(r);
 
-        const result = (() => {
-          try {
-            return yinPitch(analysisBlock.current!, buffer.sampleRate, preset.yinThreshold);
-          } catch {
-            return null;
-          }
-        })();
+        let result: ReturnType<typeof yinPitch> | null;
+        try { result = yinPitch(analysisBlock.current!, buffer.sampleRate, preset.yinThreshold); } catch { result = null; }
 
         if (result !== null && result.freqHz > 0) {
           nextRaw = result.freqHz;
@@ -1985,8 +1923,8 @@ export function useAudioEngine(): AudioEngineState {
           }
           if (winnerFreqs.length > 0) {
             // v1.4 — L1: correct even-length median (average two middles).
-            // Also sorts a COPY so the ring-buffer source array is not mutated.
-            const sorted = winnerFreqs.slice().sort(_compareAsc);
+            winnerFreqs.sort(_compareAsc);
+            const sorted = winnerFreqs;
             const n = sorted.length;
             displayFreq = n % 2 === 1
               ? sorted[Math.floor(n / 2)]

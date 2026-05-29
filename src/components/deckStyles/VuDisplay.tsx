@@ -20,7 +20,7 @@
  * approximate with Animated.timing duration 250 ms toward each new target,
  * which gives the right "lazy" attack feel.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
@@ -103,7 +103,6 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
   const rAnim = useRef(new Animated.Value(0)).current;
   const lPrev = useRef(0);
   const rPrev = useRef(0);
-  const [, setTick] = useState(0); // forces re-eval of statusLine etc — not strictly needed
 
   // v1.4 wave-10 — L3: keep clockSec in a ref so the setInterval callback can
   // read the latest value without being in the effect's dep array. Previously
@@ -152,7 +151,6 @@ export function VuDisplay({ mode, clockSec, statusLine }: VuDisplayProps) {
         easing: rAttacking ? Easing.out(Easing.quad) : Easing.in(Easing.cubic),
         useNativeDriver: true,
       }).start();
-      setTick((t) => t + 1);
     }, TICK_MS);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
