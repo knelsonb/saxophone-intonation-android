@@ -924,6 +924,9 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
 
   // Reservation map: role → handle (or undefined if free).
   const reservations = new Map<ChannelRole, ChannelHandle>();
+  // O(1) reverse map: MIDI channel → role. Kept in EXACT sync with
+  // `reservations` (mirror every set/delete). Used by resolveRole().
+  const channelToRole = new Map<number, ChannelRole>();
 
   // Listener map: synchronous Set per event kind.
   const listeners: Record<BusEventKind, Set<Listener>> = {
@@ -988,6 +991,14 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
   function emit(kind: BusEventKind, ev: BusEvent): void {
     const set = listeners[kind];
     if (set.size === 0) return;
+    if (set.size === 1) {
+      try {
+        set.values().next().value!(ev);
+      } catch (err) {
+        log.e('Bus', 'listener-throw', { kind, err: String(err) });
+      }
+      return;
+    }
     // Snapshot to allow listeners to unsubscribe inside their own callback.
     const snapshot = Array.from(set);
     for (const fn of snapshot) {
@@ -1102,10 +1113,7 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
   // Helper: resolve MIDI channel number → ChannelRole. Returns 'drone' as a
   // synthetic fallback for unregistered channels.
   function resolveRole(ch: number): ChannelRole {
-    for (const [role, handle] of reservations.entries()) {
-      if (CHANNEL_OF_ROLE[role] === ch) return role;
-    }
-    return 'drone';
+    return channelToRole.get(ch) ?? 'drone';
   }
 
   // Warm-up timeout: after this many ms, force the warmup window closed
@@ -1298,6 +1306,7 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
         }
         soundingByChannel.delete(ch);
         reservations.delete(role);
+        channelToRole.delete(CHANNEL_OF_ROLE[role]);
         log.d('Bus', 'channel-released', { role, ch });
       },
     };
@@ -1325,6 +1334,7 @@ export function createMidiBusCore(opts: MidiBusCoreOptions): MidiBusCore {
       }
       const handle = makeHandle(role);
       reservations.set(role, handle);
+      channelToRole.set(CHANNEL_OF_ROLE[role], role);
       log.d('Bus', 'channel-reserved', { role, ch: CHANNEL_OF_ROLE[role] });
       return handle;
     },
