@@ -38,7 +38,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
-import { loadMetroProfiles, loadPrefs, prefsUpdate, savePrefs } from './storage/prefs';
+import { loadMetroProfiles, loadPrefs, prefsUpdate, savePrefs, serializeMetroProfiles } from './storage/prefs';
 import type { MetroProfile } from './storage/prefs';
 import { routeLatencyMs } from './useMidiBusCore';
 import type { ChannelHandle, ChannelRole, MetroOutputRoute, MidiBusState } from './useMidiBusCore';
@@ -48,7 +48,7 @@ import type { ChannelHandle, ChannelRole, MetroOutputRoute, MidiBusState } from 
 // MetroOutputRoute / routeLatencyMs keep working.
 export { routeLatencyMs };
 export type { MetroOutputRoute };
-import type { EditableProfile } from './components/ProfileEditorAccordion';
+import type { EditableProfile, EditableProfilePatch } from './components/ProfileEditorAccordion';
 import { log } from './log';
 
 // v1.2 — TimeSig is a tagged union. The denominator is for notation only;
@@ -212,6 +212,24 @@ export interface MetronomeState {
    * metronome immediately reflects the new pattern/tempo.
    */
   loadProfile: (p: EditableProfile) => void;
+  // v1.4 (Wave 3.5) — the 4 user profiles now LIVE in the hook (hydrated from
+  // metroProfilesJson on boot, persisted on every edit/select). MetroScreen
+  // consumes these instead of its old local useState mock so edits survive a
+  // relaunch.
+  profiles: EditableProfile[];
+  /** 1-based slot (1..4) of the currently-loaded user profile, or null when a
+   *  preset is active. Persisted (as a 0-based index, or -1) so the grid can
+   *  surface the loaded profile on relaunch. */
+  activeProfileSlot: ProfileSlot | null;
+  /** Patch one stored profile (rename, pattern, time-sig, subdivisions, sub
+   *  voice). Persists the full profiles array via the debounced prefsUpdate()
+   *  path. Does NOT touch live scheduler state — the caller mirrors a patch to
+   *  the live setters separately when the edited slot is the active one. */
+  updateProfile: (slot: ProfileSlot, patch: EditableProfilePatch) => void;
+  /** Mark a profile slot as the active one (or null to clear). Persists the
+   *  active-slot index. Does NOT load the profile into live state — pair with
+   *  loadProfile() for that (matches the existing screen flow). */
+  selectProfile: (slot: ProfileSlot | null) => void;
 }
 
 function clampBpm(n: number): number {
@@ -271,6 +289,95 @@ function validatePatternForBeats(p: unknown, beats: number): BeatInstrument[] | 
   return out;
 }
 
+// v1.4 (Wave 3.5) — slot index in the editor's EditableProfile is 1..4 (1-based,
+// matches the UI labels "User 1".."User 4"). The PERSISTED activeProfileSlot is
+// 0-based (or -1 = none) to match the MetroProfile[] array index the hydration
+// path at U22 already reads. These two helpers convert between the two spaces.
+export type ProfileSlot = 1 | 2 | 3 | 4;
+const PROFILE_COUNT = 4;
+
+// v1.4 (Wave 3.5) — fresh-install default profiles. Lifted out of MetroScreen's
+// local mock (which re-seeded on every mount) so the hook now OWNS them. Mirrors
+// the v1.3 §9 defaults the screen used to build. Each slot's pattern length
+// matches beatsPerBar(timeSig) so it round-trips cleanly through the persisted
+// MetroProfile schema (validateProfile requires length === numerator for presets).
+function buildInitialProfiles(): EditableProfile[] {
+  const sub = (): BeatInstrument => ({ midi: DEFAULT_SUB_MIDI, velocity: DEFAULT_SUB_VELOCITY });
+  return [
+    { slot: 1, name: 'User 1', timeSig: { kind: 'preset', value: '4/4' }, pattern: buildDefaultPattern(4), subdivisions: 'off', subdivisionVoice: sub() },
+    { slot: 2, name: 'User 2', timeSig: { kind: 'preset', value: '3/4' }, pattern: buildDefaultPattern(3), subdivisions: 'off', subdivisionVoice: sub() },
+    { slot: 3, name: 'User 3', timeSig: { kind: 'preset', value: '4/4' }, pattern: buildDefaultPattern(4), subdivisions: 'off', subdivisionVoice: sub() },
+    { slot: 4, name: 'User 4', timeSig: { kind: 'preset', value: '4/4' }, pattern: buildDefaultPattern(4), subdivisions: 'off', subdivisionVoice: sub() },
+  ];
+}
+
+// v1.4 (Wave 3.5) — EditableProfile (UI shape, 1-based slot + TimeSig union +
+// nested subdivisionVoice) → MetroProfile (flat persisted shape). The persisted
+// schema has NO denominator and a single flat timeSig string, so a custom sig
+// collapses to 'custom' (its numerator survives implicitly as pattern.length on
+// re-hydration; the denominator is notation-only and is reconstructed as 4 —
+// matches the existing U22 hydration path). bpm has no source in EditableProfile
+// (the editor surfaces no per-profile tempo and loadProfile never applied one),
+// so we persist BPM_DEFAULT purely to satisfy validateProfile's 20..300 guard;
+// it is NOT read back into live state.
+function editableToMetroProfile(p: EditableProfile): MetroProfile {
+  return {
+    name: p.name && p.name.length > 0 ? p.name : `User ${p.slot}`,
+    bpm: BPM_DEFAULT,
+    timeSig: p.timeSig.kind === 'preset' ? p.timeSig.value : 'custom',
+    pattern: p.pattern.map((c) => ({
+      midi: clampDrumMidi(c.midi),
+      velocity: Math.max(1, Math.min(127, Math.trunc(c.velocity))),
+    })),
+    subdivisions: p.subdivisions,
+    subMidi: clampDrumMidi(p.subdivisionVoice.midi),
+    subVel: Math.max(1, Math.min(127, Math.trunc(p.subdivisionVoice.velocity))),
+  };
+}
+
+// v1.4 (Wave 3.5) — MetroProfile (persisted) → EditableProfile (UI). Inverse of
+// editableToMetroProfile. Reconstructs the TimeSig union from the flat string;
+// a 'custom' profile derives its numerator from pattern.length (denominator → 4,
+// notation-only), mirroring useMetronome's existing U22 live-state hydration.
+function metroProfileToEditable(p: MetroProfile, slot: ProfileSlot): EditableProfile {
+  let timeSig: TimeSig;
+  if (p.timeSig === 'custom') {
+    timeSig = { kind: 'custom', num: clampNumerator(p.pattern.length), den: 4 };
+  } else {
+    timeSig = { kind: 'preset', value: p.timeSig };
+  }
+  const pattern: BeatInstrument[] = p.pattern.map((c) => ({
+    midi: clampDrumMidi(c.midi),
+    velocity: Math.max(1, Math.min(127, Math.trunc(c.velocity))),
+  }));
+  return {
+    slot,
+    name: p.name && p.name.length > 0 ? p.name : `User ${slot}`,
+    timeSig,
+    pattern,
+    subdivisions: p.subdivisions,
+    subdivisionVoice: {
+      midi: clampDrumMidi(p.subMidi),
+      velocity: Math.max(1, Math.min(127, Math.trunc(p.subVel))),
+    },
+  };
+}
+
+// v1.4 (Wave 3.5) — apply an EditableProfilePatch, resizing the pattern to match
+// a changed time-sig (preserve overlapping cells; default-fill new tail). Mirrors
+// MetroScreen's old local onUpdate merge so the editor behaviour is unchanged —
+// only the OWNER of the state moved into the hook.
+function applyProfilePatch(prev: EditableProfile, patch: EditableProfilePatch): EditableProfile {
+  const merged: EditableProfile = { ...prev, ...patch };
+  if (patch.timeSig) {
+    const newBeats = beatsPerBar(patch.timeSig);
+    if (merged.pattern.length !== newBeats) {
+      merged.pattern = resizePattern(merged.pattern, newBeats);
+    }
+  }
+  return merged;
+}
+
 export interface UseMetronomeArgs {
   /**
    * MIDI bus. The hook reserves the 'drums' channel on mount and routes
@@ -304,6 +411,17 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
   // v1.1 — click volume. Loaded from prefs on mount.
   const [clickVolume, setClickVolumeState] = useState<number>(0.8);
   const clickVolumeRef = useRef<number>(0.8);
+  // v1.4 (Wave 3.5) — the 4 user profiles now live here (lifted out of
+  // MetroScreen's per-mount mock). Seeded with the built-in defaults; the boot
+  // effect below overwrites them from metroProfilesJson when a valid array is
+  // stored. activeProfileSlot is 1-based (1..4) or null (preset active).
+  const [profiles, setProfilesState] = useState<EditableProfile[]>(() => buildInitialProfiles());
+  const [activeProfileSlot, setActiveProfileSlotState] = useState<ProfileSlot | null>(null);
+  // profilesRef mirrors `profiles` so the persistence path can read the freshly
+  // -patched array synchronously (the setState updater is the source of truth;
+  // we sync the ref inside it before serializing — no stale closure on the JSON).
+  const profilesRef = useRef<EditableProfile[]>(profiles);
+  profilesRef.current = profiles;
 
   // Refs that the scheduler reads without rebinding the callback.
   const bpmRef = useRef(BPM_DEFAULT);
@@ -921,11 +1039,12 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
   //      overwriting the legacy fields. Aragorn-required U22 guard: a missing
   //      / corrupt / unset profiles array MUST NOT wipe v1.2 settings.
   //
-  // Both `metroProfilesJson` and `metroActiveProfileSlot` are not yet typed
-  // on AppPrefs (they're a v1.3 surface that landed alongside this hook).
-  // Reading them through an `unknown`-shaped view keeps this hook forward-
-  // compatible: if AsyncStorage doesn't carry them yet, loadMetroProfiles
-  // sees `undefined` → returns null → legacy path runs as before.
+  // v1.4 (Wave 3.5) — additionally hydrate the EDITOR-FACING `profiles` /
+  // `activeProfileSlot` state from the SAME validated array, so the four user
+  // slots survive a relaunch (previously they were a per-mount mock in
+  // MetroScreen and reverted on every launch). A missing / corrupt / legacy
+  // value leaves the built-in `buildInitialProfiles()` seed in place — existing
+  // installs neither crash nor lose their legacy live settings.
   useEffect(() => {
     (async () => {
       try {
@@ -933,20 +1052,40 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
         setClickVolumeState(prefs.metroClickVolume);
 
         // ---- U22: profile-first hydration attempt ----
-        const prefsAny = prefs as unknown as {
-          metroProfilesJson?: unknown;
-          metroActiveProfileSlot?: unknown;
-        };
-        const profiles = loadMetroProfiles(prefsAny.metroProfilesJson);
-        const slotRaw = prefsAny.metroActiveProfileSlot;
-        const slotNum = typeof slotRaw === 'number' && Number.isInteger(slotRaw) ? slotRaw : null;
+        // metroProfilesJson / metroActiveProfileSlot are now typed on AppPrefs
+        // (v1.4 Wave 3.5) and round-tripped by loadPrefs, so we read them
+        // directly. loadMetroProfiles still returns null for a missing/legacy/
+        // corrupt value → the built-in default profiles + legacy live-state
+        // path both stand.
+        const storedProfiles = loadMetroProfiles(prefs.metroProfilesJson);
+        const slotRaw = prefs.metroActiveProfileSlot;
+        const slotNum = Number.isInteger(slotRaw) ? slotRaw : null;
+
+        // v1.4 (Wave 3.5) — hydrate the editor-facing profiles array + active
+        // slot REGARDLESS of whether a profile is the active live source. If
+        // the user customised profiles but currently has a PRESET selected
+        // (slotNum === -1), we still want their saved profiles back.
+        if (storedProfiles !== null) {
+          const slots: ProfileSlot[] = [1, 2, 3, 4];
+          setProfilesState(
+            storedProfiles
+              .slice(0, PROFILE_COUNT)
+              .map((p, i) => metroProfileToEditable(p, slots[i])),
+          );
+          if (slotNum !== null && slotNum >= 0 && slotNum < storedProfiles.length) {
+            setActiveProfileSlotState((slotNum + 1) as ProfileSlot);
+          } else {
+            setActiveProfileSlotState(null);
+          }
+        }
+
         if (
-          profiles !== null
+          storedProfiles !== null
           && slotNum !== null
           && slotNum >= 0
-          && slotNum < profiles.length
+          && slotNum < storedProfiles.length
         ) {
-          const prof: MetroProfile = profiles[slotNum];
+          const prof: MetroProfile = storedProfiles[slotNum];
           // Reconstruct a TimeSig from the profile's flat schema. Profiles
           // don't carry a custom denominator (validateProfile in prefs.ts
           // accepts 'custom' with any pattern length but no den field), so
@@ -1064,6 +1203,45 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---------- profile ownership (v1.4 Wave 3.5) ----------
+
+  // Persist the full profiles array through the SAME debounced prefsUpdate()
+  // path every other metro setter uses (coalesces with in-flight writes per L2).
+  // serializeMetroProfiles is the exact inverse of the loadMetroProfiles guard
+  // the boot hydration reads, so the write round-trips back validated.
+  const persistProfiles = useCallback((next: EditableProfile[]) => {
+    prefsUpdate({ metroProfilesJson: serializeMetroProfiles(next.map(editableToMetroProfile)) });
+  }, []);
+
+  // v1.4 (Wave 3.5) — patch one stored profile and persist. The pattern is
+  // resized to a changed time-sig inside applyProfilePatch (preserve overlap,
+  // default-fill tail) — same merge MetroScreen's local mock used to do. We do
+  // NOT mirror into live scheduler state here: the screen still calls the live
+  // setters (setTimeSig / setBeatInstrument / …) for the active slot, exactly
+  // as before, so the scheduler keeps receiving the identical setter calls and
+  // timing is untouched. This call only owns the PERSISTED profile surface.
+  const updateProfile = useCallback((slot: ProfileSlot, patch: EditableProfilePatch) => {
+    setProfilesState((prev) => {
+      const idx = prev.findIndex((p) => p.slot === slot);
+      if (idx < 0) return prev;
+      const next = prev.slice();
+      next[idx] = applyProfilePatch(prev[idx], patch);
+      // Sync ref + persist from the freshly-built array (no stale closure on
+      // the serialized JSON; the updater is the single source of truth).
+      profilesRef.current = next;
+      persistProfiles(next);
+      return next;
+    });
+  }, [persistProfiles]);
+
+  // v1.4 (Wave 3.5) — mark the active slot (or null) and persist its 0-based
+  // index (-1 for null). Does NOT load the profile into live state — the screen
+  // pairs this with loadProfile(), matching the existing flow.
+  const selectProfile = useCallback((slot: ProfileSlot | null) => {
+    setActiveProfileSlotState(slot);
+    prefsUpdate({ metroActiveProfileSlot: slot === null ? -1 : slot - 1 });
+  }, []);
+
   // v1.4 — L3: atomic profile load. All React state setters are called
   // synchronously in one JS task, then ONE prefsUpdate() fires with the full
   // batch so the debouncer coalesces it with any in-flight write (per L2).
@@ -1178,6 +1356,10 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     clickVolume,
     setClickVolume,
     loadProfile,
+    profiles,
+    activeProfileSlot,
+    updateProfile,
+    selectProfile,
   }), [
     bpm,
     timeSig,
@@ -1202,5 +1384,9 @@ export function useMetronome(args: UseMetronomeArgs): MetronomeState {
     registerTap,
     setClickVolume,
     loadProfile,
+    profiles,
+    activeProfileSlot,
+    updateProfile,
+    selectProfile,
   ]);
 }

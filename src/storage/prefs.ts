@@ -148,6 +148,18 @@ export interface AppPrefs {
   // per council decision U25 — a reference-tone-like timbre that's clearly
   // pitched and sustained. See docs/v1.3-council-decisions.md U25.
   pipesVoice: number;
+  // v1.4 (Wave 3.5) — the 4 user metro profiles, JSON-stringified MetroProfile[]
+  // (see loadMetroProfiles / validateProfile below for the exact schema). Owned
+  // and persisted by useMetronome; the editor (MetroScreen) reads/writes them
+  // through the hook. On any deserialization failure or schema mismatch the
+  // hook falls back to its built-in default profiles (silent reset — never a
+  // crash, never silent data loss for a VALID stored value). Stored as a string
+  // because AsyncStorage is fussier about nested objects (matches metroPatternJson).
+  metroProfilesJson: string;
+  // v1.4 (Wave 3.5) — slot index (0-based) of the currently-loaded user profile,
+  // or -1 when no profile is loaded (a preset is active). Persisted so the grid
+  // can surface the loaded profile on relaunch.
+  metroActiveProfileSlot: number;
 }
 
 export const DEFAULT_PREFS: AppPrefs = {
@@ -210,6 +222,11 @@ export const DEFAULT_PREFS: AppPrefs = {
   metroSubdivisions: 'off',
   metroSubdivisionVoiceMidi: 42,       // Closed Hi-Hat
   metroSubdivisionVoiceVelocity: 70,   // §15.Q11.9
+  // v1.4 (Wave 3.5) — fresh install: no stored profiles (empty string →
+  // loadMetroProfiles returns null → useMetronome seeds its built-in defaults)
+  // and no active profile slot (-1).
+  metroProfilesJson: '',
+  metroActiveProfileSlot: -1,
 };
 
 // ---------------------------------------------------------------------------
@@ -408,6 +425,22 @@ export async function loadPrefs(): Promise<AppPrefs> {
       ),
       metroSubdivisionVoiceMidi: Math.max(35, Math.min(81, asInt(d.metroSubdivisionVoiceMidi, DEFAULT_PREFS.metroSubdivisionVoiceMidi))),
       metroSubdivisionVoiceVelocity: Math.max(1, Math.min(127, asInt(d.metroSubdivisionVoiceVelocity, DEFAULT_PREFS.metroSubdivisionVoiceVelocity))),
+      // v1.4 (Wave 3.5) — metro profiles. Round-trip through loadMetroProfiles
+      // so a corrupt / legacy / wrong-shape value normalises to the default
+      // empty string (useMetronome then seeds its built-in defaults) rather
+      // than being passed through verbatim. A VALID stored value is re-
+      // serialized in canonical form (strips unknown keys; same approach as
+      // metroPatternJson above). This also keeps the field ALIVE across every
+      // unrelated prefsUpdate()/savePrefs() cycle — loadPrefs rebuilds the
+      // object field-by-field, so an unlisted key would be dropped on the next
+      // write and the user's profiles would silently vanish.
+      metroProfilesJson: (() => {
+        const validated = loadMetroProfiles(d.metroProfilesJson);
+        return validated ? JSON.stringify(validated) : DEFAULT_PREFS.metroProfilesJson;
+      })(),
+      // Active slot index (0-based) or -1 when no profile is loaded. asInt
+      // tolerates a missing/corrupt value → default -1.
+      metroActiveProfileSlot: asInt(d.metroActiveProfileSlot, DEFAULT_PREFS.metroActiveProfileSlot),
     };
   } catch {
     return { ...DEFAULT_PREFS };
@@ -724,4 +757,35 @@ export function loadMetroProfiles(json: unknown): MetroProfile[] | null {
 
   // All profiles valid — return the typed array.
   return parsed as MetroProfile[];
+}
+
+/**
+ * v1.4 (Wave 3.5) — serialize an array of MetroProfile records back to the
+ * canonical `metroProfilesJson` string. The INVERSE of loadMetroProfiles:
+ * what this writes, that reads back validated. Used by useMetronome's profile
+ * persistence path. Clamps every field into the validateProfile-accepted range
+ * (defensive — the caller should already pass clean values) so a round-trip is
+ * always lossless w.r.t. validity. Length is NOT forced to match the numerator
+ * here; the caller (which owns beatsPerBar) is responsible for keeping a
+ * preset profile's pattern length === its numerator, exactly as the live
+ * pattern-resize path already does.
+ */
+export function serializeMetroProfiles(profiles: MetroProfile[]): string {
+  const clampInt = (v: number, lo: number, hi: number, def: number): number => {
+    if (!Number.isFinite(v)) return def;
+    return Math.max(lo, Math.min(hi, Math.trunc(v)));
+  };
+  const out: MetroProfile[] = profiles.map((p) => ({
+    name: typeof p.name === 'string' && p.name.length > 0 ? p.name : 'User',
+    bpm: clampInt(p.bpm, BPM_MIN, BPM_MAX, 100),
+    timeSig: VALID_TIME_SIGS.has(p.timeSig) ? p.timeSig : '4/4',
+    pattern: p.pattern.map((c) => ({
+      midi: clampInt(c.midi, MIDI_MIN, MIDI_MAX, 76),
+      velocity: clampInt(c.velocity, 1, 127, 90),
+    })),
+    subdivisions: VALID_SUBDIVS.has(p.subdivisions) ? p.subdivisions : 'off',
+    subMidi: clampInt(p.subMidi, MIDI_MIN, MIDI_MAX, 42),
+    subVel: clampInt(p.subVel, 1, 127, 70),
+  }));
+  return JSON.stringify(out);
 }

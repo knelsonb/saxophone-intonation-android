@@ -143,6 +143,14 @@ function makeMetro(overrides?: Partial<MetronomeState>): MetronomeState {
     pulse: 0,
     clickVolume: 1.0,
     setClickVolume: jest.fn(),
+    // metro profile persistence (lifted into the hook in the persistence fix) —
+    // MetroScreen now reads metro.profiles.map(...) at mount, so the mock must
+    // supply these or the render throws (this file is excluded from tsc).
+    profiles: [],
+    activeProfileSlot: null,
+    updateProfile: jest.fn(),
+    selectProfile: jest.fn(),
+    loadProfile: jest.fn(),
     ...overrides,
   };
 }

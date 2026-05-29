@@ -11,11 +11,15 @@
  * Sub-page state (`subPage`) is LOCAL to this screen, never persisted (per
  * §2 + F-decisions). On tab return the user always lands on METRONOME.
  *
- * v1.3 wave-3 gap (option-a):
- *   useMetronome does NOT yet expose profile slots / activeProfileSlot /
- *   loadProfile / updateProfile. We mock the four user profile slots with
- *   local state here so the UI shape lands. Wave 3.5 will plumb these into
- *   the real hook surface. The TODO comments below mark the touch points.
+ * v1.4 (Wave 3.5) — profile ownership LIFTED into useMetronome. The four user
+ * profile slots + the active-slot index now live in the hook, are hydrated from
+ * metroProfilesJson on boot, and persist through the hook's debounced
+ * prefsUpdate() path on every edit/select. This screen consumes
+ * metro.profiles / metro.activeProfileSlot / metro.updateProfile /
+ * metro.selectProfile (+ metro.loadProfile for the live-state swap). The old
+ * per-mount local mock — which silently reverted every rename / pattern / sub
+ * setting on relaunch — is GONE. `expandedSlot` stays local (pure UI, not
+ * persisted: tab return always re-opens slot 1).
  */
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from 'react-native';
@@ -24,7 +28,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
 import type {
-  BeatInstrument,
   MetronomeState,
   TimeSig,
   TimeSigPreset,
@@ -37,10 +40,7 @@ import { TopPillNav } from '../components/TopPillNav';
 import { ProfileSlotGrid } from '../components/ProfileSlotGrid';
 import type { ProfileSlotMeta } from '../components/ProfileSlotGrid';
 import { ProfileEditorAccordion } from '../components/ProfileEditorAccordion';
-import type {
-  EditableProfile,
-  EditableProfilePatch,
-} from '../components/ProfileEditorAccordion';
+import type { EditableProfilePatch } from '../components/ProfileEditorAccordion';
 import { DrumPicker } from '../components/DrumPicker';
 import type { BeatSlotContext } from '../drumVoices';
 import type { MidiBusState } from '../useMidiBusCore';
@@ -48,10 +48,6 @@ import type { MidiBusState } from '../useMidiBusCore';
 const PRESETS: TimeSigPreset[] = ['2/4', '3/4', '4/4', '6/8'];
 type SubPage = 'metronome' | 'customization';
 type SlotIndex = 1 | 2 | 3 | 4;
-
-const DEFAULT_BEAT_1: BeatInstrument = { midi: 36, velocity: 110 };
-const DEFAULT_BEAT_N: BeatInstrument = { midi: 76, velocity: 90 };
-const DEFAULT_SUB:    BeatInstrument = { midi: 42, velocity: 70 };
 
 /** Render-time label for the time-sig (used in accessibility strings only). */
 function tsLabel(ts: TimeSig): string {
@@ -69,51 +65,9 @@ function tsAsPresetForDisplay(ts: TimeSig): TimeSigPreset {
   return '4/4';
 }
 
-function buildDefaultPattern(beats: number): BeatInstrument[] {
-  const out: BeatInstrument[] = new Array(beats);
-  for (let i = 0; i < beats; i++) out[i] = i === 0 ? { ...DEFAULT_BEAT_1 } : { ...DEFAULT_BEAT_N };
-  return out;
-}
-
-// v1.3 — fresh-install defaults per §9. Wave 3.5 will move these into
-// useMetronome once profile state lands; for Wave 3 they're the seed for
-// the local mock state below.
-function buildInitialProfiles(): EditableProfile[] {
-  return [
-    {
-      slot: 1,
-      name: 'User 1',
-      timeSig: { kind: 'preset', value: '4/4' },
-      pattern: buildDefaultPattern(4),
-      subdivisions: 'off',
-      subdivisionVoice: { ...DEFAULT_SUB },
-    },
-    {
-      slot: 2,
-      name: 'User 2',
-      timeSig: { kind: 'preset', value: '3/4' },
-      pattern: buildDefaultPattern(3),
-      subdivisions: 'off',
-      subdivisionVoice: { ...DEFAULT_SUB },
-    },
-    {
-      slot: 3,
-      name: 'User 3',
-      timeSig: { kind: 'preset', value: '4/4' },
-      pattern: buildDefaultPattern(4),
-      subdivisions: 'off',
-      subdivisionVoice: { ...DEFAULT_SUB },
-    },
-    {
-      slot: 4,
-      name: 'User 4',
-      timeSig: { kind: 'preset', value: '4/4' },
-      pattern: buildDefaultPattern(4),
-      subdivisions: 'off',
-      subdivisionVoice: { ...DEFAULT_SUB },
-    },
-  ];
-}
+// v1.4 (Wave 3.5) — the fresh-install profile defaults moved into useMetronome
+// (which now OWNS profile state). The old local buildInitialProfiles() +
+// buildDefaultPattern() seed — and the per-mount mock state they fed — are gone.
 
 export interface MetroScreenProps {
   metro: MetronomeState;
@@ -147,11 +101,13 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
     }, []),
   );
 
-  // v1.3 — mock profile slot state. TODO(Wave 3.5): replace with
-  // metro.profiles / metro.activeProfileSlot / metro.loadProfile /
-  // metro.updateProfile once useMetronome exposes them.
-  const [profiles, setProfiles] = useState<EditableProfile[]>(() => buildInitialProfiles());
-  const [activeProfileSlot, setActiveProfileSlot] = useState<SlotIndex | null>(null);
+  // v1.4 (Wave 3.5) — profile slots + active slot now OWNED by useMetronome
+  // (hydrated from metroProfilesJson, persisted on every edit). Read straight
+  // off the hook so edits survive a relaunch. `expandedSlot` stays local —
+  // it's pure UI (which accordion section is open) and intentionally resets
+  // to slot 1 on every mount.
+  const profiles = metro.profiles;
+  const activeProfileSlot = metro.activeProfileSlot;
   const [expandedSlot, setExpandedSlot] = useState<SlotIndex | null>(1);
 
   const bpmAccessible = `Tempo ${metro.bpm} beats per minute, ${tsLabel(metro.timeSig)}`;
@@ -180,18 +136,20 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
   const onTapPreset = useCallback((p: TimeSigPreset) => {
     // Tapping a preset clears any profile source AND resets pattern/subdiv
     // back to defaults for that beat count (per v1.2 behavior preserved).
-    setActiveProfileSlot(null);
+    // v1.4 (Wave 3.5) — selectProfile(null) persists the cleared active slot.
+    metro.selectProfile(null);
     metro.setTimeSig({ kind: 'preset', value: p });
     metro.setSubdivisions('off');
     // Pattern is auto-resized to default by useMetronome's setTimeSig path.
   }, [metro]);
 
   const onTapProfile = useCallback((slot: SlotIndex) => {
-    // v1.4 — L3: single atomic call; replaces the cascade of 4 setters.
-    // metro.loadProfile batches all state + one prefsUpdate() write.
+    // v1.4 — L3: single atomic load; metro.loadProfile batches live state + one
+    // prefsUpdate(). v1.4 (Wave 3.5) — selectProfile persists the active slot so
+    // the grid surfaces this profile on relaunch.
     const p = profiles.find((x) => x.slot === slot);
     if (!p) return;
-    setActiveProfileSlot(slot);
+    metro.selectProfile(slot);
     metro.loadProfile(p);
   }, [profiles, metro]);
 
@@ -202,29 +160,12 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
   }, []);
 
   const onUpdate = useCallback((slot: SlotIndex, patch: EditableProfilePatch) => {
-    setProfiles((prev) => {
-      const next = prev.slice();
-      const idx = next.findIndex((p) => p.slot === slot);
-      if (idx < 0) return prev;
-      const merged: EditableProfile = { ...next[idx], ...patch };
-      // If the time-sig changed, resize the pattern so the editor's PerBeatRow
-      // stays consistent. Preserve existing cells where indices overlap.
-      if (patch.timeSig) {
-        const newBeats = beatsPerBar(patch.timeSig);
-        const old = merged.pattern;
-        if (old.length !== newBeats) {
-          const resized: BeatInstrument[] = [];
-          for (let i = 0; i < newBeats; i++) {
-            resized.push(old[i] ?? (i === 0 ? { ...DEFAULT_BEAT_1 } : { ...DEFAULT_BEAT_N }));
-          }
-          merged.pattern = resized;
-        }
-      }
-      next[idx] = merged;
-      return next;
-    });
+    // v1.4 (Wave 3.5) — persist the edit through the hook. updateProfile owns
+    // the pattern-resize-on-time-sig-change merge that used to live here.
+    metro.updateProfile(slot, patch);
     // v1.3 — edit-while-loaded sync (§8 + §4 save-commit). If the user is
     // editing the slot currently loaded, mirror to live state immediately.
+    // (Unchanged: the scheduler still receives the same live setter calls.)
     if (activeProfileSlot === slot) {
       if (patch.timeSig) metro.setTimeSig(patch.timeSig);
       if (patch.subdivisions) metro.setSubdivisions(patch.subdivisions);
@@ -258,11 +199,10 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
   }, []);
   const onPickerSelect = useCallback((midi: number) => {
     if (!pickerCtx) return;
-    setProfiles((prev) => {
-      const next = prev.slice();
-      const idx = next.findIndex((p) => p.slot === pickerCtx.slot);
-      if (idx < 0) return prev;
-      const target = next[idx];
+    // v1.4 (Wave 3.5) — build the patch off the hook-owned profile and persist
+    // it via metro.updateProfile (replaces the old local setProfiles mutation).
+    const target = profiles.find((p) => p.slot === pickerCtx.slot);
+    if (target) {
       if (pickerCtx.kind === 'beat') {
         const pat = target.pattern.slice();
         const cur = pat[pickerCtx.idx];
@@ -270,22 +210,20 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
           midi,
           velocity: cur?.velocity ?? (pickerCtx.idx === 0 ? 110 : 90),
         };
-        next[idx] = { ...target, pattern: pat };
+        metro.updateProfile(pickerCtx.slot, { pattern: pat });
       } else {
-        next[idx] = {
-          ...target,
+        metro.updateProfile(pickerCtx.slot, {
           subdivisionVoice: { midi, velocity: target.subdivisionVoice.velocity },
-        };
+        });
       }
-      return next;
-    });
-    // Edit-while-loaded sync into live state.
+    }
+    // Edit-while-loaded sync into live state (unchanged setter calls).
     if (activeProfileSlot === pickerCtx.slot) {
       if (pickerCtx.kind === 'beat') metro.setBeatInstrument(pickerCtx.idx, midi);
       else metro.setSubdivisionVoice(midi);
     }
     drumPickerRef.current?.dismiss();
-  }, [pickerCtx, activeProfileSlot, metro]);
+  }, [pickerCtx, activeProfileSlot, metro, profiles]);
 
   const slotContext: BeatSlotContext = (() => {
     if (!pickerCtx) return 'downbeat';
