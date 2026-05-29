@@ -3,16 +3,19 @@
  * (style-selected), a giant record button, a playback transport, scrubber,
  * save + clear.
  *
- * **Layout rule (hard):** fits on one screen — no ScrollView. The playback
- * card appears below the record button only when a take exists; that's the
- * one piece of conditional vertical content. If it pushes anything off
- * screen on small devices, we shrink the record button — never scroll the
- * deck.
+ * **Layout rule (hard, PORTRAIT):** fits on one screen — no ScrollView. The
+ * playback card appears below the record button only when a take exists;
+ * that's the one piece of conditional vertical content. If it pushes anything
+ * off screen on small devices, we shrink the record button — never scroll the
+ * deck in portrait.
+ * **Landscape (v1.5 #69):** the short landscape body can't hold the fixed
+ * portrait stack, so the body is wrapped in a ScrollView when isLandscape.
+ * Portrait is unaffected (identical no-scroll tree).
  *
  * State + behavior live in `useDeck` so the screen body is mostly layout.
  */
 import React, { useMemo } from 'react';
-import { GestureResponderEvent, Modal, Pressable, Text, useWindowDimensions, View } from 'react-native';
+import { GestureResponderEvent, Modal, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
@@ -43,7 +46,8 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
   // (e.g. pixel_2 731dp) the default 140dp button pushed the empty-state
   // helper text's last line behind the bottom nav; shrink to 112dp there.
   // Taller phones (pixel_7 914dp, Pixel 9 Pro) keep the full 140dp.
-  const { height: winH } = useWindowDimensions();
+  const { width: winW, height: winH } = useWindowDimensions();
+  const isLandscape = winW >= winH;
   const recordSize = winH < 780 ? 112 : 140;
 
   const isRecording = deck.mode === 'recording';
@@ -109,8 +113,13 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
 
   const visibleToast = deck.toast ?? shareToast;
 
-  return (
-    <View style={{ flex: 1 }}>
+  // v1.5 #69 — landscape fits the fixed portrait stack by wrapping the scrolling
+  // body (strip/record/playback/empty) in a ScrollView ONLY when isLandscape.
+  // Portrait keeps the exact flex:1 no-scroll path (fragments are transparent,
+  // so the portrait tree is byte-identical). Toast + Modals stay siblings of the
+  // root so the absolute toast pins and the Modal backdrops cover full-screen.
+  const deckBody = (
+    <>
       {/* v0.9.8 — `screenHeader` ("DECK" + subtitle) removed for the same
           reason as METRO: tab bar already names this tab. */}
 
@@ -267,6 +276,22 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
             5-minute cap. Stops automatically if you switch tabs to the background.
           </Text>
         </View>
+      )}
+    </>
+  );
+
+  return (
+    <View style={{ flex: 1 }}>
+      {isLandscape ? (
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingVertical: 12 }}
+          showsVerticalScrollIndicator
+        >
+          {deckBody}
+        </ScrollView>
+      ) : (
+        deckBody
       )}
 
       {/* Toast — bottom of the screen body. v1.0.1 — local SHARE toasts share
