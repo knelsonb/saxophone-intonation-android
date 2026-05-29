@@ -45,7 +45,7 @@ export const CENT_RANGE = 50;
 
 export const PEAK_DECAY_PER_SEC = 0.6;
 export const IDLE_GLOW = 0.02;
-export const LAND_RAIL_W = 96;
+export const LAND_RAIL_W = 72;
 
 // ---------------------------------------------------------------------------
 // Style factory

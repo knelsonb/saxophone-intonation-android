@@ -608,10 +608,30 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
     />
   );
   const renderMetroScreen = () => (
-    <MetroScreen metro={metro} metroStyle={engine.metroStyle} outputRoute={engine.metroOutputRoute} bus={bus} />
+    <MetroScreen
+      metro={metro}
+      metroStyle={engine.metroStyle}
+      outputRoute={engine.metroOutputRoute}
+      bus={bus}
+      refHz={refHz}
+      setRefHz={setRefHz}
+      displayMode={displayMode}
+      setDisplayMode={engine.setDisplayMode ?? (() => {})}
+      onTablePress={() => setTableOpen(true)}
+      onPipesPress={() => setPipesOpen(true)}
+    />
   );
   const renderDeckScreen = () => (
-    <DeckScreen deck={deck} deckStyle={engine.deckStyle} />
+    <DeckScreen
+      deck={deck}
+      deckStyle={engine.deckStyle}
+      refHz={refHz}
+      setRefHz={setRefHz}
+      displayMode={displayMode}
+      setDisplayMode={engine.setDisplayMode ?? (() => {})}
+      onTablePress={() => setTableOpen(true)}
+      onPipesPress={() => setPipesOpen(true)}
+    />
   );
   const renderSetupScreen = () => (
     <SetupScreen
@@ -707,7 +727,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       {/* #69 landscape — SilenceBanner re-homed to the top of the content area
           (the 120dp rail is too narrow for the banner text). */}
       {showSilenceBanner && isLandscape && (
-        <View style={{ position: 'absolute', top: insets.top, left: 96, right: 0 }}>
+        <View style={{ position: 'absolute', top: insets.top, left: 72, right: 0 }}>
           <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
         </View>
       )}
@@ -728,7 +748,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           style={{
             position: 'absolute',
             top: insets.top + 60,
-            left: isLandscape ? 96 : 0,
+            left: isLandscape ? 72 : 0,
             right: 0,
             alignItems: 'center',
           }}

@@ -20,6 +20,8 @@ import * as Sharing from 'expo-sharing';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
 import type { DeckState } from '../useDeck';
+import type { DisplayMode } from '../useAudioEngine';
+import { LandscapeChromeControls } from '../tunerWidgets';
 import { ReelsDisplay } from '../components/deckStyles/ReelsDisplay';
 import { WaveformDisplay } from '../components/deckStyles/WaveformDisplay';
 import { VuDisplay } from '../components/deckStyles/VuDisplay';
@@ -27,6 +29,16 @@ import { VuDisplay } from '../components/deckStyles/VuDisplay';
 export interface DeckScreenProps {
   deck: DeckState;
   deckStyle: 'reels' | 'vu' | 'waveform';
+  // #69 — landscape chrome relocation. The A= stepper is suppressed in the
+  // rail in landscape, so DECK must render its own plain LandscapeChromeControls
+  // (returns null in portrait, so portrait is untouched). All six are required
+  // by the component even though variant="plain" only uses refHz/setRefHz.
+  refHz: number;
+  setRefHz: (v: number) => void;
+  displayMode: DisplayMode;
+  setDisplayMode: (m: DisplayMode) => void;
+  onTablePress: () => void;
+  onPipesPress: () => void;
 }
 
 function mmss(sec: number): string {
@@ -36,7 +48,10 @@ function mmss(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
+export function DeckScreen({
+  deck, deckStyle,
+  refHz, setRefHz, displayMode, setDisplayMode, onTablePress, onPipesPress,
+}: DeckScreenProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
   void C;
@@ -113,12 +128,17 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
 
   const visibleToast = deck.toast ?? shareToast;
 
-  // v1.5 #69 — landscape fits the fixed portrait stack by wrapping the scrolling
-  // body (strip/record/playback/empty) in a ScrollView ONLY when isLandscape.
-  // Portrait keeps the exact flex:1 no-scroll path (fragments are transparent,
-  // so the portrait tree is byte-identical). Toast + Modals stay siblings of the
-  // root so the absolute toast pins and the Modal backdrops cover full-screen.
-  const deckBody = (
+  // v1.5 #69 — landscape gives DECK a left/right split mirroring TUNER.
+  //   LEFT  (deckLeft)  = the visualisation strip (Waveform / Vu / Reels).
+  //   RIGHT (deckRight) = plain LandscapeChromeControls (A= stepper, reachable
+  //                       again since the rail suppresses it in landscape) +
+  //                       the record button + the playback-card-or-empty block.
+  // PORTRAIT renders `<>{deckLeft}{deckRight}</>` — fragments are transparent
+  // and the chrome control returns null in portrait, so the portrait tree is
+  // byte-identical to before (strip → record → playback/empty, same order).
+  // Toast + Modals stay siblings of the root so the absolute toast pins and the
+  // Modal backdrops cover full-screen.
+  const deckLeft = (
     <>
       {/* v0.9.8 — `screenHeader` ("DECK" + subtitle) removed for the same
           reason as METRO: tab bar already names this tab. */}
@@ -149,6 +169,22 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
           highlightClock={isRecording}
         />
       )}
+    </>
+  );
+
+  const deckRight = (
+    <>
+      {/* #69 — plain landscape chrome (A= stepper). Returns null in portrait,
+          so portrait order is unchanged: this contributes nothing there. */}
+      <LandscapeChromeControls
+        variant="plain"
+        refHz={refHz}
+        setRefHz={setRefHz}
+        displayMode={displayMode}
+        setDisplayMode={setDisplayMode}
+        onTablePress={onTablePress}
+        onPipesPress={onPipesPress}
+      />
 
       {/* Giant record / stop button */}
       <Pressable
@@ -283,15 +319,22 @@ export function DeckScreen({ deck, deckStyle }: DeckScreenProps) {
   return (
     <View style={{ flex: 1 }}>
       {isLandscape ? (
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingVertical: 12 }}
-          showsVerticalScrollIndicator
-        >
-          {deckBody}
-        </ScrollView>
+        <View style={{ flex: 1, flexDirection: 'row', gap: 16 }}>
+          <View style={{ flex: 1, justifyContent: 'center' }}>{deckLeft}</View>
+          {/* RIGHT column can over-run the short landscape height when a take is
+              present (chrome + record + playback card). Contain the scroll to
+              THIS column so every control stays reachable without a whole-screen
+              scroll. Portrait never hits this branch. */}
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingVertical: 12 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {deckRight}
+          </ScrollView>
+        </View>
       ) : (
-        deckBody
+        <>{deckLeft}{deckRight}</>
       )}
 
       {/* Toast — bottom of the screen body. v1.0.1 — local SHARE toasts share

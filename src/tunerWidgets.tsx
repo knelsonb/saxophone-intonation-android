@@ -284,14 +284,33 @@ export function TopBar({
 
       {/* ── Row 1: BELLCURVE wordmark + status dot — always-on ── */}
       {/* Status dot lifted out of topRow2 into the always-on row (§14.1). */}
-      <View style={tb.wordmarkRow}>
-        <Text style={[styles.brand, land && tb.brandLand]} numberOfLines={1}>{APP_NAME}</Text>
-        <View
-          style={[styles.statusDotLarge, { backgroundColor: statusColor }]}
-          accessibilityRole="image"
-          accessibilityLabel={`Status: ${statusLabel ?? 'listening'}`}
-        />
-      </View>
+      {/* LANDSCAPE (#69 rail): centered COLUMN — status dot on top, then the
+          wordmark as a vertical stack of single chars so it reads down the
+          narrow 72dp rail instead of clipping. PORTRAIT: unchanged horizontal
+          wordmark + trailing dot. */}
+      {land ? (
+        <View style={[tb.wordmarkRow, tb.wordmarkRowLand]}>
+          <View
+            style={[styles.statusDotLarge, { backgroundColor: statusColor }]}
+            accessibilityRole="image"
+            accessibilityLabel={`Status: ${statusLabel ?? 'listening'}`}
+          />
+          <View style={tb.brandVCol} accessibilityRole="header" accessibilityLabel={APP_NAME}>
+            {APP_NAME.split('').map((ch, i) => (
+              <Text key={i} style={tb.brandVChar}>{ch}</Text>
+            ))}
+          </View>
+        </View>
+      ) : (
+        <View style={tb.wordmarkRow}>
+          <Text style={[styles.brand, land && tb.brandLand]} numberOfLines={1}>{APP_NAME}</Text>
+          <View
+            style={[styles.statusDotLarge, { backgroundColor: statusColor }]}
+            accessibilityRole="image"
+            accessibilityLabel={`Status: ${statusLabel ?? 'listening'}`}
+          />
+        </View>
+      )}
 
       {/* ── Row 2: badge + A= + optional displayToggle — tab-conditional ── */}
       {/*
@@ -318,8 +337,8 @@ export function TopBar({
               pressed && styles.badgePressablePressed,
             ]}
           >
-            <Text style={styles.instrumentBadge} numberOfLines={1} ellipsizeMode="tail">{badgeText}</Text>
-            {hornName.length > 0 && (
+            <Text style={[styles.instrumentBadge, land && tb.badgeRailText]} numberOfLines={land ? 2 : 1} ellipsizeMode="tail">{badgeText}</Text>
+            {hornName.length > 0 && !land && (
               <Text style={styles.hornNameCaption} numberOfLines={1} ellipsizeMode="tail">{hornName}</Text>
             )}
           </Pressable>
@@ -1340,6 +1359,14 @@ function makeTopBarStyles(C: ThemePalette) {
       paddingBottom: 0,
     },
     brandLand: { fontSize: 12, letterSpacing: 1, paddingTop: 2, paddingBottom: 2 },
+    // Row 1 (landscape) — center as a COLUMN: status dot on top, then the
+    // vertical wordmark stack below. height:undefined releases the 42dp lock.
+    wordmarkRowLand: { flexDirection: 'column', alignItems: 'center', gap: 8, height: undefined },
+    brandVCol: { alignItems: 'center' },
+    brandVChar: { color: C.ink, fontSize: 15, lineHeight: 17, fontWeight: '700', letterSpacing: 1 },
+    // Instrument badge text in the rail — smaller + centered, wraps to 2 lines
+    // so "BB SAX" reads inside the 72dp rail instead of ellipsising to "…".
+    badgeRailText: { fontSize: 11, letterSpacing: 1, textAlign: 'center' },
     // Row 2 — badge / stepper / toggle stack VERTICALLY in the narrow rail.
     pillsRowLand: {
       height: undefined,

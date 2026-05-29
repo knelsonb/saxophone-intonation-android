@@ -22,11 +22,13 @@
  * persisted: tab return always re-opens slot 1).
  */
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native';
 import type { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../theme';
 import { makeStyles } from '../uiShared';
+import { LandscapeChromeControls } from '../tunerWidgets';
+import type { DisplayMode } from '../useAudioEngine';
 import type {
   MetronomeState,
   TimeSig,
@@ -80,12 +82,30 @@ export interface MetroScreenProps {
    * when undefined the editor's PerBeatRow simply never flashes.
    */
   bus?: MidiBusState;
+  // #69 — landscape chrome relocation. The A= stepper is suppressed in the rail
+  // in landscape, so METRO must render its own plain LandscapeChromeControls
+  // (returns null in portrait → portrait untouched). All six are required by the
+  // component even though variant="plain" only uses refHz/setRefHz.
+  refHz: number;
+  setRefHz: (v: number) => void;
+  displayMode: DisplayMode;
+  setDisplayMode: (m: DisplayMode) => void;
+  onTablePress: () => void;
+  onPipesPress: () => void;
 }
 
-export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreenProps) {
+export function MetroScreen({
+  metro, metroStyle, outputRoute, bus,
+  refHz, setRefHz, displayMode, setDisplayMode, onTablePress, onPipesPress,
+}: MetroScreenProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
   void C;
+  // #69 — landscape gives the METRONOME sub-page a left/right split (the portrait
+  // stack overflows in landscape). Gated entirely on isLandscape so portrait is
+  // byte-identical. CUSTOMIZATION already scrolls and is left alone.
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width >= height;
   // v1.3.2 — bus is now threaded through to ProfileEditorAccordion → PerBeatRow
   // for live flash inside the editor. Sauron's wave-3.5 PerBeatRow listener
   // requires bus to be passed in (no longer optional in practice).
@@ -247,6 +267,131 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
     return slotProfile.subdivisionVoice.midi;
   })();
 
+  // #69 — METRONOME sub-page stack extracted into elements so portrait and
+  // landscape can compose the SAME pieces. Portrait renders them in the original
+  // order inside a flex:1 column (byte-identical). Landscape splits them.
+
+  // BPM row — unchanged from v1.2.
+  const bpmRowEl = (
+    <View style={styles.metroBpmRow}>
+      <Pressable
+        onPress={() => metro.bumpBpm(-5)}
+        accessibilityRole="button"
+        accessibilityLabel="Decrease tempo by 5 BPM"
+        style={({ pressed }) => [styles.metroBpmFlankStepper, pressed && styles.metroBpmFlankStepperPressed]}
+      >
+        <Text style={styles.metroBpmFlankStepperText}>−5</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => metro.bumpBpm(-1)}
+        accessibilityRole="button"
+        accessibilityLabel="Decrease tempo by 1 BPM"
+        style={({ pressed }) => [styles.metroBpmFlankStepper, styles.metroBpmFlankStepperAccent, pressed && styles.metroBpmFlankStepperPressed]}
+      >
+        <Text style={[styles.metroBpmFlankStepperText, styles.metroBpmFlankStepperTextAccent]}>−1</Text>
+      </Pressable>
+      <Text
+        style={styles.metroBpmDisplay}
+        numberOfLines={1}
+        accessibilityRole="text"
+        accessibilityLabel={bpmAccessible}
+      >
+        {metro.bpm}
+      </Text>
+      <Pressable
+        onPress={() => metro.bumpBpm(1)}
+        accessibilityRole="button"
+        accessibilityLabel="Increase tempo by 1 BPM"
+        style={({ pressed }) => [styles.metroBpmFlankStepper, styles.metroBpmFlankStepperAccent, pressed && styles.metroBpmFlankStepperPressed]}
+      >
+        <Text style={[styles.metroBpmFlankStepperText, styles.metroBpmFlankStepperTextAccent]}>+1</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => metro.bumpBpm(5)}
+        accessibilityRole="button"
+        accessibilityLabel="Increase tempo by 5 BPM"
+        style={({ pressed }) => [styles.metroBpmFlankStepper, pressed && styles.metroBpmFlankStepperPressed]}
+      >
+        <Text style={styles.metroBpmFlankStepperText}>+5</Text>
+      </Pressable>
+    </View>
+  );
+
+  // Visualization — flex:1 absorbs height. In landscape it lives in the LEFT
+  // column (bounded by that column's height, no ScrollView, so it won't collapse).
+  const vizEl = (
+    <View style={{ flex: 1, justifyContent: 'center' }}>
+      {metroStyle === 'flash' ? (
+        <FlashDisplay
+          running={metro.running}
+          beat={metro.beat}
+          pulse={metro.pulse}
+          bpm={metro.bpm}
+          timeSig={displayPreset}
+          bus={bus}
+        />
+      ) : metroStyle === 'pendulum' ? (
+        <PendulumDisplay
+          running={metro.running}
+          beat={metro.beat}
+          pulse={metro.pulse}
+          bpm={metro.bpm}
+          bus={bus}
+        />
+      ) : (
+        <PulseDisplay
+          running={metro.running}
+          beat={metro.beat}
+          pulse={metro.pulse}
+          timeSig={displayPreset}
+          bus={bus}
+        />
+      )}
+    </View>
+  );
+
+  // v1.3 — 2×4 grid replaces the v1.2 5-pill row + CUSTOM pill.
+  const gridEl = (
+    <ProfileSlotGrid
+      presets={PRESETS}
+      profiles={profileMetas}
+      activeKind={gridActiveKind}
+      activeKey={gridActiveKey}
+      onTapPreset={onTapPreset}
+      onTapProfile={onTapProfile}
+    />
+  );
+
+  // TAP — unchanged.
+  const tapEl = (
+    <Pressable
+      onPress={() => metro.registerTap()}
+      accessibilityRole="button"
+      accessibilityLabel="Tap tempo. Tap on each beat, the metronome sets BPM from the average."
+      style={({ pressed }) => [styles.metroTap, pressed && styles.metroTapPressed]}
+    >
+      <Text style={styles.metroTapText}>TAP</Text>
+    </Pressable>
+  );
+
+  // START / STOP — unchanged.
+  const startEl = (
+    <Pressable
+      onPress={metro.toggle}
+      accessibilityRole="button"
+      accessibilityLabel={metro.running ? 'Stop metronome' : 'Start metronome'}
+      style={({ pressed }) => [
+        styles.metroPrimary,
+        metro.running ? styles.metroPrimaryActive : styles.metroPrimaryIdle,
+        pressed && styles.metroPrimaryPressed,
+      ]}
+    >
+      <Text style={[styles.metroPrimaryText, metro.running ? styles.metroPrimaryTextActive : styles.metroPrimaryTextIdle]}>
+        {metro.running ? 'STOP' : 'START'}
+      </Text>
+    </Pressable>
+  );
+
   return (
     <View style={{ flex: 1 }}>
       {/* v1.3 — top sub-page nav. Locked height; doesn't move on swap. */}
@@ -285,117 +430,44 @@ export function MetroScreen({ metro, metroStyle, outputRoute, bus }: MetroScreen
       )}
 
       {subPage === 'metronome' ? (
-        <View style={{ flex: 1 }}>
-          {/* BPM row — unchanged from v1.2 */}
-          <View style={styles.metroBpmRow}>
-            <Pressable
-              onPress={() => metro.bumpBpm(-5)}
-              accessibilityRole="button"
-              accessibilityLabel="Decrease tempo by 5 BPM"
-              style={({ pressed }) => [styles.metroBpmFlankStepper, pressed && styles.metroBpmFlankStepperPressed]}
+        isLandscape ? (
+          // LANDSCAPE — left/right split. LEFT = visualizer (keeps flex:1 in a
+          // bounded column). RIGHT = plain chrome (A= stepper, otherwise
+          // unreachable since the rail suppresses it in landscape) + BPM row,
+          // grid, TAP, START/STOP. Contain the scroll to the RIGHT column so
+          // every control stays reachable without a whole-screen scroll.
+          <View style={{ flex: 1, flexDirection: 'row', gap: 16 }}>
+            <View style={{ flex: 1 }}>{vizEl}</View>
+            <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingVertical: 8 }}
+              showsVerticalScrollIndicator={false}
             >
-              <Text style={styles.metroBpmFlankStepperText}>−5</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => metro.bumpBpm(-1)}
-              accessibilityRole="button"
-              accessibilityLabel="Decrease tempo by 1 BPM"
-              style={({ pressed }) => [styles.metroBpmFlankStepper, styles.metroBpmFlankStepperAccent, pressed && styles.metroBpmFlankStepperPressed]}
-            >
-              <Text style={[styles.metroBpmFlankStepperText, styles.metroBpmFlankStepperTextAccent]}>−1</Text>
-            </Pressable>
-            <Text
-              style={styles.metroBpmDisplay}
-              numberOfLines={1}
-              accessibilityRole="text"
-              accessibilityLabel={bpmAccessible}
-            >
-              {metro.bpm}
-            </Text>
-            <Pressable
-              onPress={() => metro.bumpBpm(1)}
-              accessibilityRole="button"
-              accessibilityLabel="Increase tempo by 1 BPM"
-              style={({ pressed }) => [styles.metroBpmFlankStepper, styles.metroBpmFlankStepperAccent, pressed && styles.metroBpmFlankStepperPressed]}
-            >
-              <Text style={[styles.metroBpmFlankStepperText, styles.metroBpmFlankStepperTextAccent]}>+1</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => metro.bumpBpm(5)}
-              accessibilityRole="button"
-              accessibilityLabel="Increase tempo by 5 BPM"
-              style={({ pressed }) => [styles.metroBpmFlankStepper, pressed && styles.metroBpmFlankStepperPressed]}
-            >
-              <Text style={styles.metroBpmFlankStepperText}>+5</Text>
-            </Pressable>
+              <LandscapeChromeControls
+                variant="plain"
+                refHz={refHz}
+                setRefHz={setRefHz}
+                displayMode={displayMode}
+                setDisplayMode={setDisplayMode}
+                onTablePress={onTablePress}
+                onPipesPress={onPipesPress}
+              />
+              {bpmRowEl}
+              {gridEl}
+              {tapEl}
+              {startEl}
+            </ScrollView>
           </View>
-
-          {/* Visualization — flex:1 absorbs height. */}
-          <View style={{ flex: 1, justifyContent: 'center' }}>
-            {metroStyle === 'flash' ? (
-              <FlashDisplay
-                running={metro.running}
-                beat={metro.beat}
-                pulse={metro.pulse}
-                bpm={metro.bpm}
-                timeSig={displayPreset}
-                bus={bus}
-              />
-            ) : metroStyle === 'pendulum' ? (
-              <PendulumDisplay
-                running={metro.running}
-                beat={metro.beat}
-                pulse={metro.pulse}
-                bpm={metro.bpm}
-                bus={bus}
-              />
-            ) : (
-              <PulseDisplay
-                running={metro.running}
-                beat={metro.beat}
-                pulse={metro.pulse}
-                timeSig={displayPreset}
-                bus={bus}
-              />
-            )}
+        ) : (
+          // PORTRAIT — original order inside a flex:1 column (byte-identical).
+          <View style={{ flex: 1 }}>
+            {bpmRowEl}
+            {vizEl}
+            {gridEl}
+            {tapEl}
+            {startEl}
           </View>
-
-          {/* v1.3 — 2×4 grid replaces the v1.2 5-pill row + CUSTOM pill. */}
-          <ProfileSlotGrid
-            presets={PRESETS}
-            profiles={profileMetas}
-            activeKind={gridActiveKind}
-            activeKey={gridActiveKey}
-            onTapPreset={onTapPreset}
-            onTapProfile={onTapProfile}
-          />
-
-          {/* TAP — unchanged */}
-          <Pressable
-            onPress={() => metro.registerTap()}
-            accessibilityRole="button"
-            accessibilityLabel="Tap tempo. Tap on each beat, the metronome sets BPM from the average."
-            style={({ pressed }) => [styles.metroTap, pressed && styles.metroTapPressed]}
-          >
-            <Text style={styles.metroTapText}>TAP</Text>
-          </Pressable>
-
-          {/* START / STOP — unchanged */}
-          <Pressable
-            onPress={metro.toggle}
-            accessibilityRole="button"
-            accessibilityLabel={metro.running ? 'Stop metronome' : 'Start metronome'}
-            style={({ pressed }) => [
-              styles.metroPrimary,
-              metro.running ? styles.metroPrimaryActive : styles.metroPrimaryIdle,
-              pressed && styles.metroPrimaryPressed,
-            ]}
-          >
-            <Text style={[styles.metroPrimaryText, metro.running ? styles.metroPrimaryTextActive : styles.metroPrimaryTextIdle]}>
-              {metro.running ? 'STOP' : 'START'}
-            </Text>
-          </Pressable>
-        </View>
+        )
       ) : (
         // v1.3.2 — wrap CUSTOMIZATION ScrollView in KeyboardAvoidingView so
         // the profile-name TextInput + CustomTimeSigPanel direct-entry inputs

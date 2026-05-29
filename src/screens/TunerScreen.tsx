@@ -161,6 +161,98 @@ export function TunerScreen(props: TunerScreenProps) {
     ? `${noteDisplay.letter}${noteDisplay.accidental}${noteDisplay.octave}`
     : '—';
 
+  // CHANGE 2 — extract DRONE bar + meter so landscape can render them in the
+  // LEFT (visual) column under the display, relieving the right control
+  // column's overflow. Portrait still renders them inline in the right column
+  // in their original position/order (byte-identical layout — see gates below).
+  const droneBarEl = (
+    <View style={styles.droneBar}>
+      {drone.enabled && (
+        <View style={styles.droneControlsRow}>
+          <View style={styles.droneControl}>
+            <Text style={styles.droneControlLabel}>VOL</Text>
+            <Pressable
+              onPress={() => setDroneVolume(Math.max(0, droneVolume - 0.1))}
+              disabled={droneVolume <= 0 + 1e-6}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: droneVolume <= 0 + 1e-6 }}
+              accessibilityLabel="Decrease drone volume"
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume <= 0 + 1e-6 && styles.lowCutStepDisabled]}
+            >
+              <Text style={styles.lowCutStepText}>−</Text>
+            </Pressable>
+            <Text style={styles.droneControlValue}>{Math.round(droneVolume * 100)}%</Text>
+            <Pressable
+              onPress={() => setDroneVolume(Math.min(1, droneVolume + 0.1))}
+              disabled={droneVolume >= 1 - 1e-6}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: droneVolume >= 1 - 1e-6 }}
+              accessibilityLabel="Increase drone volume"
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume >= 1 - 1e-6 && styles.lowCutStepDisabled]}
+            >
+              <Text style={styles.lowCutStepText}>+</Text>
+            </Pressable>
+          </View>
+          <View style={styles.droneControl}>
+            <Text style={styles.droneControlLabel}>SEMI</Text>
+            <Pressable
+              onPress={() => setDroneSemitones(Math.max(-12, droneSemitones - 1))}
+              disabled={droneSemitones <= -12}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: droneSemitones <= -12 }}
+              accessibilityLabel="Lower drone by one semitone"
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones <= -12 && styles.lowCutStepDisabled]}
+            >
+              <Text style={styles.lowCutStepText}>−</Text>
+            </Pressable>
+            <Text style={styles.droneControlValue}>{droneSemitones > 0 ? `+${droneSemitones}` : `${droneSemitones}`}</Text>
+            <Pressable
+              onPress={() => setDroneSemitones(Math.min(12, droneSemitones + 1))}
+              disabled={droneSemitones >= 12}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: droneSemitones >= 12 }}
+              accessibilityLabel="Raise drone by one semitone"
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones >= 12 && styles.lowCutStepDisabled]}
+            >
+              <Text style={styles.lowCutStepText}>+</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+      <Pressable
+        onPress={drone.toggle}
+        accessibilityRole="switch"
+        accessibilityState={{ checked: drone.enabled }}
+        accessibilityLabel={droneWaiting
+          ? 'Drone armed, waiting for a pitch. Play a note and hold it; the drone will sound once it locks on. Tap to silence.'
+          : drone.enabled
+          ? `Drone on. Following the detected pitch with a ${droneSemitones} semitone offset. Tap to silence.`
+          : 'Drone off. Tap to play a sustained reference tone that tracks your pitch.'}
+        style={({ pressed }) => [
+          styles.dronePill,
+          drone.enabled && styles.dronePillActive,
+          droneWaiting && styles.dronePillWaiting,
+          pressed && styles.dronePillPressed,
+        ]}
+      >
+        <View style={[styles.dronePillDot, drone.enabled && styles.dronePillDotActive, droneWaiting && styles.dronePillDotWaiting]} />
+        <Text style={[styles.dronePillText, drone.enabled && styles.dronePillTextActive, droneWaiting && styles.dronePillTextWaiting]}>
+          {droneWaiting ? 'DRONE ON · WAITING FOR PITCH' : drone.enabled ? 'DRONE ON' : 'DRONE OFF'}
+        </Text>
+      </Pressable>
+    </View>
+  );
+  const bottomStripEl = (
+    <BottomStrip
+      fillAnim={fillAnim}
+      peakAnim={peakAnim}
+      rmsDb={engine.rmsDb}
+      isListening={isListening}
+      hiFiFallbackVisible={engine.hiFiMode && !engine.hiFiActive}
+      audioSourceLabel={engine.audioSourceLabel}
+    />
+  );
+
   return (
     <View style={{ flex: 1 }}>
       {/* v1.3 — top-pill nav. Locked height across sub-page swaps. */}
@@ -214,6 +306,9 @@ export function TunerScreen(props: TunerScreenProps) {
               />
             )}
           </View>
+          {/* CHANGE 2 — landscape: drone bar + meter live under the display in
+              the LEFT column. Portrait keeps them in the right column (below). */}
+          {isLandscape && (<>{droneBarEl}{bottomStripEl}</>)}
           </View>{/* end LEFT/visual column */}
 
           {/* RIGHT (landscape) / controls (portrait) column */}
@@ -271,91 +366,9 @@ export function TunerScreen(props: TunerScreenProps) {
             <PeakSlideToggle value={engine.peakLock} onChange={engine.setPeakLock} />
           </View>
 
-          {/* DRONE — toggle pill + inline volume/offset when ON. */}
-          <View style={styles.droneBar}>
-            {drone.enabled && (
-              <View style={styles.droneControlsRow}>
-                <View style={styles.droneControl}>
-                  <Text style={styles.droneControlLabel}>VOL</Text>
-                  <Pressable
-                    onPress={() => setDroneVolume(Math.max(0, droneVolume - 0.1))}
-                    disabled={droneVolume <= 0 + 1e-6}
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: droneVolume <= 0 + 1e-6 }}
-                    accessibilityLabel="Decrease drone volume"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume <= 0 + 1e-6 && styles.lowCutStepDisabled]}
-                  >
-                    <Text style={styles.lowCutStepText}>−</Text>
-                  </Pressable>
-                  <Text style={styles.droneControlValue}>{Math.round(droneVolume * 100)}%</Text>
-                  <Pressable
-                    onPress={() => setDroneVolume(Math.min(1, droneVolume + 0.1))}
-                    disabled={droneVolume >= 1 - 1e-6}
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: droneVolume >= 1 - 1e-6 }}
-                    accessibilityLabel="Increase drone volume"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume >= 1 - 1e-6 && styles.lowCutStepDisabled]}
-                  >
-                    <Text style={styles.lowCutStepText}>+</Text>
-                  </Pressable>
-                </View>
-                <View style={styles.droneControl}>
-                  <Text style={styles.droneControlLabel}>SEMI</Text>
-                  <Pressable
-                    onPress={() => setDroneSemitones(Math.max(-12, droneSemitones - 1))}
-                    disabled={droneSemitones <= -12}
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: droneSemitones <= -12 }}
-                    accessibilityLabel="Lower drone by one semitone"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones <= -12 && styles.lowCutStepDisabled]}
-                  >
-                    <Text style={styles.lowCutStepText}>−</Text>
-                  </Pressable>
-                  <Text style={styles.droneControlValue}>{droneSemitones > 0 ? `+${droneSemitones}` : `${droneSemitones}`}</Text>
-                  <Pressable
-                    onPress={() => setDroneSemitones(Math.min(12, droneSemitones + 1))}
-                    disabled={droneSemitones >= 12}
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: droneSemitones >= 12 }}
-                    accessibilityLabel="Raise drone by one semitone"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones >= 12 && styles.lowCutStepDisabled]}
-                  >
-                    <Text style={styles.lowCutStepText}>+</Text>
-                  </Pressable>
-                </View>
-              </View>
-            )}
-            <Pressable
-              onPress={drone.toggle}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: drone.enabled }}
-              accessibilityLabel={droneWaiting
-                ? 'Drone armed, waiting for a pitch. Play a note and hold it; the drone will sound once it locks on. Tap to silence.'
-                : drone.enabled
-                ? `Drone on. Following the detected pitch with a ${droneSemitones} semitone offset. Tap to silence.`
-                : 'Drone off. Tap to play a sustained reference tone that tracks your pitch.'}
-              style={({ pressed }) => [
-                styles.dronePill,
-                drone.enabled && styles.dronePillActive,
-                droneWaiting && styles.dronePillWaiting,
-                pressed && styles.dronePillPressed,
-              ]}
-            >
-              <View style={[styles.dronePillDot, drone.enabled && styles.dronePillDotActive, droneWaiting && styles.dronePillDotWaiting]} />
-              <Text style={[styles.dronePillText, drone.enabled && styles.dronePillTextActive, droneWaiting && styles.dronePillTextWaiting]}>
-                {droneWaiting ? 'DRONE ON · WAITING FOR PITCH' : drone.enabled ? 'DRONE ON' : 'DRONE OFF'}
-              </Text>
-            </Pressable>
-          </View>
-
-          <BottomStrip
-            fillAnim={fillAnim}
-            peakAnim={peakAnim}
-            rmsDb={engine.rmsDb}
-            isListening={isListening}
-            hiFiFallbackVisible={engine.hiFiMode && !engine.hiFiActive}
-            audioSourceLabel={engine.audioSourceLabel}
-          />
+          {/* CHANGE 2 — portrait: drone bar + meter render here (their original
+              position/order). Landscape relocates them to the left column. */}
+          {!isLandscape && (<>{droneBarEl}{bottomStripEl}</>)}
           {showDebugOverlay && (
             <DiagnosticLine
               rmsDb={engine.rmsDb}
