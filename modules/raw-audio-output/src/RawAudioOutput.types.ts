@@ -40,6 +40,18 @@ export interface SynthRouteChangedEvent {
 }
 
 /**
+ * Fires when Android AudioManager delivers an audio-focus change to the synth.
+ * The native OnAudioFocusChangeListener maps all loss variants
+ * (AUDIOFOCUS_LOSS, AUDIOFOCUS_LOSS_TRANSIENT, AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
+ * to 'audioFocusLost', and AUDIOFOCUS_GAIN to 'audioFocusGained'.
+ * `type` carries the raw Android focusChange integer for diagnostics.
+ */
+export interface SynthAudioFocusEvent {
+  /** Raw Android AudioManager focusChange constant. */
+  type: number;
+}
+
+/**
  * Fires from the audio render thread (relayed via a Kotlin coroutine
  * dispatcher) at the moment a queued command is applied to TSF. NoteOn
  * is the typical interesting case — listeners use it to sync visual
@@ -287,4 +299,15 @@ export interface RawAudioOutput {
    * BEAT_OFFSET forensic records for the sub-ms-sync gate read.
    */
   addShadowBeatListener(cb: (e: SynthShadowBeatEvent) => void): { remove(): void };
+  /**
+   * Subscribe to audio-focus changes delivered by Android AudioManager.
+   * 'audioFocusLost' fires on any focus-loss variant (call, alarm, media app).
+   * 'audioFocusGained' fires when focus is returned to this app.
+   * The bus uses this to mute/unmute the synth so output is silent during
+   * interruptions (silence-over-wrong: safe silence beats wrong output).
+   */
+  addAudioFocusListener(
+    event: 'audioFocusLost' | 'audioFocusGained',
+    cb: (e: SynthAudioFocusEvent) => void,
+  ): { remove(): void };
 }

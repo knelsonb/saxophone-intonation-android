@@ -2,6 +2,7 @@ import { EventSubscription, NativeModule, requireNativeModule } from 'expo-modul
 
 import type {
   RawAudioOutput,
+  SynthAudioFocusEvent,
   SynthAudioTimestamp,
   SynthCommandFiredEvent,
   SynthErrorEvent,
@@ -22,6 +23,8 @@ type RawAudioOutputEvents = {
   commandFired: (payload: SynthCommandFiredEvent) => void;
   audioRouteChanged: (payload: SynthRouteChangedEvent) => void;
   shadowBeat: (payload: SynthShadowBeatEvent) => void; // #64 Phase-1
+  audioFocusLost: (payload: SynthAudioFocusEvent) => void;
+  audioFocusGained: (payload: SynthAudioFocusEvent) => void;
 };
 
 declare class NativeRawAudioOutputModule extends NativeModule<RawAudioOutputEvents> {
@@ -162,12 +165,18 @@ const synth: RawAudioOutput = {
     );
     return sub;
   },
+
+  addAudioFocusListener: (event, cb) => {
+    const sub: EventSubscription = NativeRawAudioOutput.addListener(event, cb);
+    return sub;
+  },
 };
 
 export default synth;
 
 export type {
   RawAudioOutput,
+  SynthAudioFocusEvent,
   SynthAudioTimestamp,
   SynthCommandFiredEvent,
   SynthErrorEvent,

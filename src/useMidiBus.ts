@@ -182,6 +182,22 @@ export function useMidiBus(): MidiBusState {
       // Re-measure after the new route settles, then commit if it moved.
       scheduleMeasure('route');
     });
+    // Audio-focus interruption handling (finding #1 fix).
+    // On any focus loss (incoming call, alarm, another media app) the Android
+    // AudioManager fires 'audioFocusLost'. We mute the synth immediately via
+    // bus.setMasterMute(true) — silence-over-wrong: safe silence beats playing
+    // over a call. On AUDIOFOCUS_GAIN the bus is unmuted. We do NOT stop/restart
+    // the AudioTrack: mute is a pure gain-zero in the JS bus (setMasterGain(0)
+    // while muted; restores the held target on unmute) with zero latency and
+    // no #64-adjacent frame-clock coordination needed.
+    const focusLostSub = synth.addAudioFocusListener?.('audioFocusLost', (e) => {
+      log.i('Bus', 'audio-focus-lost: muting synth', { type: e.type });
+      try { core.setMasterMute(true); } catch { /* ignore */ }
+    });
+    const focusGainedSub = synth.addAudioFocusListener?.('audioFocusGained', (e) => {
+      log.i('Bus', 'audio-focus-gained: unmuting synth', { type: e.type });
+      try { core.setMasterMute(false); } catch { /* ignore */ }
+    });
     const errSub = synth.addErrorListener((e) => {
       const reason = e?.reason ?? '';
       if (!/DEAD_OBJECT|INVALID_OPERATION/.test(reason)) return;
@@ -201,6 +217,8 @@ export function useMidiBus(): MidiBusState {
     });
     return () => {
       try { routeSub?.remove(); } catch { /* ignore */ }
+      try { focusLostSub?.remove(); } catch { /* ignore */ }
+      try { focusGainedSub?.remove(); } catch { /* ignore */ }
       try { errSub.remove(); } catch { /* ignore */ }
       pendingTimers.forEach(clearTimeout);
       pendingTimers.clear();
