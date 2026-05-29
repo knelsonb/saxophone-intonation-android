@@ -27,6 +27,7 @@ import {
   BottomStrip, BucketStatsCard,
   TapToLogCta, PeakSlideToggle, SessionStrip, DiagnosticLine,
   TunerInCarSwitch, formatCents,
+  LandscapeChromeControls,
 } from '../tunerWidgets';
 import type { NoteDisplay } from '../tunerWidgets';
 import { CentArcDisplay } from '../components/tunerStyles/CentArcDisplay';
@@ -65,6 +66,11 @@ export interface TunerScreenProps {
   // v1.3 — pipes voice GM program 0..127 (per G17 move from SETUP).
   pipesVoice: number;
   setPipesVoice: (program: number) => void;
+  // #69 — landscape control-column chrome (relocated from the rail).
+  setRefHz: (v: number) => void;
+  setDisplayMode: (m: DisplayMode) => void;
+  onTablePress: () => void;
+  onPipesPress: () => void;
   // Android Auto in-car mic claim.
   carState: CarConnectionState;
   callState: CallState;
@@ -100,9 +106,11 @@ export function TunerScreen(props: TunerScreenProps) {
     callState,
     onClaimMic,
     onReleaseMic,
+    setRefHz,
+    setDisplayMode,
+    onTablePress,
+    onPipesPress,
   } = props;
-  void isLandscape;
-  void refHz;
 
   // v1.3 — sub-page state. Local-only; tab return lands on TUNER.
   const [subPage, setSubPage] = useState<SubPage>('tuner');
@@ -166,15 +174,20 @@ export function TunerScreen(props: TunerScreenProps) {
       />
 
       {subPage === 'tuner' ? (
-        <View style={{ flex: 1 }}>
-          {carState === 'connected' && (
+        <View style={isLandscape ? styles.tunerSplitRow : { flex: 1 }}>
+          {carState === 'connected' && !isLandscape && (
             <TunerInCarSwitch
               callState={callState}
               onClaim={onClaimMic}
               onRelease={onReleaseMic}
             />
           )}
-          <View style={centerStyle}>
+          {/* LEFT (landscape) / visual (portrait) column */}
+          <View style={isLandscape ? styles.tunerSplitVisual : styles.tunerVisualPortrait}>
+            {carState === 'connected' && isLandscape && (
+              <TunerInCarSwitch callState={callState} onClaim={onClaimMic} onRelease={onReleaseMic} />
+            )}
+            <View style={centerStyle}>
             {engine.peakLock ? (
               <>
                 {engine.tunerStyle === 'strobe' ? (
@@ -201,6 +214,19 @@ export function TunerScreen(props: TunerScreenProps) {
               />
             )}
           </View>
+          </View>{/* end LEFT/visual column */}
+
+          {/* RIGHT (landscape) / controls (portrait) column */}
+          <View style={isLandscape ? styles.tunerSplitControls : undefined}>
+            <LandscapeChromeControls
+              variant="tuner"
+              refHz={refHz}
+              setRefHz={setRefHz}
+              displayMode={displayMode}
+              setDisplayMode={setDisplayMode}
+              onTablePress={onTablePress}
+              onPipesPress={onPipesPress}
+            />
 
           {!engine.peakLock && (
             <View style={styles.collectActionRow}>
@@ -337,6 +363,7 @@ export function TunerScreen(props: TunerScreenProps) {
               rawFreqHz={engine.rawFreqHz}
             />
           )}
+          </View>{/* end RIGHT/controls column */}
         </View>
       ) : (
         // v1.3 — CUSTOMIZATION sub-page. Per F10 + G17 absorbs from SETUP:

@@ -45,6 +45,7 @@ export const CENT_RANGE = 50;
 
 export const PEAK_DECAY_PER_SEC = 0.6;
 export const IDLE_GLOW = 0.02;
+export const LAND_RAIL_W = 96;
 
 // ---------------------------------------------------------------------------
 // Style factory
@@ -56,6 +57,9 @@ export function makeStyles(C: ThemePalette) {
   // Tab-host root: identical bg, but no padding so the bottom TabBar can
   // anchor flush to the bottom edge. The screen body owns its own padding.
   rootTabbed: { flex: 1, backgroundColor: C.bg },
+  // #69 landscape — root becomes a row so the persistent chrome sits in a
+  // LEFT rail and the navigator fills the remainder at full height.
+  rootTabbedLand: { flexDirection: 'row' },
   faceplate: {
     flex: 1,
     backgroundColor: C.face,
@@ -82,6 +86,16 @@ export function makeStyles(C: ThemePalette) {
     backgroundColor: C.face,
     paddingHorizontal: 24,
     paddingTop: 14,
+  },
+  // #69 landscape rail — fixed-width LEFT column. width:120 fits the CONCERT
+  // pill without flexShrink games on a 914dp-wide / 411dp-tall landscape; the
+  // navigator (flex:1) takes the rest. No flex → width is authoritative. Right
+  // border mirrors the top band's bottom border.
+  faceplateRail: {
+    width: LAND_RAIL_W,
+    borderRightColor: C.edge,
+    borderRightWidth: 1,
+    paddingHorizontal: 12,
   },
 
   // Top bar — column flex so row1 and row2 stack vertically. Tight padding
@@ -1237,5 +1251,9 @@ export function makeStyles(C: ThemePalette) {
   profileEditor_tsValueReserve: {
     minHeight: 110,
   },
+  tunerSplitRow: { flex: 1, flexDirection: 'row', gap: 16 },
+  tunerSplitVisual: { flex: 3, flexShrink: 1, justifyContent: 'center' },
+  tunerSplitControls: { flex: 2, flexShrink: 1, justifyContent: 'flex-start' },
+  tunerVisualPortrait: { flex: 1, flexShrink: 1 },
   });
 }

@@ -581,6 +581,10 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       refHz={refHz}
       noteDisplay={noteDisplay}
       isLandscape={isLandscape}
+      setRefHz={setRefHz}
+      setDisplayMode={engine.setDisplayMode ?? (() => {})}
+      onTablePress={() => setTableOpen(true)}
+      onPipesPress={() => setPipesOpen(true)}
       noteFontSize={noteFontSize}
       isOutOfRange={isOutOfRange}
       displayMode={displayMode}
@@ -624,10 +628,19 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   );
 
   return (
-    <View style={styles.rootTabbed}>
-      {/* Persistent header — TopBar + banners stay visible across all tabs
-          (architecturally, they sit OUTSIDE the navigator). */}
-      <View style={[styles.faceplateHeader, { paddingTop: insets.top }]}>
+    <View style={[styles.rootTabbed, isLandscape && styles.rootTabbedLand]}>
+      {/* Persistent chrome. PORTRAIT: full-width top band (column root).
+          LANDSCAPE (#69): a fixed-width LEFT RAIL (row root) so nothing spans
+          the full top — the navigator fills the rest at full height. */}
+      <View
+        style={[
+          styles.faceplateHeader,
+          isLandscape
+            ? { paddingTop: insets.top, paddingLeft: insets.left }
+            : { paddingTop: insets.top },
+          isLandscape && styles.faceplateRail,
+        ]}
+      >
         <TopBar
           activeTab={activeTab}
           status={engine.status}
@@ -635,6 +648,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           refHz={refHz}
           setRefHz={setRefHz}
           compact={!isLandscape}
+          land={isLandscape}
           badgeText={badgeText}
           displayMode={displayMode}
           setDisplayMode={engine.setDisplayMode ?? (() => {})}
@@ -643,7 +657,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           onPipesPress={() => setPipesOpen(true)}
           hornName={engine.nickname}
         />
-        {showSilenceBanner && (
+        {showSilenceBanner && !isLandscape && (
           <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
         )}
         {/* TunerInCarSwitch was previously rendered here for every tab when
@@ -690,6 +704,14 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
         </Tab.Navigator>
       </NavigationContainer>
 
+      {/* #69 landscape — SilenceBanner re-homed to the top of the content area
+          (the 120dp rail is too narrow for the banner text). */}
+      {showSilenceBanner && isLandscape && (
+        <View style={{ position: 'absolute', top: insets.top, left: 96, right: 0 }}>
+          <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
+        </View>
+      )}
+
       {/* v1.4 wave-10 T3 — SF2 loading feedback. Chip visible until the bus
           reports ready; replaced by a persistent warning after 10 s.
           `pointerEvents="none"` so it never blocks touches.
@@ -706,7 +728,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
           style={{
             position: 'absolute',
             top: insets.top + 60,
-            left: 0,
+            left: isLandscape ? 96 : 0,
             right: 0,
             alignItems: 'center',
           }}

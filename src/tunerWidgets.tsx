@@ -41,7 +41,7 @@ import {
   BottomSheetView,
 } from '@gorhom/bottom-sheet';
 import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
-import { useTheme } from './theme';
+import { useTheme, H } from './theme';
 import type { ThemePalette } from './theme'; // v1.2 — needed by makeTopBarStyles
 import {
   makeStyles,
@@ -214,7 +214,7 @@ const TOP_BAR_HEIGHT = 136;
 
 export function TopBar({
   activeTab,                           // v1.2 — drives per-tab pill rendering
-  status, streamErrorReason, refHz, setRefHz, compact,
+  status, streamErrorReason, refHz, setRefHz, compact, land,
   badgeText, displayMode, setDisplayMode, onBadgePress, onTablePress, onPipesPress,
   hornName,
 }: {
@@ -224,6 +224,7 @@ export function TopBar({
   refHz: number;
   setRefHz: (v: number) => void;
   compact: boolean;
+  land: boolean;                       // #69 — true in landscape (rail reflow)
   badgeText: string;
   displayMode: DisplayMode;
   setDisplayMode: (m: DisplayMode) => void;
@@ -279,12 +280,12 @@ export function TopBar({
     // v1.2 — outer container locked at 136dp; overflow hidden prevents bleed.
     // [styles.topBar] supplies the bottom border + borderBottomColor; we
     // overlay height + overflow via the local tb.container key.
-    <View style={[styles.topBar, tb.container]}>
+    <View style={[styles.topBar, land ? tb.containerLand : tb.container]}>
 
       {/* ── Row 1: BELLCURVE wordmark + status dot — always-on ── */}
       {/* Status dot lifted out of topRow2 into the always-on row (§14.1). */}
       <View style={tb.wordmarkRow}>
-        <Text style={styles.brand} numberOfLines={1}>{APP_NAME}</Text>
+        <Text style={[styles.brand, land && tb.brandLand]} numberOfLines={1}>{APP_NAME}</Text>
         <View
           style={[styles.statusDotLarge, { backgroundColor: statusColor }]}
           accessibilityRole="image"
@@ -300,7 +301,7 @@ export function TopBar({
           SETUP  → invisible spacer only
       */}
       {(isTuner || isMetro || isDeck) ? (
-        <View style={[tb.pillsRow, narrow && tb.pillsRowNarrow]}>
+        <View style={[tb.pillsRow, land && tb.pillsRowLand, narrow && tb.pillsRowNarrow]}>
           {/* Instrument badge */}
           <Pressable
             onPress={onBadgePress}
@@ -323,7 +324,8 @@ export function TopBar({
             )}
           </Pressable>
 
-          {/* A= stepper */}
+          {/* A= stepper — portrait/top-band only; landscape relocates it to the control column. */}
+          {!land && (
           <View style={[styles.refContainer, tb.refCompact, narrow && tb.refNarrow]}>
             <Pressable
               onPress={() => bump(-1)}
@@ -345,10 +347,11 @@ export function TopBar({
               <Text style={styles.stepBtnText}>+</Text>
             </Pressable>
           </View>
+          )}
 
           {/* PAGE/CONCERT toggle — TUNER only (§14.2, §15.Q14.3) */}
-          {isTuner && (
-            <View style={styles.displayToggle}>
+          {isTuner && !land && (
+            <View style={[styles.displayToggle, land && tb.displayToggleLand]}>
               <Pressable
                 onPress={() => setDisplayMode('griff')}
                 accessibilityRole="button"
@@ -398,7 +401,7 @@ export function TopBar({
       </Text>
 
       {/* ── Row 4: TABLE + PIPES nav — TUNER only; spacer on other tabs ── */}
-      {isTuner ? (
+      {isTuner && !land ? (
         <View style={[styles.topNavRow, tb.navRowCompact]}>
           <Pressable
             onPress={onTablePress}
@@ -417,10 +420,10 @@ export function TopBar({
             <Text style={styles.iconBtnText}>PIPES</Text>
           </Pressable>
         </View>
-      ) : (
-        // Invisible spacer — same height as navRow — keeps 136dp invariant
+      ) : !land ? (
+        // Invisible spacer — same height as navRow — keeps 136dp invariant (portrait only)
         <View style={tb.navSpacer} accessibilityElementsHidden importantForAccessibility="no" />
-      )}
+      ) : null}
     </View>
   );
 }
@@ -1330,6 +1333,40 @@ function makeTopBarStyles(C: ThemePalette) {
       minWidth: 56,
     },
 
+    // ── #69 landscape RAIL overrides (gated by `land`; portrait unreferenced) ──
+    // The rail replaces the 136dp fixed top band: drop the height lock + the
+    // overflow:hidden cap so the bar grows as tall as its stacked content.
+    containerLand: {
+      paddingBottom: 0,
+    },
+    brandLand: { fontSize: 12, letterSpacing: 1, paddingTop: 2, paddingBottom: 2 },
+    // Row 2 — badge / stepper / toggle stack VERTICALLY in the narrow rail.
+    pillsRowLand: {
+      height: undefined,
+      flexDirection: 'column',
+      alignItems: 'stretch',
+      gap: 10,
+      overflow: 'visible',
+    },
+    // A= stepper — vertical −/A=440/+ so its width is the readout (~64dp).
+    refLand: {
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 6,
+      minHeight: undefined,
+    },
+    // PAGE/CONCERT — stack so the 7-glyph CONCERT drives column width.
+    displayToggleLand: {
+      flexDirection: 'column',
+      gap: 6,
+    },
+    // TABLE/PIPES — stack vertically; release the 28dp row height.
+    navRowLand: {
+      height: undefined,
+      flexDirection: 'column',
+      alignItems: 'stretch',
+      gap: 8,
+    },
     // Row 4 spacer for non-TUNER tabs — same 28dp, invisible
     navSpacer: {
       height: 28,
@@ -1338,6 +1375,88 @@ function makeTopBarStyles(C: ThemePalette) {
 }
 // Re-export for potential future use, but the factory is consumed locally above.
 export { makeTopBarStyles };
+
+// ---------------------------------------------------------------------------
+// LandscapeChromeControls (#69) — A= stepper + (TUNER) PAGE/CONCERT + TABLE/PIPES,
+// relocated OUT of the landscape rail INTO each screen's right control column.
+// Self-gating: returns null in portrait, so screens mount it unconditionally
+// and portrait layout is untouched. variant 'tuner' = all; 'plain' = A= only.
+// ---------------------------------------------------------------------------
+export function LandscapeChromeControls({
+  variant, refHz, setRefHz, displayMode, setDisplayMode, onTablePress, onPipesPress,
+}: {
+  variant: 'tuner' | 'plain';
+  refHz: number;
+  setRefHz: (v: number) => void;
+  displayMode: DisplayMode;
+  setDisplayMode: (m: DisplayMode) => void;
+  onTablePress: () => void;
+  onPipesPress: () => void;
+}) {
+  const C = useTheme();
+  const styles = useMemo(() => makeStyles(C), [C]);
+  const lc = useMemo(() => makeLandscapeChromeStyles(C), [C]);
+  const { width, height } = useWindowDimensions();
+  const land = width >= height;
+  if (!land) return null;
+  const isTuner = variant === 'tuner';
+  const bump = (d: number) => setRefHz(Math.max(REF_HZ_MIN, Math.min(REF_HZ_MAX, refHz + d)));
+  return (
+    <View style={lc.wrap}>
+      <View style={lc.refRow}>
+        <Pressable onPress={() => bump(-1)} accessibilityRole="button" accessibilityLabel="Decrease reference by 1 Hz"
+          style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}>
+          <Text style={styles.stepBtnText}>−</Text>
+        </Pressable>
+        <Text style={[styles.refValue, lc.refValue]}>A={refHz}</Text>
+        <Pressable onPress={() => bump(1)} accessibilityRole="button" accessibilityLabel="Increase reference by 1 Hz"
+          style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}>
+          <Text style={styles.stepBtnText}>+</Text>
+        </Pressable>
+      </View>
+      {isTuner && (
+        <>
+          <View style={lc.toggleRow}>
+            <Pressable onPress={() => setDisplayMode('griff')} accessibilityRole="button"
+              accessibilityLabel="Show the note as written on the page (fingered pitch)"
+              accessibilityState={{ selected: displayMode === 'griff' }}
+              style={({ pressed }) => [styles.displayPill, lc.pill, displayMode === 'griff' && styles.displayPillActive, pressed && styles.gainPillPressed]}>
+              <Text style={[styles.displayPillText, displayMode === 'griff' && styles.displayPillTextActive]}>PAGE</Text>
+            </Pressable>
+            <Pressable onPress={() => setDisplayMode('klingend')} accessibilityRole="button"
+              accessibilityLabel="Show the concert pitch — what comes out of the horn"
+              accessibilityState={{ selected: displayMode === 'klingend' }}
+              style={({ pressed }) => [styles.displayPill, lc.pill, displayMode === 'klingend' && styles.displayPillActive, pressed && styles.gainPillPressed]}>
+              <Text style={[styles.displayPillText, displayMode === 'klingend' && styles.displayPillTextActive]} numberOfLines={1}>CONCERT</Text>
+            </Pressable>
+          </View>
+          <View style={lc.navRow}>
+            <Pressable onPress={onTablePress} accessibilityRole="button" accessibilityLabel="Open intonation table"
+              style={({ pressed }) => [styles.iconBtn, lc.navBtn, pressed && styles.iconBtnPressed]}>
+              <Text style={styles.iconBtnText}>TABLE</Text>
+            </Pressable>
+            <Pressable onPress={onPipesPress} accessibilityRole="button" accessibilityLabel="Open pitch pipes"
+              style={({ pressed }) => [styles.iconBtn, lc.navBtn, pressed && styles.iconBtnPressed]}>
+              <Text style={styles.iconBtnText}>PIPES</Text>
+            </Pressable>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+function makeLandscapeChromeStyles(C: ThemePalette) {
+  return StyleSheet.create({
+    wrap: { gap: 10, paddingBottom: 8, borderBottomColor: C.edgeSoft, borderBottomWidth: 1, marginBottom: 8 },
+    refRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderColor: C.edge, borderWidth: 1, borderRadius: 4, minHeight: H.touchTarget },
+    refValue: { textAlign: 'center', minWidth: 64 },
+    toggleRow: { flexDirection: 'row', gap: 6, justifyContent: 'center' },
+    pill: { flex: 1 },
+    navRow: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
+    navBtn: { flex: 1 },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // PermissionGate
