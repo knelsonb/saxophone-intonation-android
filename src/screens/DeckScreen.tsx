@@ -39,6 +39,13 @@ export interface DeckScreenProps {
   setDisplayMode: (m: DisplayMode) => void;
   onTablePress: () => void;
   onPipesPress: () => void;
+  /**
+   * Dual-pane override (tablet landscape). A pane forces PORTRAIT layout by
+   * passing `isLandscape={false}` so the deck fits a tall, narrow column even
+   * though the device is physically landscape. Undefined → fall back to the
+   * device orientation (winW >= winH), so every existing caller is unchanged.
+   */
+  isLandscape?: boolean;
 }
 
 function mmss(sec: number): string {
@@ -51,6 +58,7 @@ function mmss(sec: number): string {
 export function DeckScreen({
   deck, deckStyle,
   refHz, setRefHz, displayMode, setDisplayMode, onTablePress, onPipesPress,
+  isLandscape: isLandscapeProp,
 }: DeckScreenProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
@@ -62,7 +70,7 @@ export function DeckScreen({
   // helper text's last line behind the bottom nav; shrink to 112dp there.
   // Taller phones (pixel_7 914dp, Pixel 9 Pro) keep the full 140dp.
   const { width: winW, height: winH } = useWindowDimensions();
-  const isLandscape = winW >= winH;
+  const isLandscape = isLandscapeProp ?? (winW >= winH);
   const recordSize = winH < 780 ? 112 : 140;
 
   const isRecording = deck.mode === 'recording';

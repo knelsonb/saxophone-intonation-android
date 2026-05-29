@@ -56,7 +56,10 @@ import {
   makeStyles,
   IDLE_GLOW,
   PEAK_DECAY_PER_SEC,
+  LAND_RAIL_W,
+  isDualPaneEligible,
 } from './src/uiShared';
+import { DualPane } from './src/components/DualPane';
 import {
   SilenceBanner,
   TunerInCarSwitch,
@@ -151,6 +154,15 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   const styles = useMemo(() => makeStyles(C), [C]);
   const { width, height } = useWindowDimensions();
   const isLandscape = width >= height;
+  // v1.5 — tablet dual-pane (landscape only). Phones + portrait keep the single
+  // tabbed shell below; this is purely additive, gated entirely on the eligibility
+  // check (smallestWidth>=600dp AND landscape).
+  const dualPaneEligible = isDualPaneEligible(width, height);
+  // Which two-up combo is shown. Pairs are a MIC-SAFETY INVARIANT: only
+  // metro-paired combos are legal because TUNER + DECK would both contend for
+  // the mic; METRO is synth-only so it pairs safely with either. 'setup' is a
+  // single full-width screen (it has no pane partner).
+  const [paneMode, setPaneMode] = useState<'tuner-metro' | 'metro-deck' | 'setup'>('tuner-metro');
   // v1.2 — safe-area insets push the persistent header below the system status
   // bar + camera cutout. On the tablet, top inset is ~51dp (153px / 3x DPR).
   // Applied to faceplateHeader's paddingTop so the wordmark clears the cutout.
@@ -567,7 +579,10 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // 150dp letter + the rest of TunerScreen overflowed the body budget by
   // ~34dp in worst-case (drone open + out-of-range pill + non-listening
   // status). 130dp keeps the readout dominant without clipping.
-  const noteFontSize = isLandscape ? 180 : 130;
+  // v1.5 — keyed off the same orientation source the layout uses, so a forced-
+  // PORTRAIT dual-pane tuner column gets the 130dp portrait glyph (the 180dp
+  // landscape glyph would overflow a half-width portrait column).
+  const noteFontSizeFor = (land: boolean) => (land ? 180 : 130);
 
   // ----- Render -----
 
@@ -575,17 +590,17 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
   // don't have to add a context layer. The four wrappers below do the same.
   // react-navigation re-renders each on focus change (and on each parent
   // re-render while focused), so closure-fresh props arrive every frame.
-  const renderTunerScreen = () => (
+  const renderTunerScreen = (landOverride = isLandscape) => (
     <TunerScreen
       engine={engine}
       refHz={refHz}
       noteDisplay={noteDisplay}
-      isLandscape={isLandscape}
+      isLandscape={landOverride}
       setRefHz={setRefHz}
       setDisplayMode={engine.setDisplayMode ?? (() => {})}
       onTablePress={() => setTableOpen(true)}
       onPipesPress={() => setPipesOpen(true)}
-      noteFontSize={noteFontSize}
+      noteFontSize={noteFontSizeFor(landOverride)}
       isOutOfRange={isOutOfRange}
       displayMode={displayMode}
       transp={transp}
@@ -607,7 +622,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       onReleaseMic={() => AutoMicClaim.endTunerCallAsync().catch(() => {})}
     />
   );
-  const renderMetroScreen = () => (
+  const renderMetroScreen = (landOverride = isLandscape) => (
     <MetroScreen
       metro={metro}
       metroStyle={engine.metroStyle}
@@ -619,9 +634,10 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       setDisplayMode={engine.setDisplayMode ?? (() => {})}
       onTablePress={() => setTableOpen(true)}
       onPipesPress={() => setPipesOpen(true)}
+      isLandscape={landOverride}
     />
   );
-  const renderDeckScreen = () => (
+  const renderDeckScreen = (landOverride = isLandscape) => (
     <DeckScreen
       deck={deck}
       deckStyle={engine.deckStyle}
@@ -631,6 +647,7 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       setDisplayMode={engine.setDisplayMode ?? (() => {})}
       onTablePress={() => setTableOpen(true)}
       onPipesPress={() => setPipesOpen(true)}
+      isLandscape={landOverride}
     />
   );
   const renderSetupScreen = () => (
@@ -646,6 +663,201 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
       metro={metro}
     />
   );
+
+  // v1.5 — App-owned modal overlays. Shared verbatim by the dual-pane branch
+  // (below) and the tabbed branch so every picker/table/editor stays reachable
+  // in BOTH shells. (The tabbed branch keeps its own inline copy unchanged; this
+  // element is consumed only by the dual-pane branch.)
+  const appModals = (
+    <>
+      <InstrumentPicker
+        visible={pickerOpen}
+        currentKey={instrumentKey}
+        onSelect={(key) => {
+          (engine.setInstrumentKey ?? (() => {}))(key);
+          setPickerOpen(false);
+        }}
+        onClose={() => setPickerOpen(false)}
+      />
+      <IntonationTable
+        visible={tableOpen}
+        onClose={() => setTableOpen(false)}
+        instrumentKey={instrumentKey}
+        displayMode={displayMode}
+        a4Hz={refHz}
+        minN={minN}
+        onMinNChange={handleMinNChange}
+        allowOutOfRange={engine.allowOutOfRange}
+        onAllowOutOfRangeChange={engine.setAllowOutOfRange}
+        activeRange={activeRange}
+      />
+      <RangeEditor
+        visible={rangeEditorOpen}
+        onClose={() => setRangeEditorOpen(false)}
+        instrumentKey={instrumentKey}
+        displayMode={displayMode}
+        currentRange={activeRange ?? (rangeMap[instrumentKey] ?? [0, 127])}
+        onSaved={(lo, hi) => {
+          setRangeOverrides((prev) => ({ ...prev, [instrumentKey]: { lo, hi } }));
+        }}
+        onReset={() => {
+          setRangeOverrides((prev) => {
+            const next = { ...prev };
+            delete next[instrumentKey];
+            return next;
+          });
+        }}
+      />
+      <PitchPipes
+        visible={pipesOpen}
+        onClose={() => setPipesOpen(false)}
+        refHz={refHz}
+        instrumentKey={instrumentKey}
+        pipes={pipes}
+      />
+      <HornNameEditor
+        visible={hornNameEdit}
+        initialValue={engine.nickname}
+        onClose={() => setHornNameEdit(false)}
+        onSave={(v) => {
+          engine.setNickname(v);
+          engine.savePrefsNow({ nickname: v }).catch(() => {});
+          setHornNameEdit(false);
+        }}
+        draft={hornNameDraft}
+        setDraft={setHornNameDraft}
+      />
+    </>
+  );
+
+  // v1.5 — TABLET DUAL-PANE (landscape only). Purely additive: gated on
+  // dualPaneEligible, which is false for every phone and every portrait canvas,
+  // so the tabbed return below runs UNCHANGED for them. Keeps the SAME persistent
+  // rail chrome (faceplateRail + TopBar) as the tabbed landscape shell, renders
+  // two PORTRAIT-shaped panes (or a single SETUP screen), and drives a custom
+  // bottom TabBar that flips paneMode. Pairs are a mic-safety invariant: only
+  // metro-paired combos are legal (TUNER+DECK would contend for the mic; METRO
+  // is synth-only so it pairs safely with either).
+  if (dualPaneEligible) {
+    // Map the active paneMode back to a TabKey so the bottom TabBar highlights
+    // the tab the user last tapped (METRO has no dedicated pane combo of its
+    // own — it lives in BOTH legal pairs — so tapping it lands on tuner-metro,
+    // which surfaces 'tuner' as active; that's intentional per the spec).
+    const activePaneTab: TabKey =
+      paneMode === 'setup' ? 'setup' : paneMode === 'metro-deck' ? 'deck' : 'tuner';
+    return (
+      <View style={[styles.rootTabbed, styles.rootTabbedLand]}>
+        {/* SAME persistent LEFT RAIL chrome as the tabbed landscape shell. */}
+        <View
+          style={[
+            styles.faceplateHeader,
+            { paddingTop: insets.top, paddingLeft: insets.left },
+            styles.faceplateRail,
+          ]}
+        >
+          <TopBar
+            activeTab={activePaneTab}
+            status={engine.status}
+            streamErrorReason={engine.streamErrorReason}
+            refHz={refHz}
+            setRefHz={setRefHz}
+            compact={false}
+            land={true}
+            badgeText={badgeText}
+            displayMode={displayMode}
+            setDisplayMode={engine.setDisplayMode ?? (() => {})}
+            onBadgePress={() => setPickerOpen(true)}
+            onTablePress={() => setTableOpen(true)}
+            onPipesPress={() => setPipesOpen(true)}
+            hornName={engine.nickname}
+          />
+        </View>
+
+        {/* Content + bottom bar stack to the RIGHT of the rail. */}
+        <View style={{ flex: 1 }}>
+          {/* Panes. Each pane forces PORTRAIT layout (isLandscape=false) so the
+              two columns are portrait-shaped. DualPane wraps each column in its
+              own single-screen navigator (useFocusEffect needs the context). */}
+          <View style={{ flex: 1 }}>
+            {paneMode === 'setup' ? (
+              // SETUP has no pane partner — render it full-width. It owns its own
+              // ScrollView; no navigator wrapper needed (SetupScreen doesn't call
+              // useFocusEffect).
+              renderSetupScreen()
+            ) : paneMode === 'metro-deck' ? (
+              <DualPane
+                left={() => renderMetroScreen(false)}
+                right={() => renderDeckScreen(false)}
+                dividerColor={C.edge}
+              />
+            ) : (
+              <DualPane
+                left={() => renderTunerScreen(false)}
+                right={() => renderMetroScreen(false)}
+                dividerColor={C.edge}
+              />
+            )}
+          </View>
+
+          {/* Bottom TabBar rendered DIRECTLY (not via a navigator). Tapping a tab
+              flips paneMode to the legal combo. METRO is in both pairs, so it
+              simply lands on tuner-metro. Running dots reuse the same hook state
+              the NavTabBar reads. */}
+          <TabBar
+            active={activePaneTab}
+            onChange={(next) => {
+              if (next === 'tuner') setPaneMode('tuner-metro');
+              else if (next === 'metro') setPaneMode('tuner-metro');
+              else if (next === 'deck') setPaneMode('metro-deck');
+              else setPaneMode('setup');
+            }}
+            metroRunning={metro.running}
+            deckRecording={deck.mode === 'recording'}
+          />
+        </View>
+
+        {/* #69 landscape — SilenceBanner re-homed to the top of the content
+            area (the rail is too narrow for the banner text). */}
+        {showSilenceBanner && (
+          <View style={{ position: 'absolute', top: insets.top, left: LAND_RAIL_W, right: 0 }}>
+            <SilenceBanner onDismiss={() => setBannerDismissed(true)} />
+          </View>
+        )}
+
+        {/* SF2 loading / synth-unavailable feedback — same chip as the tabbed
+            shell, anchored clear of the rail. */}
+        {!bus.ready && (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              top: insets.top + 60,
+              left: LAND_RAIL_W,
+              right: 0,
+              alignItems: 'center',
+            }}
+          >
+            <View
+              style={{
+                backgroundColor: synthWarnShown ? 'rgba(200,50,50,0.88)' : 'rgba(30,30,30,0.75)',
+                borderRadius: 6,
+                paddingHorizontal: 10,
+                paddingVertical: 5,
+                maxWidth: '90%',
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 11, fontFamily: 'Ubuntu-Regular', textAlign: 'center' }}>
+                {synthWarnShown ? 'Synth unavailable — restart the app' : 'Loading sounds…'}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* All App-owned modals — reachable in the dual-pane shell too. */}
+        {appModals}
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.rootTabbed, isLandscape && styles.rootTabbedLand]}>
@@ -717,9 +929,16 @@ function AppInner({ engine }: { engine: ReturnType<typeof useAudioEngine> }) {
             />
           )}
         >
-          <Tab.Screen name="tuner">{renderTunerScreen}</Tab.Screen>
-          <Tab.Screen name="metro">{renderMetroScreen}</Tab.Screen>
-          <Tab.Screen name="deck">{renderDeckScreen}</Tab.Screen>
+          {/* v1.5 — wrap the render closures in zero-arg arrows. The closures
+              now take an optional isLandscape override (used by the dual-pane
+              branch); react-navigation calls the Screen child with a
+              {route,navigation} props object, which must NOT flow into that
+              boolean override — the arrows discard it so each tab uses the real
+              device orientation. renderSetupScreen takes no args, so it's
+              passed directly as before. */}
+          <Tab.Screen name="tuner">{() => renderTunerScreen()}</Tab.Screen>
+          <Tab.Screen name="metro">{() => renderMetroScreen()}</Tab.Screen>
+          <Tab.Screen name="deck">{() => renderDeckScreen()}</Tab.Screen>
           <Tab.Screen name="setup">{renderSetupScreen}</Tab.Screen>
         </Tab.Navigator>
       </NavigationContainer>

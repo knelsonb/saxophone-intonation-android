@@ -47,6 +47,17 @@ export const PEAK_DECAY_PER_SEC = 0.6;
 export const IDLE_GLOW = 0.02;
 export const LAND_RAIL_W = 72;
 
+/**
+ * Tablet dual-pane eligibility. True only on a TABLET in LANDSCAPE — i.e. the
+ * canvas is landscape (width > height) AND its smallest dimension is at least
+ * 600dp (Android's smallestWidth>=600dp tablet bucket). `useWindowDimensions`
+ * returns dp, so phones (smallest dim < 600dp, incl. pixel_7 ≈411dp tall in
+ * landscape) return false and keep the single-screen split shipped earlier.
+ */
+export function isDualPaneEligible(width: number, height: number): boolean {
+  return width > height && Math.min(width, height) >= 600;
+}
+
 // ---------------------------------------------------------------------------
 // Style factory
 // ---------------------------------------------------------------------------

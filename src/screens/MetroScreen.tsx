@@ -92,11 +92,19 @@ export interface MetroScreenProps {
   setDisplayMode: (m: DisplayMode) => void;
   onTablePress: () => void;
   onPipesPress: () => void;
+  /**
+   * Dual-pane override (tablet landscape). A pane forces PORTRAIT layout by
+   * passing `isLandscape={false}` so the metro fits a tall, narrow column even
+   * though the device is physically landscape. Undefined → fall back to the
+   * device orientation (width >= height), so every existing caller is unchanged.
+   */
+  isLandscape?: boolean;
 }
 
 export function MetroScreen({
   metro, metroStyle, outputRoute, bus,
   refHz, setRefHz, displayMode, setDisplayMode, onTablePress, onPipesPress,
+  isLandscape: isLandscapeProp,
 }: MetroScreenProps) {
   const C = useTheme();
   const styles = useMemo(() => makeStyles(C), [C]);
@@ -105,7 +113,7 @@ export function MetroScreen({
   // stack overflows in landscape). Gated entirely on isLandscape so portrait is
   // byte-identical. CUSTOMIZATION already scrolls and is left alone.
   const { width, height } = useWindowDimensions();
-  const isLandscape = width >= height;
+  const isLandscape = isLandscapeProp ?? (width >= height);
   // v1.3.2 — bus is now threaded through to ProfileEditorAccordion → PerBeatRow
   // for live flash inside the editor. Sauron's wave-3.5 PerBeatRow listener
   // requires bus to be passed in (no longer optional in practice).
