@@ -467,6 +467,12 @@ export function makeStyles(C: ThemePalette) {
   lowCutStep: { width: H.stepper, height: H.stepper, borderRadius: H.stepper / 2, borderColor: C.edge, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   lowCutStepPressed: { opacity: 0.6 },
   lowCutStepText: { color: C.ink, fontSize: 20, lineHeight: 22, fontWeight: '700' },
+  // #11 Fix 3 — uniform 'arrow disabled at its bound' treatment. Mirrors
+  // logCtaBarDisabled (opacity 0.4 + dim border) so a stepper sitting at its
+  // min/max reads the same way CLEAR does when disabled. Size-neutral (no
+  // width/height/padding/border-width) so the 44dp touch target never shifts —
+  // only opacity + border colour change.
+  lowCutStepDisabled: { opacity: 0.3, borderColor: C.edgeSoft },
   gainPill: { minWidth: 64, height: H.pillHeight, paddingHorizontal: 14, borderColor: C.edge, borderWidth: 1, borderRadius: 4, alignItems: 'center', justifyContent: 'center' },
   gainPillActive: { backgroundColor: C.accent, borderColor: C.accent },
   gainPillPressed: { opacity: 0.7 },

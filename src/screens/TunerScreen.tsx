@@ -253,18 +253,22 @@ export function TunerScreen(props: TunerScreenProps) {
                   <Text style={styles.droneControlLabel}>VOL</Text>
                   <Pressable
                     onPress={() => setDroneVolume(Math.max(0, droneVolume - 0.1))}
+                    disabled={droneVolume <= 0 + 1e-6}
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: droneVolume <= 0 + 1e-6 }}
                     accessibilityLabel="Decrease drone volume"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume <= 0 + 1e-6 && styles.lowCutStepDisabled]}
                   >
                     <Text style={styles.lowCutStepText}>−</Text>
                   </Pressable>
                   <Text style={styles.droneControlValue}>{Math.round(droneVolume * 100)}%</Text>
                   <Pressable
                     onPress={() => setDroneVolume(Math.min(1, droneVolume + 0.1))}
+                    disabled={droneVolume >= 1 - 1e-6}
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: droneVolume >= 1 - 1e-6 }}
                     accessibilityLabel="Increase drone volume"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume >= 1 - 1e-6 && styles.lowCutStepDisabled]}
                   >
                     <Text style={styles.lowCutStepText}>+</Text>
                   </Pressable>
@@ -273,18 +277,22 @@ export function TunerScreen(props: TunerScreenProps) {
                   <Text style={styles.droneControlLabel}>SEMI</Text>
                   <Pressable
                     onPress={() => setDroneSemitones(Math.max(-12, droneSemitones - 1))}
+                    disabled={droneSemitones <= -12}
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: droneSemitones <= -12 }}
                     accessibilityLabel="Lower drone by one semitone"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones <= -12 && styles.lowCutStepDisabled]}
                   >
                     <Text style={styles.lowCutStepText}>−</Text>
                   </Pressable>
                   <Text style={styles.droneControlValue}>{droneSemitones > 0 ? `+${droneSemitones}` : `${droneSemitones}`}</Text>
                   <Pressable
                     onPress={() => setDroneSemitones(Math.min(12, droneSemitones + 1))}
+                    disabled={droneSemitones >= 12}
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: droneSemitones >= 12 }}
                     accessibilityLabel="Raise drone by one semitone"
-                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                    style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones >= 12 && styles.lowCutStepDisabled]}
                   >
                     <Text style={styles.lowCutStepText}>+</Text>
                   </Pressable>
@@ -385,20 +393,24 @@ export function TunerScreen(props: TunerScreenProps) {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <Pressable
                   onPress={() => setDroneVolume(Math.max(0, droneVolume - 0.1))}
+                  disabled={droneVolume <= 0 + 1e-6}
                   unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: droneVolume <= 0 + 1e-6 }}
                   accessibilityLabel="Decrease drone volume by 10%"
-                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume <= 0 + 1e-6 && styles.lowCutStepDisabled]}
                 >
                   <Text style={styles.lowCutStepText}>−</Text>
                 </Pressable>
                 <Text style={styles.settingsRowValue}>{Math.round(droneVolume * 100)}%</Text>
                 <Pressable
                   onPress={() => setDroneVolume(Math.min(1, droneVolume + 0.1))}
+                  disabled={droneVolume >= 1 - 1e-6}
                   unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: droneVolume >= 1 - 1e-6 }}
                   accessibilityLabel="Increase drone volume by 10%"
-                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneVolume >= 1 - 1e-6 && styles.lowCutStepDisabled]}
                 >
                   <Text style={styles.lowCutStepText}>+</Text>
                 </Pressable>
@@ -412,20 +424,24 @@ export function TunerScreen(props: TunerScreenProps) {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <Pressable
                   onPress={() => setDroneSemitones(Math.max(-12, droneSemitones - 1))}
+                  disabled={droneSemitones <= -12}
                   unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: droneSemitones <= -12 }}
                   accessibilityLabel="Lower drone by one semitone"
-                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones <= -12 && styles.lowCutStepDisabled]}
                 >
                   <Text style={styles.lowCutStepText}>−</Text>
                 </Pressable>
                 <Text style={styles.settingsRowValue}>{droneSemitones > 0 ? `+${droneSemitones}` : droneSemitones}</Text>
                 <Pressable
                   onPress={() => setDroneSemitones(Math.min(12, droneSemitones + 1))}
+                  disabled={droneSemitones >= 12}
                   unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: droneSemitones >= 12 }}
                   accessibilityLabel="Raise drone by one semitone"
-                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                  style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, droneSemitones >= 12 && styles.lowCutStepDisabled]}
                 >
                   <Text style={styles.lowCutStepText}>+</Text>
                 </Pressable>

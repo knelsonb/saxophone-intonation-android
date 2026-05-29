@@ -160,20 +160,24 @@ export function SetupScreen(props: SetupScreenProps) {
             <View style={styles.lowCutRow}>
               <Pressable
                 onPress={() => engine.setNightDarken(engine.nightDarken - 0.1)}
+                disabled={engine.nightDarken <= 0.4 + 1e-6}
                 unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: engine.nightDarken <= 0.4 + 1e-6 }}
                 accessibilityLabel="Darken screen further"
-                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.nightDarken <= 0.4 + 1e-6 && styles.lowCutStepDisabled]}
               >
                 <Text style={styles.lowCutStepText}>−</Text>
               </Pressable>
               <Text style={styles.lowCutValue}>{Math.round(engine.nightDarken * 100)}%</Text>
               <Pressable
                 onPress={() => engine.setNightDarken(engine.nightDarken + 0.1)}
+                disabled={engine.nightDarken >= 1.0 - 1e-6}
                 unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: engine.nightDarken >= 1.0 - 1e-6 }}
                 accessibilityLabel="Brighten screen"
-                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.nightDarken >= 1.0 - 1e-6 && styles.lowCutStepDisabled]}
               >
                 <Text style={styles.lowCutStepText}>+</Text>
               </Pressable>
@@ -189,10 +193,12 @@ export function SetupScreen(props: SetupScreenProps) {
             <View style={styles.lowCutRow}>
               <Pressable
                 onPress={() => engine.setNightWarmth(engine.nightWarmth - 0.2)}
+                disabled={engine.nightWarmth <= -1.0 + 1e-6}
                 unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: engine.nightWarmth <= -1.0 + 1e-6 }}
                 accessibilityLabel="Cooler tint"
-                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.nightWarmth <= -1.0 + 1e-6 && styles.lowCutStepDisabled]}
               >
                 <Text style={styles.lowCutStepText}>−</Text>
               </Pressable>
@@ -201,10 +207,12 @@ export function SetupScreen(props: SetupScreenProps) {
               </Text>
               <Pressable
                 onPress={() => engine.setNightWarmth(engine.nightWarmth + 0.2)}
+                disabled={engine.nightWarmth >= 1.0 - 1e-6}
                 unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: engine.nightWarmth >= 1.0 - 1e-6 }}
                 accessibilityLabel="Warmer tint"
-                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.nightWarmth >= 1.0 - 1e-6 && styles.lowCutStepDisabled]}
               >
                 <Text style={styles.lowCutStepText}>+</Text>
               </Pressable>
@@ -298,20 +306,24 @@ export function SetupScreen(props: SetupScreenProps) {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
             <Pressable
               onPress={() => engine.setLowCutDb(engine.lowCutDb - 5)}
+              disabled={engine.lowCutDb <= -80}
               unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
               accessibilityRole="button"
+              accessibilityState={{ disabled: engine.lowCutDb <= -80 }}
               accessibilityLabel="Lower noise gate by 5 decibels"
-              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.lowCutDb <= -80 && styles.lowCutStepDisabled]}
             >
               <Text style={styles.lowCutStepText}>−</Text>
             </Pressable>
             <Text style={styles.settingsRowValue}>{engine.lowCutDb} dB</Text>
             <Pressable
               onPress={() => engine.setLowCutDb(engine.lowCutDb + 5)}
+              disabled={engine.lowCutDb >= -10}
               unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
               accessibilityRole="button"
+              accessibilityState={{ disabled: engine.lowCutDb >= -10 }}
               accessibilityLabel="Raise noise gate by 5 decibels"
-              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.lowCutDb >= -10 && styles.lowCutStepDisabled]}
             >
               <Text style={styles.lowCutStepText}>+</Text>
             </Pressable>
@@ -327,20 +339,24 @@ export function SetupScreen(props: SetupScreenProps) {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
             <Pressable
               onPress={() => setRefHz(Math.max(REF_HZ_MIN, refHz - 1))}
+              disabled={refHz <= REF_HZ_MIN}
               unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
               accessibilityRole="button"
+              accessibilityState={{ disabled: refHz <= REF_HZ_MIN }}
               accessibilityLabel="Decrease A4 by 1 Hz"
-              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, refHz <= REF_HZ_MIN && styles.lowCutStepDisabled]}
             >
               <Text style={styles.lowCutStepText}>−</Text>
             </Pressable>
             <Text style={styles.settingsRowValue}>{refHz} Hz</Text>
             <Pressable
               onPress={() => setRefHz(Math.min(REF_HZ_MAX, refHz + 1))}
+              disabled={refHz >= REF_HZ_MAX}
               unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
               accessibilityRole="button"
+              accessibilityState={{ disabled: refHz >= REF_HZ_MAX }}
               accessibilityLabel="Increase A4 by 1 Hz"
-              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, refHz >= REF_HZ_MAX && styles.lowCutStepDisabled]}
             >
               <Text style={styles.lowCutStepText}>+</Text>
             </Pressable>
@@ -422,10 +438,12 @@ export function SetupScreen(props: SetupScreenProps) {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
             <Pressable
               onPress={() => engine.setMetroClickOffsetMs(engine.metroClickOffsetMs - 5)}
+              disabled={engine.metroClickOffsetMs <= -50}
               unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
               accessibilityRole="button"
+              accessibilityState={{ disabled: engine.metroClickOffsetMs <= -50 }}
               accessibilityLabel="Pull click earlier by 5 ms"
-              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.metroClickOffsetMs <= -50 && styles.lowCutStepDisabled]}
             >
               <Text style={styles.lowCutStepText}>−</Text>
             </Pressable>
@@ -434,10 +452,12 @@ export function SetupScreen(props: SetupScreenProps) {
             </Text>
             <Pressable
               onPress={() => engine.setMetroClickOffsetMs(engine.metroClickOffsetMs + 5)}
+              disabled={engine.metroClickOffsetMs >= 50}
               unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
               accessibilityRole="button"
+              accessibilityState={{ disabled: engine.metroClickOffsetMs >= 50 }}
               accessibilityLabel="Push click later by 5 ms"
-              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+              style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, engine.metroClickOffsetMs >= 50 && styles.lowCutStepDisabled]}
             >
               <Text style={styles.lowCutStepText}>+</Text>
             </Pressable>
@@ -455,20 +475,24 @@ export function SetupScreen(props: SetupScreenProps) {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <Pressable
                 onPress={() => metro.setClickVolume(metro.clickVolume - 0.1)}
+                disabled={metro.clickVolume <= 0 + 1e-6}
                 unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: metro.clickVolume <= 0 + 1e-6 }}
                 accessibilityLabel="Decrease click volume by 10%"
-                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, metro.clickVolume <= 0 + 1e-6 && styles.lowCutStepDisabled]}
               >
                 <Text style={styles.lowCutStepText}>−</Text>
               </Pressable>
               <Text style={styles.settingsRowValue}>{metro.clickVolume.toFixed(1)}</Text>
               <Pressable
                 onPress={() => metro.setClickVolume(metro.clickVolume + 0.1)}
+                disabled={metro.clickVolume >= 1 - 1e-6}
                 unstable_pressDelay={DRAG_FRIENDLY_PRESS_DELAY_MS}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: metro.clickVolume >= 1 - 1e-6 }}
                 accessibilityLabel="Increase click volume by 10%"
-                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed]}
+                style={({ pressed }) => [styles.lowCutStep, pressed && styles.lowCutStepPressed, metro.clickVolume >= 1 - 1e-6 && styles.lowCutStepDisabled]}
               >
                 <Text style={styles.lowCutStepText}>+</Text>
               </Pressable>
