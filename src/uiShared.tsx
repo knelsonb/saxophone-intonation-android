@@ -238,7 +238,15 @@ export function makeStyles(C: ThemePalette) {
   // v0.9.9 — dropped `alignItems: 'center'`: cross-axis centering was shrinking
   // CentArc / LedRow children to their intrinsic NoteReadout glyph width
   // (narrow on "—", wider on "B♭ 5"). Each child now owns its own width.
-  centerPortrait: { flex: 1, justifyContent: 'center', paddingHorizontal: 20 },
+  // #70 — was `justifyContent:'center'` with no clip: the un-shrinkable ~324dp
+  // CentArc+NoteReadout stack overflowed BOTH ways (over the toggle above + the
+  // readout/CTA below) on any canvas shorter in dp than the Pixel 9 Pro design
+  // target (pixel_7 914dp vs 952dp — higher density = fewer dp; also tablet +
+  // landscape). Top-anchor so the arc's Y depends only on the fixed toggle
+  // above (it can no longer move when a note appears/disappears — this
+  // STRENGTHENS the wave-5 stability), flexShrink + clip so worst-case it trims
+  // bottom detail instead of drawing over the toggle.
+  centerPortrait: { flex: 1, flexShrink: 1, justifyContent: 'flex-start', paddingHorizontal: 20, paddingTop: 8, overflow: 'hidden' },
 
   arc: { maxWidth: 720, alignSelf: 'center' },
   arcScaleRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
@@ -267,7 +275,6 @@ export function makeStyles(C: ThemePalette) {
   // needle swept. Plain zIndex keeps it above the ticks without leaving the
   // clip. The 4dp width + accent color already distinguish it from a tick.
   arcNeedle: { position: 'absolute', top: 0, bottom: 0, width: 4, marginLeft: -2, backgroundColor: C.accent, borderRadius: 2, zIndex: 10 },
-  arcNeedleTip: { position: 'absolute', top: -4, left: -4, width: 12, height: 12, borderRadius: 6, backgroundColor: C.accent, zIndex: 11 },
   arcZones: { flexDirection: 'row', marginTop: 4, height: 2 },
   arcZone: { height: '100%' },
   arcZoneFlat: { flex: 35, backgroundColor: C.flat, opacity: 0.45 },

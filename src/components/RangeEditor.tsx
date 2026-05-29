@@ -171,10 +171,12 @@ export function RangeEditor({
 
         <View style={s.actions}>
           <Pressable onPress={handleReset} accessibilityRole="button" accessibilityLabel="Reset to default"
+            accessibilityState={{ disabled: isDefault }}
             disabled={isDefault} style={({ pressed }) => [s.resetBtn, pressed && s.resetBtnPressed, isDefault && s.btnDisabled]}>
             <Text style={s.resetBtnText}>RESET TO DEFAULT</Text>
           </Pressable>
           <Pressable onPress={handleSave} accessibilityRole="button" accessibilityLabel="Save range"
+            accessibilityState={{ disabled: !isValid }}
             disabled={!isValid} style={({ pressed }) => [s.saveBtn, pressed && s.saveBtnPressed, !isValid && s.btnDisabled]}>
             <Text style={s.saveBtnText}>SAVE</Text>
           </Pressable>

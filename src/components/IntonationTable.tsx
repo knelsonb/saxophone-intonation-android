@@ -219,7 +219,7 @@ export function IntonationTable({
           <Text style={[s.colText, s.colN]}>N</Text>
         </View>
 
-        <BottomSheetScrollView style={s.scroll} showsVerticalScrollIndicator={false}>
+        <BottomSheetScrollView style={s.scroll} showsVerticalScrollIndicator={true}>
           {displayRows.length === 0 ? (
             <View style={s.emptyState}>
               <Text style={s.emptyText}>

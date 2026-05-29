@@ -22,6 +22,7 @@ import {
 } from './storage/measurements';
 import { useRawAudioInput } from '../modules/raw-audio-input';
 import type { RawAudioBuffer } from '../modules/raw-audio-input';
+import { log } from './log';
 
 // ---------------------------------------------------------------------------
 // save-on-background: refHz lives in App.tsx as useState (Frodo's territory).
@@ -1350,7 +1351,7 @@ export function useAudioEngine(): AudioEngineState {
 
       startedRawStream.start().catch((err) => {
         if (cancelled) return;
-        console.warn('useAudioEngine: rawStream.start() failed', err);
+        log.w('useAudioEngine', 'rawStream.start() failed', err);
         setStreamErrorReason(String(err?.message ?? err));
         setStatus('stream-failed');
       });
@@ -1359,7 +1360,7 @@ export function useAudioEngine(): AudioEngineState {
 
       startedExpoStream.start().catch((err) => {
         if (cancelled) return;
-        console.warn('useAudioEngine: expoStream.start() failed', err);
+        log.w('useAudioEngine', 'expoStream.start() failed', err);
         setStreamErrorReason(String(err?.message ?? err));
         setStatus('stream-failed');
       });

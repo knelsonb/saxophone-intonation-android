@@ -20,6 +20,7 @@ import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../../theme';
 import type { ThemePalette } from '../../theme';
 import type { NoteDisplay } from '../../tunerWidgets';
+import { formatCents } from '../../tunerWidgets';
 
 const STRIP_HEIGHT = 120;
 const BAR_WIDTH = 10;
@@ -125,7 +126,7 @@ export function StrobeDisplay({ noteDisplay, freqHz, isOutOfRange }: StrobeDispl
   const octave = noteDisplay?.octave;
   const hzText = freqHz !== null ? freqHz.toFixed(1) : '— — —';
   const centsText = noteDisplay
-    ? `${cents >= 0 ? '+' : ''}${cents.toFixed(noteDisplay.precision === 1.0 ? 0 : 1)}`
+    ? formatCents(cents, noteDisplay.precision)
     : '+00';
   const centsColor =
     !hasNote || isOutOfRange ? C.inkVeryDim :

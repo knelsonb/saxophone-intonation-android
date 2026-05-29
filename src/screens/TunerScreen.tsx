@@ -26,7 +26,7 @@ import { makeStyles, DRAG_FRIENDLY_PRESS_DELAY_MS } from '../uiShared';
 import {
   BottomStrip, BucketStatsCard,
   TapToLogCta, PeakSlideToggle, SessionStrip, DiagnosticLine,
-  TunerInCarSwitch,
+  TunerInCarSwitch, formatCents,
 } from '../tunerWidgets';
 import type { NoteDisplay } from '../tunerWidgets';
 import { CentArcDisplay } from '../components/tunerStyles/CentArcDisplay';
@@ -117,7 +117,7 @@ export function TunerScreen(props: TunerScreenProps) {
   const isListening = engine.status === 'listening';
   const centerStyle = styles.centerPortrait;
   const centsText = noteDisplay
-    ? `${noteDisplay.cents >= 0 ? '+' : ''}${noteDisplay.cents.toFixed(noteDisplay.precision === 1.0 ? 0 : 1)}`
+    ? formatCents(noteDisplay.cents, noteDisplay.precision)
     : '+00';
   const noteLabel = noteDisplay
     ? `${noteDisplay.letter}${noteDisplay.accidental}${noteDisplay.octave}`
